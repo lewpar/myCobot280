@@ -190,9 +190,9 @@ def print_menu():
     print(f"  {B}10{R}) Torque ALL servos on/off")
     print()
     print(f"  {CY}─── ATOM ───{R}")
-    print(f"  {B}11{R}) Set ATOM LED color")
-    print(f"  {B}12{R}) ATOM info (ping + version)")
-    print(f"  {B}13{R}) Read ATOM button")
+    print(f"  {B}11{R}) Set ATOM LED color (all)")
+    print(f"  {B}12{R}) Ping ATOM")
+    print(f"  {B}13{R}) Set ATOM LED pixel (single)")
     print()
     print(f"  {D}0{R})  Quit")
     print()
@@ -449,28 +449,40 @@ def run_menu(sock: socket.socket):
                 else:
                     print(f"\n{fail(resp)}")
 
-        # ---- ATOM INFO ----
+        # ---- ATOM INFO (PING) ----
         elif choice == "12":
             sys.stdout.write(f"{D}Pinging ATOM...{R} ")
             sys.stdout.flush()
             ping_resp = send_command(sock, "ATOM_PING")
-            alive = ping_resp == "OK"
-            if alive:
+            if ping_resp == "OK":
                 sys.stdout.write(f"\r{ok('ATOM is reachable')}   \n")
-                ver_resp = send_command(sock, "ATOM_VERSION")
-                print(f"  Firmware: {B}v{ver_resp}{R}")
             else:
                 sys.stdout.write(f"\r{fail('ATOM not responding')}   \n")
 
-        # ---- ATOM BUTTON ----
+        # ---- ATOM SET PIXEL ----
         elif choice == "13":
-            resp = send_command(sock, "ATOM_BUTTON")
-            if resp == "1":
-                print(f"\n{ok('Button is PRESSED')}")
-            elif resp == "0":
-                print(f"\n  Button is {D}not pressed{R}")
+            print(f"\n{CY}Set ATOM LED pixel{R} (5×5 grid, x/y 0-4)\n")
+            try:
+                x = int(input(f"  X {D}(0-4){R}: ").strip())
+                y = int(input(f"  Y {D}(0-4){R}: ").strip())
+            except ValueError:
+                print(warn("Invalid coordinate."))
             else:
-                print(f"\n{fail(resp)}")
+                if 0 <= x <= 4 and 0 <= y <= 4:
+                    try:
+                        r = int(input(f"  Red   {D}(0-255){R} [{B}255{R}]: ").strip() or "255")
+                        g = int(input(f"  Green {D}(0-255){R} [{B}0{R}]: ").strip() or "0")
+                        b = int(input(f"  Blue  {D}(0-255){R} [{B}0{R}]: ").strip() or "0")
+                    except ValueError:
+                        print(warn("Invalid number."))
+                    else:
+                        resp = send_command(sock, f"ATOM_PIXEL {x} {y} {r} {g} {b}")
+                        if resp.startswith("OK"):
+                            print(f"\n{ok(f'Pixel ({x},{y}) set to RGB({r},{g},{b})')}")
+                        else:
+                            print(f"\n{fail(resp)}")
+                else:
+                    print(warn("Coordinates must be 0-4."))
 
         else:
             print(warn("Invalid choice. Enter a number from the menu (0–13)."))
