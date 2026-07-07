@@ -81,6 +81,7 @@ ADDR_PRESENT_POSITION    = 56
 
 SERVO_MIN = 0
 SERVO_MAX = 4095
+SAFETY_BUFFER = 50
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +92,7 @@ class ServoController:
     def __init__(self, port: str, baud: int):
         self._lock = threading.Lock()
         self._ser = serial.Serial(port, baud, timeout=0.2)
+        self._limit_cache: dict[int, tuple[int, int]] = {}
         self.scan()
 
     def _read_response(self, wait: float = 0.05) -> bytes:
@@ -128,6 +130,15 @@ class ServoController:
 
     # ---- public API ----
 
+    def _get_safe_limits(self, servo_id: int) -> tuple[int, int]:
+        if servo_id not in self._limit_cache:
+            return SERVO_MIN + SAFETY_BUFFER, SERVO_MAX - SAFETY_BUFFER
+        return self._limit_cache[servo_id]
+
+    def _clamp_target(self, servo_id: int, target: int) -> int:
+        safe_min, safe_max = self._get_safe_limits(servo_id)
+        return max(safe_min, min(safe_max, target))
+
     def scan(self):
         with self._lock:
             ids = []
@@ -136,6 +147,16 @@ class ServoController:
                     ids.append(sid)
                 time.sleep(0.015)
             self.servo_ids = ids
+            self._limit_cache.clear()
+            for sid in ids:
+                lo = self._read_uint16(sid, ADDR_MIN_ANGLE_LIMIT)
+                hi = self._read_uint16(sid, ADDR_MAX_ANGLE_LIMIT)
+                if lo is None or hi is None or (lo == 0 and hi == 0):
+                    self._limit_cache[sid] = (SERVO_MIN + SAFETY_BUFFER,
+                                              SERVO_MAX - SAFETY_BUFFER)
+                else:
+                    self._limit_cache[sid] = (lo + SAFETY_BUFFER,
+                                              hi - SAFETY_BUFFER)
         return self.servo_ids
 
     def get_position(self, servo_id: int):
@@ -148,6 +169,9 @@ class ServoController:
             hi = self._read_uint16(servo_id, ADDR_MAX_ANGLE_LIMIT)
             return lo, hi
 
+    def get_safe_limits(self, servo_id: int) -> tuple[int, int]:
+        return self._get_safe_limits(servo_id)
+
     def get_info(self, servo_id: int):
         with self._lock:
             pos = self._read_uint16(servo_id, ADDR_PRESENT_POSITION)
@@ -156,8 +180,8 @@ class ServoController:
             return {"pos": pos, "min": lo, "max": hi}
 
     def move(self, servo_id: int, target: int, speed: int = 200, accel: int = 20):
-        target = max(SERVO_MIN, min(SERVO_MAX, target))
         with self._lock:
+            target = self._clamp_target(servo_id, target)
             self._write_raw(servo_id, ADDR_TORQUE_ENABLE, bytes([1]))
             self._write_raw(servo_id, ADDR_ACCELERATION,  bytes([accel & 0xFF]))
             self._write_raw(servo_id, ADDR_GOAL_SPEED,
@@ -174,7 +198,7 @@ class ServoController:
             current = self._read_uint16(servo_id, ADDR_PRESENT_POSITION)
             if current is None:
                 return False, None, "could not read current position"
-            target = max(SERVO_MIN, min(SERVO_MAX, current + delta))
+            target = self._clamp_target(servo_id, current + delta)
         ok, pos = self.move(servo_id, target, speed, accel)
         msg = f"moved from {current} to {pos}" if ok else "move failed"
         return ok, pos, msg
@@ -241,11 +265,8 @@ def handle_client(conn: socket.socket, addr: tuple, ctrl: ServoController):
                         reply("ERR usage: LIMITS <id>")
                         continue
                     sid = int(parts[1])
-                    lo, hi = ctrl.get_limits(sid)
-                    if lo is None or hi is None:
-                        reply("ERR no response")
-                    else:
-                        reply(f"{lo},{hi}")
+                    lo, hi = ctrl.get_safe_limits(sid)
+                    reply(f"{lo},{hi}")
 
                 # ---- INFO <id> ----
                 elif op == "INFO":

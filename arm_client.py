@@ -12,7 +12,20 @@ interactive menu for controlling the arm.
 import os
 import socket
 import sys
+import termios
 import time
+import tty
+
+
+def getch():
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        ch = sys.stdin.read(1)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    return ch
 
 
 def send_command(sock: socket.socket, cmd: str) -> str:
@@ -68,6 +81,25 @@ def fetch_ids(sock: socket.socket) -> list[int]:
     prefix = "OK " if resp.startswith("OK ") else ""
     id_str = resp[len(prefix):]
     return [int(x) for x in id_str.split(",")] if id_str else []
+
+
+SAFETY_BUFFER = 50
+
+
+def fetch_safe_limits(sock: socket.socket, cache: dict, servo_id: int) -> tuple[int, int]:
+    if servo_id in cache:
+        return cache[servo_id]
+    resp = send_command(sock, f"LIMITS {servo_id}")
+    if resp.startswith("ERR"):
+        lo, hi = SAFETY_BUFFER, 4095 - SAFETY_BUFFER
+    else:
+        parts = resp.split(",")
+        lo = int(parts[0])
+        hi = int(parts[1])
+        if lo == 0 and hi == 0:
+            lo, hi = SAFETY_BUFFER, 4095 - SAFETY_BUFFER
+    cache[servo_id] = (lo, hi)
+    return lo, hi
 
 
 def show_status(sock: socket.socket, ids: list[int]):
@@ -139,6 +171,7 @@ def print_menu():
 
 def run_menu(sock: socket.socket):
     ids = fetch_ids(sock)
+    limit_cache: dict[int, tuple[int, int]] = {}
     if not ids:
         print("No servos detected. Try re-scanning from the menu.")
         ids = []
@@ -177,32 +210,86 @@ def run_menu(sock: socket.socket):
                 else:
                     print("Cancelled.")
 
-        # ---- MOVE RELATIVE ----
+        # ---- MOVE RELATIVE (live jogging) ----
         elif choice == "4":
             sid = select_servo(ids)
             if sid is not None:
+                speed = prompt_int("Speed (0-3400)", 200)
+                accel = prompt_int("Acceleration (0-254)", 20)
+                step  = prompt_int("Step size", 50)
+
                 cur_resp = send_command(sock, f"POS {sid}")
                 try:
                     cur = int(cur_resp)
-                    print(f"Current position: {cur}")
                 except ValueError:
-                    print(cur_resp)
+                    cur = 0
 
-                direction = ""
-                while direction not in ("+", "-"):
-                    direction = input("Direction (+/-): ").strip()
+                safe_min, safe_max = fetch_safe_limits(sock, limit_cache, sid)
 
-                amount = prompt_int("Amount to move (0-4095 scale)", 100)
-                delta = amount if direction == "+" else -amount
-                speed = prompt_int("Speed (0-3400)", 200)
-                accel = prompt_int("Acceleration (0-254)", 20)
+                os.system("clear")
+                print(f"\nJogging servo {sid}  |  step={step}  speed={speed}  accel={accel}")
+                print(f"Current position: {cur}   (safe range: {safe_min}-{safe_max})")
+                print()
+                print("  + / =   move positive by step")
+                print("  -       move negative by step")
+                print("  [number] change step size")
+                print("  q       return to menu")
+                print()
 
-                confirm = input(f"\nMove servo {sid} by {delta:+d} at speed={speed} accel={accel}? [y/N] ").strip().lower()
-                if confirm == "y":
-                    resp = send_command(sock, f"MOVE_REL {sid} {delta} {speed} {accel}")
-                    print(f"\n{resp}")
-                else:
-                    print("Cancelled.")
+                try:
+                    while True:
+                        key = getch()
+                        if key in ("q", "Q"):
+                            break
+                        elif key in ("+", "="):
+                            delta = step
+                        elif key == "-":
+                            delta = -step
+                        elif key.isdigit():
+                            step_str = key
+                            while True:
+                                ch = getch()
+                                if ch.isdigit():
+                                    step_str += ch
+                                else:
+                                    key = ch
+                                    break
+                            try:
+                                step = int(step_str)
+                            except ValueError:
+                                step = 50
+                            print(f"\rStep size: {step}   ", end="", flush=True)
+                            if key in ("q", "Q"):
+                                break
+                            elif key in ("+", "="):
+                                delta = step
+                            elif key == "-":
+                                delta = -step
+                            else:
+                                continue
+                        else:
+                            continue
+
+                        target = max(safe_min, min(safe_max, cur + delta))
+                        if target == cur:
+                            sys.stdout.write(f"\rAt limit ({safe_min}-{safe_max}).   ")
+                            sys.stdout.flush()
+                            continue
+
+                        resp = send_command(sock, f"MOVE_REL {sid} {delta} {speed} {accel}")
+                        if resp.startswith("OK"):
+                            try:
+                                cur = int(resp.split()[1])
+                            except (IndexError, ValueError):
+                                cur = target
+                        else:
+                            cur = target
+
+                        sys.stdout.write(f"\rPosition: {cur}   ")
+                        sys.stdout.flush()
+                finally:
+                    pass
+                print("\nJogging ended.")
 
         # ---- CENTER ----
         elif choice == "5":
@@ -234,6 +321,7 @@ def run_menu(sock: socket.socket):
         # ---- SCAN ----
         elif choice == "7":
             ids = fetch_ids(sock)
+            limit_cache.clear()
             print(f"\nOK {','.join(str(i) for i in ids) if ids else ''}")
 
         # ---- COUNT ----
