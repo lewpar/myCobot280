@@ -188,6 +188,12 @@ def print_menu():
     print(f"  {B}8{R})  Servo count")
     print(f"  {B}9{R})  Ping a servo")
     print(f"  {B}10{R}) Torque ALL servos on/off")
+    print()
+    print(f"  {CY}─── ATOM ───{R}")
+    print(f"  {B}11{R}) Set ATOM LED color")
+    print(f"  {B}12{R}) ATOM info (ping + version)")
+    print(f"  {B}13{R}) Read ATOM button")
+    print()
     print(f"  {D}0{R})  Quit")
     print()
 
@@ -427,8 +433,47 @@ def run_menu(sock: socket.socket):
                 else:
                     print(warn("Invalid, enter 0 or 1."))
 
+        # ---- ATOM LED COLOR ----
+        elif choice == "11":
+            print(f"\n{CY}Set ATOM LED color{R}\n")
+            try:
+                r = int(input(f"  Red   {D}(0-255){R} [{B}255{R}]: ").strip() or "255")
+                g = int(input(f"  Green {D}(0-255){R} [{B}0{R}]: ").strip() or "0")
+                b = int(input(f"  Blue  {D}(0-255){R} [{B}0{R}]: ").strip() or "0")
+            except ValueError:
+                print(warn("Invalid number."))
+            else:
+                resp = send_command(sock, f"ATOM_COLOR {r} {g} {b}")
+                if resp.startswith("OK"):
+                    print(f"\n{ok(f'LED set to RGB({r},{g},{b})')}")
+                else:
+                    print(f"\n{fail(resp)}")
+
+        # ---- ATOM INFO ----
+        elif choice == "12":
+            sys.stdout.write(f"{D}Pinging ATOM...{R} ")
+            sys.stdout.flush()
+            ping_resp = send_command(sock, "ATOM_PING")
+            alive = ping_resp == "OK"
+            if alive:
+                sys.stdout.write(f"\r{ok('ATOM is reachable')}   \n")
+                ver_resp = send_command(sock, "ATOM_VERSION")
+                print(f"  Firmware: {B}v{ver_resp}{R}")
+            else:
+                sys.stdout.write(f"\r{fail('ATOM not responding')}   \n")
+
+        # ---- ATOM BUTTON ----
+        elif choice == "13":
+            resp = send_command(sock, "ATOM_BUTTON")
+            if resp == "1":
+                print(f"\n{ok('Button is PRESSED')}")
+            elif resp == "0":
+                print(f"\n  Button is {D}not pressed{R}")
+            else:
+                print(f"\n{fail(resp)}")
+
         else:
-            print(warn("Invalid choice. Enter a number from the menu (0–10)."))
+            print(warn("Invalid choice. Enter a number from the menu (0–13)."))
 
         if choice != "0":
             input(f"\n{D}Press Enter to return to menu...{R}")

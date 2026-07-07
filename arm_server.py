@@ -18,6 +18,12 @@ Commands:
     MOVE_REL <id> <delta> [speed] [accel]  -> OK <new_pos>
     TORQUE <id> <0|1>            -> OK
     CENTER <id> [pos] [speed] [accel]  -> OK <new_pos>
+    ATOM_PING                    -> OK / ERR no response
+    ATOM_VERSION                 -> <version>
+    ATOM_COLOR <r> <g> <b>       -> OK
+    ATOM_BUTTON                  -> <0|1>
+    ATOM_PIN_OUT <pin> <0|1>     -> OK
+    ATOM_PIN_IN <pin>            -> <0|1>
     QUIT                         -> BYE
 """
 
@@ -85,6 +91,45 @@ MOVE_SETTLE_TIMEOUT = 15.0
 MOVE_SETTLE_POLL   = 0.1
 MOVE_TOLERANCE     = 10
 SAFETY_BUFFER      = 50
+
+
+# ---------------------------------------------------------------------------
+# ATOM / Elephant Robotics protocol helpers (0xFE 0xFE framing)
+# ---------------------------------------------------------------------------
+
+ATOM_HEADER = 0xFE
+ATOM_FOOTER = 0xFA
+
+ATOM_SET_COLOR          = 0x6A
+ATOM_SET_DIGITAL_OUTPUT = 0x61
+ATOM_GET_DIGITAL_INPUT  = 0x62
+ATOM_GET_VERSION        = 0x09
+ATOM_IS_CONNECTED       = 0x14
+ATOM_GET_PRESS_STATUS   = 0x6B
+ATOM_POWER_ON           = 0x10
+ATOM_POWER_OFF          = 0x11
+
+
+def build_atom_command(cmd_code: int, *data: int) -> bytes:
+    length = len(data) + 2
+    buf = bytearray([ATOM_HEADER, ATOM_HEADER, length, cmd_code])
+    buf.extend(data)
+    buf.append(ATOM_FOOTER)
+    return bytes(buf)
+
+
+def parse_atom_response(resp: bytes):
+    if len(resp) < 5:
+        return None
+    if resp[0] != ATOM_HEADER or resp[1] != ATOM_HEADER:
+        return None
+    length = resp[2]
+    expected = 4 + (length - 2)
+    if len(resp) < expected:
+        return None
+    cmd = resp[3]
+    data = resp[4:4 + (length - 2)]
+    return cmd, data
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +268,71 @@ class ServoController:
         with self._lock:
             self._write_raw(servo_id, ADDR_TORQUE_ENABLE, bytes([1 if enable else 0]))
 
+    # ---- ATOM commands ----
+
+    def _read_atom_response(self, timeout: float = 2.0) -> bytes:
+        deadline = time.time() + timeout
+        buf = b""
+        while time.time() < deadline:
+            n = self._ser.in_waiting
+            if n:
+                buf += self._ser.read(n)
+                if len(buf) >= 2 and buf[0] == ATOM_HEADER and buf[1] == ATOM_HEADER:
+                    if len(buf) >= 4:
+                        length = buf[2]
+                        expected = 4 + (length - 2)
+                        if len(buf) >= expected:
+                            result = buf[:expected]
+                            return result
+            time.sleep(0.01)
+        return b""
+
+    def _send_atom(self, cmd_code: int, *data: int) -> bytes:
+        packet = build_atom_command(cmd_code, *data)
+        self._ser.reset_input_buffer()
+        self._ser.write(packet)
+        return self._read_atom_response()
+
+    def atom_ping(self) -> bool:
+        with self._lock:
+            resp = self._send_atom(ATOM_IS_CONNECTED)
+            parsed = parse_atom_response(resp)
+            return parsed is not None
+
+    def atom_version(self) -> float | None:
+        with self._lock:
+            resp = self._send_atom(ATOM_GET_VERSION)
+            parsed = parse_atom_response(resp)
+            if parsed and parsed[1]:
+                cmd, data = parsed
+                if len(data) >= 1:
+                    return data[0] / 10.0
+            return None
+
+    def atom_set_color(self, r: int, g: int, b: int):
+        with self._lock:
+            self._send_atom(ATOM_SET_COLOR, r, g, b)
+
+    def atom_button_pressed(self) -> bool | None:
+        with self._lock:
+            resp = self._send_atom(ATOM_GET_PRESS_STATUS)
+            parsed = parse_atom_response(resp)
+            if parsed and parsed[1]:
+                return parsed[1][0] == 1
+            return None
+
+    def atom_set_digital_output(self, pin: int, value: int):
+        with self._lock:
+            self._send_atom(ATOM_SET_DIGITAL_OUTPUT, pin, value)
+
+    def atom_get_digital_input(self, pin: int) -> int | None:
+        with self._lock:
+            resp = self._send_atom(ATOM_GET_DIGITAL_INPUT, pin)
+            parsed = parse_atom_response(resp)
+            if parsed and parsed[1]:
+                return parsed[1][0]
+            return None
+
     def close(self):
         self._ser.close()
 
@@ -356,6 +466,60 @@ def handle_client(conn: socket.socket, addr: tuple, ctrl: ServoController):
                     sid = int(parts[1])
                     alive = ctrl._ping_one(sid)
                     reply("OK" if alive else "ERR no response")
+
+                # ---- ATOM_PING ----
+                elif op == "ATOM_PING":
+                    alive = ctrl.atom_ping()
+                    reply("OK" if alive else "ERR no response")
+
+                # ---- ATOM_VERSION ----
+                elif op == "ATOM_VERSION":
+                    ver = ctrl.atom_version()
+                    if ver is not None:
+                        reply(f"{ver:.1f}")
+                    else:
+                        reply("ERR no response")
+
+                # ---- ATOM_COLOR <r> <g> <b> ----
+                elif op == "ATOM_COLOR":
+                    if len(parts) < 4:
+                        reply("ERR usage: ATOM_COLOR <r> <g> <b>")
+                        continue
+                    r = int(parts[1])
+                    g = int(parts[2])
+                    b = int(parts[3])
+                    ctrl.atom_set_color(r, g, b)
+                    reply("OK")
+
+                # ---- ATOM_BUTTON ----
+                elif op == "ATOM_BUTTON":
+                    pressed = ctrl.atom_button_pressed()
+                    if pressed is not None:
+                        reply("1" if pressed else "0")
+                    else:
+                        reply("ERR no response")
+
+                # ---- ATOM_PIN_OUT <pin> <0|1> ----
+                elif op == "ATOM_PIN_OUT":
+                    if len(parts) < 3:
+                        reply("ERR usage: ATOM_PIN_OUT <pin> <0|1>")
+                        continue
+                    pin = int(parts[1])
+                    val = int(parts[2])
+                    ctrl.atom_set_digital_output(pin, val)
+                    reply("OK")
+
+                # ---- ATOM_PIN_IN <pin> ----
+                elif op == "ATOM_PIN_IN":
+                    if len(parts) < 2:
+                        reply("ERR usage: ATOM_PIN_IN <pin>")
+                        continue
+                    pin = int(parts[1])
+                    val = ctrl.atom_get_digital_input(pin)
+                    if val is not None:
+                        reply(str(val))
+                    else:
+                        reply("ERR no response")
 
                 # ---- QUIT ----
                 elif op == "QUIT":
