@@ -41,11 +41,12 @@ Adjust `BUS_RX` / `BUS_TX` at the top of the `.ino` if your ATOM uses different 
 
 ## Usage
 
+### TCP client/server
+
 **On the robot:**
 ```
 python3 arm_server.py
 ```
-
 Only one client at a time. The server sends keepalive pings every 15 seconds and drops unresponsive clients.
 
 **On a client machine:**
@@ -53,6 +54,44 @@ Only one client at a time. The server sends keepalive pings every 15 seconds and
 python3 arm_client.py
 ```
 Prompts for server IP and port, then shows the interactive menu.
+
+### Python API (mycobot280)
+
+The `mycobot280` module is a self-contained library that talks directly to the arm over serial. It can be used standalone or imported by other scripts.
+
+```python
+from mycobot280 import MyCobot280
+
+arm = MyCobot280("/dev/ttyAMA0")
+
+# Servos
+s1 = arm.servo(1)
+print(s1.position)          # read current position
+s1.move(2048)               # absolute move → (True, 2048)
+s1.move_rel(-100)           # move relative to current
+s1.center()                 # go to 2048
+s1.torque = False           # disable torque
+s1.ping()                   # check responsiveness
+
+# ATOM
+arm.atom.ping()                       # reachable?
+arm.atom.color = (255, 0, 0)          # set all LEDs red
+arm.atom.set_color(0, 255, 0)         # same, explicit method
+arm.atom.pixel(2, 2, 0, 0, 255)      # single pixel blue
+
+# Convenience methods on the arm itself
+arm.move(2, 1500, speed=600)
+arm.get_position(3)
+arm.scan()                # re-scan, returns [1, 2, 3, 4, 5, 6]
+arm.servo_ids             # cached ID list
+arm.servo_count           # 6
+
+# Cleanup
+arm.close()
+# or use a context manager:
+with MyCobot280("/dev/ttyAMA0") as arm:
+    arm.servo(1).move(2048)
+```
 
 ## Servo IDs
 
