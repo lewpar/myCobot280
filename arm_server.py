@@ -388,7 +388,7 @@ def run_server(host: str, port: int, ctrl: ServoController):
 
 def main():
     parser = argparse.ArgumentParser(description="myCobot280 Arm Server")
-    parser.add_argument("--host", default="127.0.0.1", help="Bind address (default: 127.0.0.1)")
+    parser.add_argument("--host", default="0.0.0.0", help="Bind address (default: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=5000, help="TCP port (default: 5000)")
     parser.add_argument("--serial-port", default="/dev/ttyAMA0", help="Serial port (default: /dev/ttyAMA0)")
     parser.add_argument("--serial-baud", type=int, default=1_000_000, help="Serial baud rate (default: 1000000)")
