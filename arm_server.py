@@ -81,7 +81,10 @@ ADDR_PRESENT_POSITION    = 56
 
 SERVO_MIN = 0
 SERVO_MAX = 4095
-SAFETY_BUFFER = 50
+MOVE_SETTLE_TIMEOUT = 5.0
+MOVE_SETTLE_POLL   = 0.1
+MOVE_TOLERANCE     = 10
+SAFETY_BUFFER      = 50
 
 
 # ---------------------------------------------------------------------------
@@ -188,9 +191,19 @@ class ServoController:
                             bytes([speed & 0xFF, (speed >> 8) & 0xFF]))
             self._write_raw(servo_id, ADDR_GOAL_POSITION,
                             bytes([target & 0xFF, (target >> 8) & 0xFF]))
-            time.sleep(0.8)
-            new_pos = self._read_uint16(servo_id, ADDR_PRESENT_POSITION)
-        ok = new_pos is not None and abs(new_pos - target) <= 10
+
+            deadline = time.time() + MOVE_SETTLE_TIMEOUT
+            last_pos = None
+            while time.time() < deadline:
+                time.sleep(MOVE_SETTLE_POLL)
+                pos = self._read_uint16(servo_id, ADDR_PRESENT_POSITION)
+                if pos is not None:
+                    last_pos = pos
+                    if abs(pos - target) <= MOVE_TOLERANCE:
+                        break
+            new_pos = last_pos
+
+        ok = new_pos is not None and abs(new_pos - target) <= MOVE_TOLERANCE
         return ok, new_pos
 
     def move_relative(self, servo_id: int, delta: int, speed: int = 200, accel: int = 20):
