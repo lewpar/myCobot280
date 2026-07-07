@@ -10,9 +10,11 @@ interactive menu for controlling the arm.
 """
 
 import os
+import queue
 import socket
 import sys
 import termios
+import threading
 import time
 import tty
 
@@ -52,17 +54,46 @@ def getch():
     return ch
 
 
+_resp_queue: queue.Queue | None = None
+
+
+def reader_thread(sock: socket.socket, stop: threading.Event):
+    global _resp_queue
+    buf = b""
+    while not stop.is_set():
+        try:
+            sock.settimeout(0.5)
+            data = sock.recv(4096)
+        except socket.timeout:
+            continue
+        except OSError:
+            break
+        if not data:
+            break
+        buf += data
+        while b"\n" in buf:
+            line, buf = buf.split(b"\n", 1)
+            msg = line.decode().strip()
+            if msg == "PING":
+                try:
+                    sock.sendall(b"PONG\n")
+                except OSError:
+                    break
+            else:
+                _resp_queue.put(msg)
+    _resp_queue.put(None)  # signal EOF
+    stop.set()
+
+
 def send_command(sock: socket.socket, cmd: str) -> str:
     sock.sendall((cmd + "\n").encode())
-    buf = b""
-    while True:
-        data = sock.recv(4096)
-        if not data:
-            raise ConnectionError("server closed connection")
-        buf += data
-        if b"\n" in buf:
-            line, _ = buf.split(b"\n", 1)
-            return line.decode().strip()
+    try:
+        resp = _resp_queue.get(timeout=60)
+    except queue.Empty:
+        raise ConnectionError("no response from server")
+    if resp is None:
+        raise ConnectionError("server closed connection")
+    return resp
 
 
 def prompt_int(prompt: str, default: int) -> int:
@@ -526,12 +557,19 @@ def main():
 
     print(f"\r  {ok(f'Connected to {host}:{port}')}   \n")
 
+    global _resp_queue
+    _resp_queue = queue.Queue()
+    stop = threading.Event()
+    reader = threading.Thread(target=reader_thread, args=(sock, stop), daemon=True)
+    reader.start()
+
     try:
         run_menu(sock)
     except (ConnectionError, BrokenPipeError) as e:
         print(f"\n{RD}Connection lost: {e}{R}")
         sys.exit(1)
     finally:
+        stop.set()
         try:
             sock.close()
         except OSError:

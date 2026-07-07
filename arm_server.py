@@ -263,17 +263,45 @@ class ServoController:
 # Client connection handler (runs in its own thread)
 # ---------------------------------------------------------------------------
 
-def handle_client(conn: socket.socket, addr: tuple, ctrl: ServoController):
+def handle_client(conn: socket.socket, addr: tuple, ctrl: ServoController, active_conn: threading.Lock):
+    # TCP keepalive — detects dead clients within ~30s
+    conn.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    try:
+        conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 10)
+        conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 5)
+        conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
+    except (AttributeError, OSError):
+        pass  # not all platforms support TCP_KEEP* options
+
     def reply(msg: str):
         try:
             conn.sendall((msg.rstrip() + "\r\n").encode())
         except OSError:
             pass
 
+    heartbeat_stop = threading.Event()
+
+    def heartbeat():
+        while not heartbeat_stop.is_set():
+            heartbeat_stop.wait(15)
+            if heartbeat_stop.is_set():
+                return
+            try:
+                conn.sendall(b"PING\r\n")
+            except OSError:
+                return
+
+    hb_thread = threading.Thread(target=heartbeat, daemon=True)
+    hb_thread.start()
+
     try:
         buf = b""
         while True:
-            data = conn.recv(1024)
+            try:
+                conn.settimeout(1.0)
+                data = conn.recv(1024)
+            except socket.timeout:
+                continue
             if not data:
                 break
             buf += data
@@ -285,6 +313,9 @@ def handle_client(conn: socket.socket, addr: tuple, ctrl: ServoController):
 
                 parts = cmd.split()
                 op = parts[0].upper()
+
+                if op == "PONG":
+                    continue
 
                 # ---- SCAN ----
                 if op == "SCAN":
@@ -423,10 +454,13 @@ def handle_client(conn: socket.socket, addr: tuple, ctrl: ServoController):
     except (ConnectionResetError, BrokenPipeError, OSError):
         pass
     finally:
+        heartbeat_stop.set()
         try:
             conn.close()
         except OSError:
             pass
+        active_conn.release()
+        print(f"Client disconnected: {addr}")
 
 
 # ---------------------------------------------------------------------------
@@ -437,11 +471,12 @@ def run_server(host: str, port: int, ctrl: ServoController):
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind((host, port))
-    sock.listen(5)
+    sock.listen(1)
     print(f"Arm server listening on {host}:{port}")
     print(f"Detected servos: {ctrl.servo_ids}")
 
     running = True
+    active_conn = threading.Lock()
 
     def shutdown(signum, frame):
         nonlocal running
@@ -457,13 +492,23 @@ def run_server(host: str, port: int, ctrl: ServoController):
             try:
                 sock.settimeout(1.0)
                 conn, addr = sock.accept()
-                print(f"Client connected: {addr}")
-                t = threading.Thread(target=handle_client, args=(conn, addr, ctrl), daemon=True)
-                t.start()
             except socket.timeout:
                 continue
             except OSError:
                 break
+
+            if not active_conn.acquire(blocking=False):
+                try:
+                    conn.sendall(b"BUSY - only one client at a time\r\n")
+                except OSError:
+                    pass
+                conn.close()
+                print(f"Rejected {addr}: server busy")
+                continue
+
+            print(f"Client connected: {addr}")
+            t = threading.Thread(target=handle_client, args=(conn, addr, ctrl, active_conn), daemon=True)
+            t.start()
     finally:
         print("Closing serial port...")
         ctrl.close()
