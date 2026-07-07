@@ -165,11 +165,13 @@ def print_menu():
     print("  7) Re-scan the bus for servos")
     print("  8) Servo count")
     print("  9) Ping a servo")
+    print(" 10) Torque ALL servos on/off")
     print("  0) Quit")
     print()
 
 
 def run_menu(sock: socket.socket):
+    print("Scanning for servos...")
     ids = fetch_ids(sock)
     limit_cache: dict[int, tuple[int, int]] = {}
     if not ids:
@@ -200,6 +202,14 @@ def run_menu(sock: socket.socket):
         elif choice == "3":
             sid = select_servo(ids)
             if sid is not None:
+                pos_resp = send_command(sock, f"POS {sid}")
+                try:
+                    cur = int(pos_resp)
+                    safe_min, safe_max = fetch_safe_limits(sock, limit_cache, sid)
+                    print(f"\nServo {sid} current position: {cur}   (safe range: {safe_min}-{safe_max})\n")
+                except ValueError:
+                    print(f"\nServo {sid} current position: {pos_resp}\n")
+
                 target = prompt_int("Target position (0-4095)", 2048)
                 speed  = prompt_int("Speed (0-3400)", 200)
                 accel  = prompt_int("Acceleration (0-254)", 20)
@@ -345,8 +355,25 @@ def run_menu(sock: socket.socket):
             print("Disconnected.")
             break
 
+        # ---- TORQUE ALL ----
+        elif choice == "10":
+            if not ids:
+                print("\nNo servos detected.")
+            else:
+                on_off = input("Torque all servos on (1) or off (0)? [1]: ").strip()
+                if on_off == "":
+                    on_off = "1"
+                if on_off in ("0", "1"):
+                    for sid in ids:
+                        send_command(sock, f"TORQUE {sid} {on_off}")
+                        time.sleep(0.03)
+                    state = "ON" if on_off == "1" else "OFF"
+                    print(f"\nAll servos torque: {state}")
+                else:
+                    print("Invalid, enter 0 or 1.")
+
         else:
-            print("Invalid choice. Enter a number from the menu (0-9).")
+            print("Invalid choice. Enter a number from the menu (0-10).")
 
         if choice != "0":
             input("\nPress Enter to return to menu...")
