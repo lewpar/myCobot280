@@ -66,6 +66,69 @@ Prompts for server IP and port, then shows the interactive menu.
 | 6  | End effector     |
 | 7  | ATOM (LED, I/O)  |
 
+## Feetech Protocol
+
+Every frame on the bus is `LEN + 4` bytes:
+
+```
+FF FF <ID> <LEN> <INSTR> [params...] <CHKSUM>
+```
+
+- `LEN` = 2 + number of parameter bytes (includes the INSTR byte)
+- `CHKSUM` = `~(ID + LEN + INSTRUCTION + sum(params)) & 0xFF`
+
+Example — WRITE position 2048 to servo 1 (`FF FF 01 05 03 2A 00 08 CE`):
+
+| Byte | Value  | Meaning |
+|------|--------|---------|
+| 0    | `FF`   | Header |
+| 1    | `FF`   | Header |
+| 2    | `01`   | Servo ID 1 |
+| 3    | `05`   | LEN = 5 (INSTR + ADDR + 2 data bytes) |
+| 4    | `03`   | WRITE instruction |
+| 5    | `2A`   | Register 0x2A = goal position |
+| 6    | `00`   | Position low byte |
+| 7    | `08`   | Position high byte (0x0800 = 2048, little-endian) |
+| 8    | `CE`   | Checksum |
+
+Example — set ATOM LED to red via ID 7 (`FF FF 07 06 03 01 FF 00 00 E8`):
+
+| Byte | Value  | Meaning |
+|------|--------|---------|
+| 0    | `FF`   | Header |
+| 1    | `FF`   | Header |
+| 2    | `07`   | ID 7 (ATOM) |
+| 3    | `06`   | LEN = 6 (INSTR + ADDR + 3 data bytes) |
+| 4    | `03`   | WRITE instruction |
+| 5    | `01`   | ADDR 0x01 = SET_COLOR |
+| 6    | `FF`   | Red = 255 |
+| 7    | `00`   | Green = 0 |
+| 8    | `00`   | Blue = 0 |
+| 9    | `E8`   | Checksum |
+
+| Instruction | Code | Purpose |
+|-------------|------|---------|
+| `PING`      | 0x01 | Check if device responds |
+| `READ`      | 0x02 | Read register(s) |
+| `WRITE`     | 0x03 | Write register(s) |
+
+**Status response** (from device to host):
+```
+FF FF <ID> <LEN> <ERR> [params...] <CHKSUM>
+```
+
+Key servo registers:
+
+| Address | Register            | Bytes |
+|---------|---------------------|-------|
+| 9       | Min angle limit     | 2     |
+| 11      | Max angle limit     | 2     |
+| 40      | Torque enable       | 1     |
+| 41      | Acceleration        | 1     |
+| 42      | Goal position       | 2     |
+| 46      | Goal speed          | 2     |
+| 56      | Present position    | 2     |
+
 ## Safety
 
 Each servo's min/max angle limits are read from EEPROM on startup. All moves are clamped to `[min+50, max-50]`. Servos with limits set to `0,0` (continuous rotation, e.g. end effector) get the full 50–4045 range. Enforced on both server and client.
