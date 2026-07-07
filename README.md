@@ -77,7 +77,11 @@ FF FF <ID> <LEN> <INSTR> [params...] <CHKSUM>
 - `LEN` = 2 + number of parameter bytes (includes the INSTR byte)
 - `CHKSUM` = `~(ID + LEN + INSTRUCTION + sum(params)) & 0xFF`
 
-Example — WRITE position 2048 to servo 1 (`FF FF 01 05 03 2A 00 08 CE`):
+  E.g. for `FF FF 01 05 03 2A 00 08` (servo 1 write position 2048):
+  Sum of bytes after the headers = `01 + 05 + 03 + 2A + 00 + 08` = 59 (0x3B).
+  `~0x3B` masked to 8 bits = `0xC4`.
+
+Example — WRITE position 2048 to servo 1 (`FF FF 01 05 03 2A 00 08 C4`):
 
 | Byte | Value  | Meaning |
 |------|--------|---------|
@@ -89,9 +93,9 @@ Example — WRITE position 2048 to servo 1 (`FF FF 01 05 03 2A 00 08 CE`):
 | 5    | `2A`   | Register 0x2A = goal position |
 | 6    | `00`   | Position low byte |
 | 7    | `08`   | Position high byte (0x0800 = 2048, little-endian) |
-| 8    | `CE`   | Checksum |
+| 8    | `C4`   | Checksum |
 
-Example — set ATOM LED to red via ID 7 (`FF FF 07 06 03 01 FF 00 00 E8`):
+Example — set ATOM LED to red via ID 7 (`FF FF 07 06 03 01 FF 00 00 EF`):
 
 | Byte | Value  | Meaning |
 |------|--------|---------|
@@ -104,7 +108,7 @@ Example — set ATOM LED to red via ID 7 (`FF FF 07 06 03 01 FF 00 00 E8`):
 | 6    | `FF`   | Red = 255 |
 | 7    | `00`   | Green = 0 |
 | 8    | `00`   | Blue = 0 |
-| 9    | `E8`   | Checksum |
+| 9    | `EF`   | Checksum |
 
 | Instruction | Code | Purpose |
 |-------------|------|---------|
