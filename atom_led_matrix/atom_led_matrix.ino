@@ -19,8 +19,8 @@
 
 // ---- Pin config -----------------------------------------------------------
 #define LED_PIN      27
-#define BUS_RX       32
-#define BUS_TX       26
+#define BUS_RX       19
+#define BUS_TX       22
 
 // ---- Constants ------------------------------------------------------------
 #define OUR_ID        7
