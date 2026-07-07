@@ -45,7 +45,8 @@ HardwareSerial BusSerial(1);
 
 // ---- Frame buffer ---------------------------------------------------------
 uint8_t buf[MAX_FRAME];
-int     buf_pos = 0;
+int     buf_pos   = 0;
+bool    commanded = false;   // true once the first ATOM command arrives
 
 // ---- Helpers --------------------------------------------------------------
 
@@ -82,6 +83,8 @@ void process_frame(const uint8_t* frame, int frame_len) {
     if (frame_len < 6) return;                       // need header(2)+id+len+instr+chk
     if (frame[2] != OUR_ID) return;                   // not for us
     if (frame[4] != FEETECH_WRITE) return;             // we only handle WRITE
+
+    commanded = true;   // stop the startup animation
 
     int len   = frame[3];                             // payload length after LEN byte
     int dlen  = len - 2;                              // minus INSTR + ADDR
@@ -132,6 +135,21 @@ void setup() {
 // ---- Loop -----------------------------------------------------------------
 
 void loop() {
+    // Startup animation — cycles colours until the first ATOM command arrives
+    if (!commanded) {
+        static unsigned long last_frame = 0;
+        static uint8_t      hue        = 0;
+        if (millis() - last_frame > 30) {
+            last_frame = millis();
+            uint32_t rgb = strip.ColorHSV(hue << 8);   // HSV hue 0-255 → 16-bit
+            for (int i = 0; i < NUM_LEDS; i++) {
+                strip.setPixelColor(i, rgb);
+            }
+            strip.show();
+            hue++;
+        }
+    }
+
     while (BusSerial.available()) {
         uint8_t b = BusSerial.read();
 
@@ -149,7 +167,7 @@ void loop() {
 
         // Once we have LEN (buf[3]), we know the total frame size
         if (buf_pos >= 4) {
-            int total = buf[3] + 5;   // 2 headers + ID + LEN + (LEN payload) + checksum
+            int total = buf[3] + 4;   // Feetech frame: 2 headers + ID + LEN + payload + checksum
             if (total > MAX_FRAME) {
                 buf_pos = 0;
                 continue;
