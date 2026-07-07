@@ -16,6 +16,30 @@ import termios
 import time
 import tty
 
+# ---- ANSI helpers (no dependencies) ----
+
+R  = "\033[0m"      # reset
+B  = "\033[1m"      # bold
+D  = "\033[2m"      # dim
+RD = "\033[31m"     # red
+GN = "\033[32m"     # green
+YL = "\033[33m"     # yellow
+BL = "\033[34m"     # blue
+CY = "\033[36m"     # cyan
+
+BAR  = BL + "═" * 44 + R
+BAR2 = D  + "─" * 44 + R
+
+
+def ok(msg=""):
+    return f"{GN}✓{R} {msg}"
+
+def fail(msg=""):
+    return f"{RD}✗{R} {msg}"
+
+def warn(msg):
+    return f"{YL}{msg}{R}"
+
 
 def getch():
     fd = sys.stdin.fileno()
@@ -42,24 +66,24 @@ def send_command(sock: socket.socket, cmd: str) -> str:
 
 
 def prompt_int(prompt: str, default: int) -> int:
-    raw = input(f"{prompt} [{default}]: ").strip()
+    raw = input(f"{D}{prompt} [{B}{default}{R}{D}]{R} ").strip()
     if raw == "":
         return default
     try:
         return int(raw)
     except ValueError:
-        print(f"Not a valid number, using default ({default}).")
+        print(warn(f"Not a valid number, using default ({default})."))
         return default
 
 
 def prompt_float(prompt: str, default: float) -> float:
-    raw = input(f"{prompt} [{default}]: ").strip()
+    raw = input(f"{D}{prompt} [{B}{default}{R}{D}]{R} ").strip()
     if raw == "":
         return default
     try:
         return float(raw)
     except ValueError:
-        print(f"Not a valid number, using default ({default}).")
+        print(warn(f"Not a valid number, using default ({default})."))
         return default
 
 
@@ -72,6 +96,8 @@ SERVO_LABELS = {
     6: "End effector",
 }
 
+SAFETY_BUFFER = 50
+
 
 def fetch_ids(sock: socket.socket) -> list[int]:
     resp = send_command(sock, "SCAN")
@@ -81,9 +107,6 @@ def fetch_ids(sock: socket.socket) -> list[int]:
     prefix = "OK " if resp.startswith("OK ") else ""
     id_str = resp[len(prefix):]
     return [int(x) for x in id_str.split(",")] if id_str else []
-
-
-SAFETY_BUFFER = 50
 
 
 def fetch_safe_limits(sock: socket.socket, cache: dict, servo_id: int) -> tuple[int, int]:
@@ -103,38 +126,33 @@ def fetch_safe_limits(sock: socket.socket, cache: dict, servo_id: int) -> tuple[
 
 
 def show_status(sock: socket.socket, ids: list[int]):
-    print(f"\n{'ID':>4}  {'Joint':<16}  {'Position':>10}")
-    print("-" * 44)
-
+    print()
+    print(f"{BL}{'ID':>4}  {'Joint':<16}  {'Position':>10}{R}")
+    print(BAR2)
     for sid in ids:
         pos_resp = send_command(sock, f"POS {sid}")
         try:
             pos = int(pos_resp)
             label = SERVO_LABELS.get(sid, "")
-            print(f"{sid:>4}  {label:<16}  {pos:>10}")
+            print(f"{B}{sid:>4}{R}  {label:<16}  {pos:>10}")
         except ValueError:
             label = SERVO_LABELS.get(sid, "")
-            print(f"{sid:>4}  {label:<16}  {pos_resp:>10}")
+            print(f"{B}{sid:>4}{R}  {label:<16}  {pos_resp:>10}")
         time.sleep(0.03)
     print()
 
 
 def select_servo(ids: list[int]) -> int | None:
-    """Pick a servo ID from a pre-fetched list (no bus scan)."""
-
     if not ids:
-        print("No servos detected on the bus.")
+        print(fail("No servos detected on the bus."))
         return None
 
-    if not ids:
-        print("No servos detected on the bus.")
-        return None
-
-    print("\nSelect a servo:")
+    print()
     for sid in ids:
         label = SERVO_LABELS.get(sid, "")
-        print(f"  {sid}) ID {sid} - {label}" if label else f"  {sid}) ID {sid}")
-    print(f"  {ids[-1] + 1}) Cancel")
+        line = f"  {B}{sid}{R}) ID {sid} - {CY}{label}{R}" if label else f"  {B}{sid}{R}) ID {sid}"
+        print(line)
+    print(f"  {D}{ids[-1] + 1}) Cancel{R}")
 
     while True:
         raw = input(f"Choose [{ids[0]}-{ids[-1]}]: ").strip()
@@ -146,43 +164,50 @@ def select_servo(ids: list[int]) -> int | None:
                 return choice
             if choice == ids[-1] + 1:
                 return None
-        print("Invalid selection, try again.")
+        print(warn("Invalid selection, try again."))
+
+
+def print_banner():
+    os.system("clear")
+    print()
+    print(CY + BAR)
+    print(f"  {B}myCobot280 Arm Control{R}")
+    print(CY + BAR + R)
+    print()
 
 
 def print_menu():
-    os.system("clear")
-    print()
-    print("=" * 44)
-    print("  myCobot280 Arm Control")
-    print("=" * 44)
-    print()
-    print("  1) Show servo status (positions of all joints)")
-    print("  2) Read a servo's position")
-    print("  3) Move a servo (absolute position)")
-    print("  4) Move a servo (relative +/- delta)")
-    print("  5) Center a servo")
-    print("  6) Enable/disable servo torque")
-    print("  7) Re-scan the bus for servos")
-    print("  8) Servo count")
-    print("  9) Ping a servo")
-    print(" 10) Torque ALL servos on/off")
-    print("  0) Quit")
+    print_banner()
+    print(f"  {B}1{R})  Show servo status")
+    print(f"  {B}2{R})  Read a servo's position")
+    print(f"  {B}3{R})  Move a servo (absolute)")
+    print(f"  {B}4{R})  Jog a servo (live +/-)")
+    print(f"  {B}5{R})  Center a servo")
+    print(f"  {B}6{R})  Enable/disable torque (single)")
+    print(f"  {B}7{R})  Re-scan the bus")
+    print(f"  {B}8{R})  Servo count")
+    print(f"  {B}9{R})  Ping a servo")
+    print(f"  {B}10{R}) Torque ALL servos on/off")
+    print(f"  {D}0{R})  Quit")
     print()
 
 
 def run_menu(sock: socket.socket):
-    print("Scanning for servos...")
+    sys.stdout.write(f"{D}Scanning for servos...{R} ")
+    sys.stdout.flush()
     ids = fetch_ids(sock)
     limit_cache: dict[int, tuple[int, int]] = {}
-    if not ids:
-        print("No servos detected. Try re-scanning from the menu.")
+    if ids:
+        print(ok(f"found {len(ids)} servo(s): {', '.join(str(i) for i in ids)}"))
+    else:
+        print(warn("no servos detected — try re-scanning from the menu"))
         ids = []
 
     print_menu()
 
     while True:
         try:
-            choice = input("> ").strip()
+            choice = input(f"{B}> {R}").strip()
         except (EOFError, KeyboardInterrupt):
             print("\nQuit")
             break
@@ -196,7 +221,8 @@ def run_menu(sock: socket.socket):
             sid = select_servo(ids)
             if sid is not None:
                 resp = send_command(sock, f"POS {sid}")
-                print(f"\nServo {sid} position: {resp}")
+                label = SERVO_LABELS.get(sid, "")
+                print(f"\n{B}Servo {sid}{R} ({D}{label}{R}) → {B}{resp}{R}")
 
         # ---- MOVE ABSOLUTE ----
         elif choice == "3":
@@ -206,17 +232,24 @@ def run_menu(sock: socket.socket):
                 try:
                     cur = int(pos_resp)
                     safe_min, safe_max = fetch_safe_limits(sock, limit_cache, sid)
-                    print(f"\nServo {sid} current position: {cur}   (safe range: {safe_min}-{safe_max})\n")
+                    print(f"\n{B}Servo {sid}{R}  current: {B}{cur}{R}  "
+                          f"safe range: {D}{safe_min}–{safe_max}{R}\n")
                 except ValueError:
                     print(f"\nServo {sid} current position: {pos_resp}\n")
 
-                target = prompt_int("Target position (0-4095)", 2048)
-                speed  = prompt_int("Speed (0-3400)", 200)
-                accel  = prompt_int("Acceleration (0-254)", 20)
-                confirm = input(f"\nMove servo {sid} to {target} at speed={speed} accel={accel}? [y/N] ").strip().lower()
+                target = prompt_int("Target position (0–4095)", 2048)
+                speed  = prompt_int("Speed (0–3400)", 600)
+                accel  = prompt_int("Acceleration (0–254)", 20)
+                confirm = input(f"\nMove servo {sid} → {target}  "
+                                f"speed={speed}  accel={accel}  [{B}y{R}/{D}N{R}] ").strip().lower()
                 if confirm == "y":
+                    sys.stdout.write(f"{D}Moving...{R}")
+                    sys.stdout.flush()
                     resp = send_command(sock, f"MOVE {sid} {target} {speed} {accel}")
-                    print(f"\n{resp}")
+                    if resp.startswith("OK"):
+                        print(f"\r{ok(resp)}   ")
+                    else:
+                        print(f"\r{fail(resp)}   ")
                 else:
                     print("Cancelled.")
 
@@ -224,8 +257,8 @@ def run_menu(sock: socket.socket):
         elif choice == "4":
             sid = select_servo(ids)
             if sid is not None:
-                speed = prompt_int("Speed (0-3400)", 200)
-                accel = prompt_int("Acceleration (0-254)", 20)
+                speed = prompt_int("Speed (0–3400)", 600)
+                accel = prompt_int("Acceleration (0–254)", 20)
                 step  = prompt_int("Step size", 50)
 
                 cur_resp = send_command(sock, f"POS {sid}")
@@ -237,13 +270,16 @@ def run_menu(sock: socket.socket):
                 safe_min, safe_max = fetch_safe_limits(sock, limit_cache, sid)
 
                 os.system("clear")
-                print(f"\nJogging servo {sid}  |  step={step}  speed={speed}  accel={accel}")
-                print(f"Current position: {cur}   (safe range: {safe_min}-{safe_max})")
                 print()
-                print("  + / =   move positive by step")
-                print("  -       move negative by step")
-                print("  [number] change step size")
-                print("  q       return to menu")
+                print(f"  {B}Jogging servo {sid}{R}  "
+                      f"step={B}{step}{R}  speed={B}{speed}{R}  accel={B}{accel}{R}")
+                print(f"  Position: {B}{cur}{R}  "
+                      f"(safe: {D}{safe_min}–{safe_max}{R})")
+                print()
+                print(f"  {B}+ / ={R}   move positive by step")
+                print(f"  {B}-{R}       move negative by step")
+                print(f"  {D}[num]{R}   change step size")
+                print(f"  {D}q{R}       return to menu")
                 print()
 
                 try:
@@ -268,7 +304,8 @@ def run_menu(sock: socket.socket):
                                 step = int(step_str)
                             except ValueError:
                                 step = 50
-                            print(f"\rStep size: {step}   ", end="", flush=True)
+                            sys.stdout.write(f"\r  Step size: {B}{step}{R}   ")
+                            sys.stdout.flush()
                             if key in ("q", "Q"):
                                 break
                             elif key in ("+", "="):
@@ -282,7 +319,7 @@ def run_menu(sock: socket.socket):
 
                         target = max(safe_min, min(safe_max, cur + delta))
                         if target == cur:
-                            sys.stdout.write(f"\rAt limit ({safe_min}-{safe_max}).   ")
+                            sys.stdout.write(f"\r  {YL}At limit ({safe_min}–{safe_max}){R}     ")
                             sys.stdout.flush()
                             continue
 
@@ -295,23 +332,29 @@ def run_menu(sock: socket.socket):
                         else:
                             cur = target
 
-                        sys.stdout.write(f"\rPosition: {cur}   ")
+                        sys.stdout.write(f"\r  Position: {B}{cur}{R}   ")
                         sys.stdout.flush()
                 finally:
                     pass
-                print("\nJogging ended.")
+                print(f"\n{D}Jogging ended.{R}")
 
         # ---- CENTER ----
         elif choice == "5":
             sid = select_servo(ids)
             if sid is not None:
                 center_pos = prompt_int("Center position", 2048)
-                speed = prompt_int("Speed (0-3400)", 200)
-                accel = prompt_int("Acceleration (0-254)", 20)
-                confirm = input(f"\nCenter servo {sid} to {center_pos} at speed={speed} accel={accel}? [y/N] ").strip().lower()
+                speed = prompt_int("Speed (0–3400)", 600)
+                accel = prompt_int("Acceleration (0–254)", 20)
+                confirm = input(f"\nCenter servo {sid} → {center_pos}  "
+                                f"speed={speed}  accel={accel}  [{B}y{R}/{D}N{R}] ").strip().lower()
                 if confirm == "y":
+                    sys.stdout.write(f"{D}Moving...{R}")
+                    sys.stdout.flush()
                     resp = send_command(sock, f"CENTER {sid} {center_pos} {speed} {accel}")
-                    print(f"\n{resp}")
+                    if resp.startswith("OK"):
+                        print(f"\r{ok(resp)}   ")
+                    else:
+                        print(f"\r{fail(resp)}   ")
                 else:
                     print("Cancelled.")
 
@@ -319,24 +362,30 @@ def run_menu(sock: socket.socket):
         elif choice == "6":
             sid = select_servo(ids)
             if sid is not None:
-                on_off = input("Torque on (1) or off (0)? [1]: ").strip()
+                on_off = input(f"Torque on ({B}1{R}) or off ({D}0{R})? [{B}1{R}]: ").strip()
                 if on_off == "":
                     on_off = "1"
                 if on_off in ("0", "1"):
                     resp = send_command(sock, f"TORQUE {sid} {on_off}")
-                    print(f"\n{resp}")
+                    state = f"{GN}ON{R}" if on_off == "1" else f"{RD}OFF{R}"
+                    print(f"\nServo {sid} torque: {state}")
                 else:
-                    print("Invalid, enter 0 or 1.")
+                    print(warn("Invalid, enter 0 or 1."))
 
         # ---- SCAN ----
         elif choice == "7":
+            sys.stdout.write(f"{D}Scanning...{R} ")
+            sys.stdout.flush()
             ids = fetch_ids(sock)
             limit_cache.clear()
-            print(f"\nOK {','.join(str(i) for i in ids) if ids else ''}")
+            if ids:
+                print(f"\r{ok(f'found {len(ids)}: {ids}')}   ")
+            else:
+                print(f"\r{warn('no servos detected')}   ")
 
         # ---- COUNT ----
         elif choice == "8":
-            print(f"\n{len(ids)} servo(s) detected")
+            print(f"\n{B}{len(ids)}{R} servo(s) detected")
 
         # ---- PING ----
         elif choice == "9":
@@ -344,7 +393,11 @@ def run_menu(sock: socket.socket):
             if sid is not None:
                 resp = send_command(sock, f"PING {sid}")
                 alive = resp == "OK"
-                print(f"\nServo {sid}: {'alive' if alive else 'no response'}")
+                label = SERVO_LABELS.get(sid, "")
+                if alive:
+                    print(f"\n{ok()} Servo {sid} ({label}) is {GN}alive{R}")
+                else:
+                    print(f"\n{fail()} Servo {sid} ({label}) {RD}no response{R}")
 
         # ---- QUIT ----
         elif choice == "0":
@@ -352,60 +405,74 @@ def run_menu(sock: socket.socket):
                 send_command(sock, "QUIT")
             except Exception:
                 pass
-            print("Disconnected.")
+            print(f"\n{D}Disconnected.{R}")
             break
 
         # ---- TORQUE ALL ----
         elif choice == "10":
             if not ids:
-                print("\nNo servos detected.")
+                print(f"\n{warn('No servos detected.')}")
             else:
-                on_off = input("Torque all servos on (1) or off (0)? [1]: ").strip()
+                on_off = input(f"Torque all servos on ({B}1{R}) or off ({D}0{R})? [{B}1{R}]: ").strip()
                 if on_off == "":
                     on_off = "1"
                 if on_off in ("0", "1"):
+                    sys.stdout.write(f"{D}Setting torque...{R}")
+                    sys.stdout.flush()
                     for sid in ids:
                         send_command(sock, f"TORQUE {sid} {on_off}")
                         time.sleep(0.03)
-                    state = "ON" if on_off == "1" else "OFF"
-                    print(f"\nAll servos torque: {state}")
+                    state = f"{GN}ON{R}" if on_off == "1" else f"{RD}OFF{R}"
+                    print(f"\rAll {len(ids)} servos torque: {state}   ")
                 else:
-                    print("Invalid, enter 0 or 1.")
+                    print(warn("Invalid, enter 0 or 1."))
 
         else:
-            print("Invalid choice. Enter a number from the menu (0-10).")
+            print(warn("Invalid choice. Enter a number from the menu (0–10)."))
 
         if choice != "0":
-            input("\nPress Enter to return to menu...")
+            input(f"\n{D}Press Enter to return to menu...{R}")
             print_menu()
 
 
 def main():
-    host = input("Server IP address: ").strip()
+    os.system("clear")
+    print()
+    print(CY + BAR)
+    print(f"  {B}myCobot280 Arm Client{R}")
+    print(CY + BAR + R)
+    print()
+
+    host = input(f"  Server IP address {D}[192.168.1.x]{R}: ").strip()
     if not host:
-        print("No IP address provided.", file=sys.stderr)
+        print(fail("No IP address provided."))
         sys.exit(1)
 
-    port_str = input("Server port [5000]: ").strip()
+    port_str = input(f"  Server port {D}[5000]{R}: ").strip()
     port = 5000
     if port_str:
         try:
             port = int(port_str)
         except ValueError:
-            print("Invalid port, using 5000.")
+            print(warn("Invalid port, using 5000."))
+
+    sys.stdout.write(f"\n  {D}Connecting to {host}:{port}...{R} ")
+    sys.stdout.flush()
 
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(5.0)
+        sock.settimeout(60.0)
         sock.connect((host, port))
     except (ConnectionRefusedError, socket.timeout) as e:
-        print(f"Cannot connect to {host}:{port}: {e}", file=sys.stderr)
+        sys.stdout.write(f"\r  {fail(f'Cannot connect: {e}')}   \n")
         sys.exit(1)
+
+    print(f"\r  {ok(f'Connected to {host}:{port}')}   \n")
 
     try:
         run_menu(sock)
     except (ConnectionError, BrokenPipeError) as e:
-        print(f"Connection lost: {e}", file=sys.stderr)
+        print(f"\n{RD}Connection lost: {e}{R}")
         sys.exit(1)
     finally:
         try:
