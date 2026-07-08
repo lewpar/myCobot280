@@ -21,12 +21,19 @@ def main():
 
     arm = pymycobot.MyCobot280(PORT, BAUD)
 
-    print("Connected. Querying servo IDs...")
+    print("Checking if controller connected...")
     try:
-        ids = arm.get_servo_ids()
-        print(f"Found servos: {ids}")
+        connected = arm.is_controller_connected()
+        print(f"Controller connected: {connected}")
     except Exception as e:
-        print(f"get_servo_ids failed: {e}")
+        print(f"is_controller_connected failed: {e}")
+
+    print("\nChecking power status...")
+    try:
+        power = arm.is_power_on()
+        print(f"Power on: {power}")
+    except Exception as e:
+        print(f"is_power_on failed: {e}")
 
     print("\nReading joint angles...")
     try:
@@ -35,12 +42,12 @@ def main():
     except Exception as e:
         print(f"get_angles failed: {e}")
 
-    print("\nReading joint radians...")
+    print("\nReading servo status...")
     try:
-        radians = arm.get_radians()
-        print(f"Radians: {radians}")
+        status = arm.get_servo_status()
+        print(f"Servo status: {status}")
     except Exception as e:
-        print(f"get_radians failed: {e}")
+        print(f"get_servo_status failed: {e}")
 
     print("\nDone.")
 
