@@ -31,9 +31,10 @@
 #define MAX_FRAME    64
 
 // ATOM command addresses (sent via Feetech WRITE instruction 0x03)
-#define ADDR_PING      0x00
-#define ADDR_SET_COLOR 0x01
-#define ADDR_SET_PIXEL 0x02
+#define ADDR_PING          0x00
+#define ADDR_SET_COLOR     0x01
+#define ADDR_SET_PIXEL     0x02
+#define ADDR_SET_BRIGHTNESS 0x03
 
 // Feetech protocol
 #define FEETECH_HEADER 0xFF
@@ -111,6 +112,16 @@ void process_frame(const uint8_t* frame, int frame_len) {
             if (dlen >= 5 && d[0] < MATRIX_W && d[1] < MATRIX_H) {
                 int idx = d[1] * MATRIX_W + d[0];
                 strip.setPixelColor(idx, strip.Color(d[2], d[3], d[4]));
+                strip.show();
+                send_status();
+            }
+            break;
+
+        case ADDR_SET_BRIGHTNESS:
+            if (dlen >= 1) {
+                uint8_t b = d[0];
+                if (b > 128) b = 128;
+                strip.setBrightness(b);
                 strip.show();
                 send_status();
             }

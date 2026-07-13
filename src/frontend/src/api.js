@@ -77,3 +77,10 @@ export function setAtomPixel(x, y, r, g, b) {
 export function pingAtom() {
   return request('/atom/ping', { method: 'POST' })
 }
+
+export function setAtomBrightness(percent) {
+  return request('/atom/brightness', {
+    method: 'POST',
+    body: JSON.stringify({ percent }),
+  })
+}

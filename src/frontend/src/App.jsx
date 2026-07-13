@@ -13,6 +13,7 @@ function App() {
   const [loading, setLoading] = useState({})
   const [color, setColor] = useState('#ff0000')
   const [selectedPixel, setSelectedPixel] = useState(null)
+  const [brightness, setBrightness] = useState(50)
 
   const fetchServos = useCallback(async () => {
     try {
@@ -122,6 +123,11 @@ function App() {
     const g = parseInt(color.slice(3, 5), 16)
     const b = parseInt(color.slice(5, 7), 16)
     doAction(`pixel-${x}-${y}`, () => api.setAtomPixel(x, y, r, g, b))
+  }
+
+  const handleBrightness = (pct) => {
+    setBrightness(pct)
+    doAction('brightness', () => api.setAtomBrightness(pct))
   }
 
   return (
@@ -237,6 +243,33 @@ function App() {
               disabled={!connected || loading['atom-color']}
             >
               Set All LEDs
+            </button>
+          </div>
+
+          <div className="brightness-group">
+            <label className="brightness-label">
+              Brightness: {brightness}%
+            </label>
+            <input
+              type="range"
+              min={1}
+              max={100}
+              value={brightness}
+              onChange={e => {
+                const v = parseInt(e.target.value, 10)
+                setBrightness(v)
+              }}
+              onMouseUp={() => handleBrightness(brightness)}
+              onTouchEnd={() => handleBrightness(brightness)}
+              className="slider"
+              disabled={!connected}
+            />
+            <button
+              className="btn btn-sm"
+              onClick={() => handleBrightness(brightness)}
+              disabled={!connected || loading['brightness']}
+            >
+              Set
             </button>
           </div>
 

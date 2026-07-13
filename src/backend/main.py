@@ -85,6 +85,10 @@ class PixelRequest(BaseModel):
     b: int = 0
 
 
+class BrightnessRequest(BaseModel):
+    percent: int
+
+
 # ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------
@@ -197,6 +201,13 @@ def atom_ping():
     a = _get_arm()
     ok = a.atom.ping()
     return {"success": ok, "alive": ok}
+
+
+@app.post("/api/atom/brightness")
+def atom_brightness(req: BrightnessRequest):
+    a = _get_arm()
+    a.atom.set_brightness(req.percent)
+    return {"success": True, "percent": max(1, min(100, req.percent))}
 
 
 # ---------------------------------------------------------------------------

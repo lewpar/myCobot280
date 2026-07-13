@@ -38,10 +38,11 @@ _ADDR_LOCK                = 55
 _ADDR_POSITION_CORRECTION = 31
 
 # ATOM command addresses (Feetech WRITE to ID 7)
-_ATOM_ID             = 7
-_ATOM_ADDR_PING      = 0x00
-_ATOM_ADDR_SET_COLOR = 0x01
-_ATOM_ADDR_SET_PIXEL = 0x02
+_ATOM_ID                = 7
+_ATOM_ADDR_PING         = 0x00
+_ATOM_ADDR_SET_COLOR    = 0x01
+_ATOM_ADDR_SET_PIXEL    = 0x02
+_ATOM_ADDR_SET_BRIGHTNESS = 0x03
 
 _RANGE_MIN    = 0
 _RANGE_MAX    = 4095
@@ -201,6 +202,30 @@ class _Atom:
         with self._bus._lock:
             self._bus._write_raw(_ATOM_ID, _ATOM_ADDR_SET_PIXEL,
                                  bytes([x, y, r, g, b]))
+
+    def set_brightness(self, percent: int):
+        """Set LED brightness as a percentage (1–100).
+
+        Mapped to 0–128 on the hardware (0–50% of the NeoPixel range) to
+        prevent ESP32 regulator burnout.
+
+        ``arm.atom.set_brightness(50)``"""
+        percent = max(1, min(100, percent))
+        raw = int(percent * 128 / 100)
+        with self._bus._lock:
+            self._bus._write_raw(_ATOM_ID, _ATOM_ADDR_SET_BRIGHTNESS,
+                                 bytes([raw]))
+
+    @property
+    def brightness(self) -> None:
+        """Write-only: set LED brightness as a percentage (1–100).
+
+        ``arm.atom.brightness = 50``"""
+        return None
+
+    @brightness.setter
+    def brightness(self, percent: int):
+        self.set_brightness(percent)
 
     def __repr__(self):
         alive = self.ping()
