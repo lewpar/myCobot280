@@ -70,6 +70,22 @@
   letter-spacing: 0.5px;
 }
 
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.section-header h2 {
+  margin-bottom: 0;
+}
+
+.section-actions {
+  display: flex;
+  gap: 8px;
+}
+
 /* Servo grid */
 .servo-grid {
   display: grid;
@@ -94,6 +110,13 @@
 .servo-label {
   font-weight: 600;
   font-size: 14px;
+}
+
+.joint-id {
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-left: 4px;
 }
 
 .servo-pos {

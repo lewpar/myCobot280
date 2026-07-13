@@ -18,6 +18,7 @@ SERIAL_BAUD = int(os.environ.get("MYCOBOT_BAUD", "1000000"))
 CORS_ORIGINS = os.environ.get("MYCOBOT_CORS_ORIGINS", "*")
 
 arm: MyCobot280 | None = None
+home_positions: dict[int, int] = {}
 
 
 @asynccontextmanager
@@ -230,6 +231,34 @@ def servos_status():
         pos = a.get_position(sid)
         result.append({"id": sid, "position": pos})
     return result
+
+
+@app.get("/api/servos/home")
+def get_home_positions():
+    return {"home": home_positions}
+
+
+@app.post("/api/servos/home")
+def set_home_positions():
+    global home_positions
+    a = _get_arm()
+    home_positions = {}
+    for sid in sorted(a.servo_ids):
+        pos = a.get_position(sid)
+        if pos is not None:
+            home_positions[sid] = pos
+    return {"success": True, "home": home_positions}
+
+
+@app.post("/api/servos/center_all")
+def center_all_servos():
+    a = _get_arm()
+    results = []
+    for sid in sorted(a.servo_ids):
+        target = home_positions.get(sid, 2048)
+        ok, pos = a.move(sid, target)
+        results.append({"id": sid, "success": ok, "position": pos, "target": target})
+    return {"success": True, "servos": results}
 
 
 if __name__ == "__main__":

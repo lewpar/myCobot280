@@ -3,7 +3,7 @@ import * as api from './api'
 import './App.css'
 
 const SERVO_IDS = [1, 2, 3, 4, 5, 6]
-const DEFAULT_SPEED = 600
+const SERVO_NAMES = { 1: 'Base', 2: 'Joint 1', 3: 'Joint 2', 4: 'Joint 3', 5: 'Joint 4', 6: 'End Effector' }
 const JOG_STEP = 100
 
 function App() {
@@ -109,6 +109,18 @@ function App() {
     })
   }
 
+  const handleZeroAll = () => {
+    doAction('zero-all', async () => {
+      await api.centerAllServos()
+    })
+  }
+
+  const handleSetHome = () => {
+    doAction('set-home', async () => {
+      await api.setHomeAll()
+    })
+  }
+
   // --- atom helpers ---
 
   const handleColorSet = () => {
@@ -147,7 +159,25 @@ function App() {
 
       {/* Servo grid */}
       <section className="section">
-        <h2>Servos</h2>
+        <div className="section-header">
+          <h2>Servos</h2>
+          <div className="section-actions">
+            <button
+              className="btn"
+              onClick={handleSetHome}
+              disabled={!connected || loading['set-home']}
+            >
+              {loading['set-home'] ? 'Setting...' : 'Set Home All'}
+            </button>
+            <button
+              className="btn btn-accent"
+              onClick={handleZeroAll}
+              disabled={!connected || loading['zero-all']}
+            >
+              {loading['zero-all'] ? 'Homing...' : 'Home All'}
+            </button>
+          </div>
+        </div>
         <div className="servo-grid">
           {SERVO_IDS.map(id => {
             const s = servos[id] || {}
@@ -155,7 +185,7 @@ function App() {
             return (
               <div key={id} className="servo-card">
                 <div className="servo-header">
-                  <span className="servo-label">Joint {id}</span>
+                  <span className="servo-label">{SERVO_NAMES[id]} <span className="joint-id">J{id}</span></span>
                   <span className="servo-pos">
                     {pos != null ? pos : '---'}
                   </span>

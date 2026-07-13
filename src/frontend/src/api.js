@@ -60,6 +60,14 @@ export function pingServo(id) {
   return request(`/servo/${id}/ping`, { method: 'POST' })
 }
 
+export function centerAllServos() {
+  return request('/servos/center_all', { method: 'POST' })
+}
+
+export function setHomeAll() {
+  return request('/servos/home', { method: 'POST' })
+}
+
 export function setAtomColor(r, g, b) {
   return request('/atom/color', {
     method: 'POST',
