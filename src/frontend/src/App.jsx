@@ -15,6 +15,8 @@ function App() {
   const [selectedPixel, setSelectedPixel] = useState(null)
   const [brightness, setBrightness] = useState(50)
   const [torqueOn, setTorqueOn] = useState(false)
+  const [homePositions, setHomePositions] = useState({})
+  const [atomState, setAtomState] = useState(null)
 
   const fetchServos = useCallback(async () => {
     try {
@@ -32,6 +34,27 @@ function App() {
       })
     } catch (e) {
       // silent poll error
+    }
+  }, [])
+
+  const fetchHomePositions = useCallback(async () => {
+    try {
+      const data = await api.getHomePositions()
+      setHomePositions(data.home || {})
+    } catch (e) {
+      // silent
+    }
+  }, [])
+
+  const fetchAtomState = useCallback(async () => {
+    try {
+      const data = await api.getAtomState()
+      if (data.success) {
+        setAtomState(data)
+        setBrightness(Math.round(data.brightness * 100 / 128))
+      }
+    } catch (e) {
+      // silent
     }
   }, [])
 
@@ -60,9 +83,12 @@ function App() {
       }
     }
     check()
+    fetchHomePositions()
+    fetchAtomState()
     const interval = setInterval(fetchServos, 1000)
-    return () => { running = false; clearInterval(interval) }
-  }, [fetchServos])
+    const atomInterval = setInterval(fetchAtomState, 2000)
+    return () => { running = false; clearInterval(interval); clearInterval(atomInterval) }
+  }, [fetchServos, fetchHomePositions, fetchAtomState])
 
   const doAction = async (label, fn) => {
     setLoading(prev => ({ ...prev, [label]: true }))
@@ -88,7 +114,8 @@ function App() {
   }
 
   const handleCenter = id => {
-    doAction(`center-${id}`, () => api.centerServo(id))
+    const home = homePositions[id] || 2048
+    doAction(`center-${id}`, () => api.centerServo(id, home))
   }
 
   const handleTorque = (id, enabled) => {
@@ -119,6 +146,7 @@ function App() {
   const handleSetHome = () => {
     doAction('set-home', async () => {
       await api.setHomeAll()
+      await fetchHomePositions()
     })
   }
 
@@ -211,6 +239,7 @@ function App() {
           {SERVO_IDS.map(id => {
             const s = servos[id] || {}
             const pos = s.position
+            const home = homePositions[id] || 2048
             return (
               <div key={id} className="servo-card">
                 <div className="servo-header">
@@ -224,7 +253,7 @@ function App() {
                   type="range"
                   min={50}
                   max={4045}
-                  value={pos ?? 2048}
+                  value={pos ?? home}
                   onChange={e => {
                     const v = parseInt(e.target.value, 10)
                     setServos(prev => ({
@@ -241,6 +270,9 @@ function App() {
                   className="slider"
                   disabled={!connected}
                 />
+                <div className="slider-info">
+                  <span className="home-pos">Home: {home}</span>
+                </div>
 
                 <div className="servo-actions">
                   <button
@@ -259,7 +291,7 @@ function App() {
                   </button>
                   <button
                     className="btn btn-accent"
-                    onClick={() => handleMove(id, pos ?? 2048)}
+                    onClick={() => handleMove(id, pos ?? home)}
                     disabled={!connected || loading[`move-${id}`]}
                   >
                     Go
@@ -337,18 +369,23 @@ function App() {
             <div className="pixel-grid">
               {Array.from({ length: 5 }, (_, y) => (
                 <div key={y} className="pixel-row">
-                  {Array.from({ length: 5 }, (_, x) => (
+                  {Array.from({ length: 5 }, (_, x) => {
+                    const i = y * 5 + x
+                    const pxRgb = atomState?.pixels?.[i]
+                    const bg = pxRgb ? `rgb(${pxRgb[0]},${pxRgb[1]},${pxRgb[2]})` : '#000'
+                    return (
                     <button
                       key={x}
-                      className={`pixel ${selectedPixel?.x === x && selectedPixel?.y === y ? 'selected' : ''}`}
-                      style={{ backgroundColor: color }}
+                      className={`pixel ${selectedPixel?.x === x && selectedPixel?.y === y ? 'selected' : ''} ${pxRgb ? 'live' : ''}`}
+                      style={{ backgroundColor: pxRgb ? bg : color }}
                       onClick={() => {
                         setSelectedPixel({ x, y })
                         handlePixelSet(x, y)
                       }}
                       title={`(${x},${y})`}
                     />
-                  ))}
+                    )
+                  })}
                 </div>
               ))}
             </div>

@@ -64,6 +64,10 @@ export function centerAllServos() {
   return request('/servos/center_all', { method: 'POST' })
 }
 
+export function getHomePositions() {
+  return request('/servos/home')
+}
+
 export function setHomeAll() {
   return request('/servos/home', { method: 'POST' })
 }
@@ -95,4 +99,8 @@ export function setAtomBrightness(percent) {
     method: 'POST',
     body: JSON.stringify({ percent }),
   })
+}
+
+export function getAtomState() {
+  return request('/atom/state')
 }

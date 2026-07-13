@@ -35,6 +35,7 @@
 #define ADDR_SET_COLOR     0x01
 #define ADDR_SET_PIXEL     0x02
 #define ADDR_SET_BRIGHTNESS 0x03
+#define ADDR_GET_STATE     0x04
 
 // Feetech protocol
 #define FEETECH_HEADER 0xFF
@@ -48,6 +49,11 @@ HardwareSerial BusSerial(1);
 uint8_t buf[MAX_FRAME];
 int     buf_pos   = 0;
 bool    commanded = false;   // true once the first ATOM command arrives
+
+// ---- LED state tracking (for read-back) -----------------------------------
+uint8_t global_r = 0, global_g = 0, global_b = 0;
+uint8_t pixel_state[25][3] = {0};
+uint8_t led_brightness = 128;
 
 // ---- Helpers --------------------------------------------------------------
 
@@ -100,7 +106,11 @@ void process_frame(const uint8_t* frame, int frame_len) {
 
         case ADDR_SET_COLOR:
             if (dlen >= 3) {
+                global_r = d[0]; global_g = d[1]; global_b = d[2];
                 for (int i = 0; i < NUM_LEDS; i++) {
+                    pixel_state[i][0] = d[0];
+                    pixel_state[i][1] = d[1];
+                    pixel_state[i][2] = d[2];
                     strip.setPixelColor(i, strip.Color(d[0], d[1], d[2]));
                 }
                 strip.show();
@@ -111,6 +121,9 @@ void process_frame(const uint8_t* frame, int frame_len) {
         case ADDR_SET_PIXEL:
             if (dlen >= 5 && d[0] < MATRIX_W && d[1] < MATRIX_H) {
                 int idx = d[1] * MATRIX_W + d[0];
+                pixel_state[idx][0] = d[2];
+                pixel_state[idx][1] = d[3];
+                pixel_state[idx][2] = d[4];
                 strip.setPixelColor(idx, strip.Color(d[2], d[3], d[4]));
                 strip.show();
                 send_status();
@@ -121,9 +134,26 @@ void process_frame(const uint8_t* frame, int frame_len) {
             if (dlen >= 1) {
                 uint8_t b = d[0];
                 if (b > 128) b = 128;
+                led_brightness = b;
                 strip.setBrightness(b);
                 strip.show();
                 send_status();
+            }
+            break;
+
+        case ADDR_GET_STATE:
+            {
+                uint8_t state[79];
+                state[0] = led_brightness;
+                state[1] = global_r;
+                state[2] = global_g;
+                state[3] = global_b;
+                for (int i = 0; i < 25; i++) {
+                    state[4 + i * 3]     = pixel_state[i][0];
+                    state[4 + i * 3 + 1] = pixel_state[i][1];
+                    state[4 + i * 3 + 2] = pixel_state[i][2];
+                }
+                send_status(state, 79);
             }
             break;
     }

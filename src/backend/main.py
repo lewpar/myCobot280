@@ -218,6 +218,15 @@ def atom_brightness(req: BrightnessRequest):
     return {"success": True, "percent": max(1, min(100, req.percent))}
 
 
+@app.get("/api/atom/state")
+def atom_get_state():
+    a = _get_arm()
+    state = a.atom.get_led_state()
+    if state is None:
+        raise HTTPException(502, "ATOM did not respond")
+    return {"success": True, **state}
+
+
 # ---------------------------------------------------------------------------
 # All servos quick scan (no limits, faster)
 # ---------------------------------------------------------------------------

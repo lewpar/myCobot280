@@ -155,6 +155,19 @@
   cursor: not-allowed;
 }
 
+.slider-info {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: -4px;
+  margin-bottom: 8px;
+}
+
+.home-pos {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
 .servo-actions {
   display: flex;
   gap: 6px;
@@ -273,6 +286,10 @@
   border-radius: 4px;
   opacity: 0.3;
   transition: opacity 0.15s, border-color 0.15s;
+}
+
+.pixel.live {
+  opacity: 1;
 }
 
 .pixel:hover {

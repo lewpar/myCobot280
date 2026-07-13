@@ -43,6 +43,7 @@ _ATOM_ADDR_PING         = 0x00
 _ATOM_ADDR_SET_COLOR    = 0x01
 _ATOM_ADDR_SET_PIXEL    = 0x02
 _ATOM_ADDR_SET_BRIGHTNESS = 0x03
+_ATOM_ADDR_GET_STATE    = 0x04
 
 _RANGE_MIN    = 0
 _RANGE_MAX    = 4095
@@ -226,6 +227,28 @@ class _Atom:
     @brightness.setter
     def brightness(self, percent: int):
         self.set_brightness(percent)
+
+    def get_led_state(self) -> dict | None:
+        """Read the current LED state from the ATOM.
+
+        Returns dict with ``brightness`` (0-128 raw), global ``r``/``g``/``b``,
+        and a ``pixels`` list of 25 [r,g,b] entries (row-major, 5x5),
+        or None if unresponsive."""
+        with self._bus._lock:
+            resp = self._bus._write_raw(_ATOM_ID, _ATOM_ADDR_GET_STATE, b"")
+            if resp and len(resp) == 79:
+                pixels = []
+                for i in range(25):
+                    off = 4 + i * 3
+                    pixels.append([resp[off], resp[off + 1], resp[off + 2]])
+                return {
+                    "brightness": resp[0],
+                    "r": resp[1],
+                    "g": resp[2],
+                    "b": resp[3],
+                    "pixels": pixels,
+                }
+        return None
 
     def __repr__(self):
         alive = self.ping()
