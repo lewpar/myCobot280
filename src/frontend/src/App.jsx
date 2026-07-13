@@ -123,19 +123,24 @@ function App() {
   }
 
   const handleTorqueToggle = () => {
-    const next = !torqueOn
-    doAction('torque-all', async () => {
-      await api.torqueAllServos(next)
-      setTorqueOn(next)
-    })
-    // Optimistic update for per-servo state too
+    const enable = !torqueOn
+    setTorqueOn(enable)
     setServos(prev => {
-      const next = {}
+      const updated = {}
       for (const id of SERVO_IDS) {
-        next[id] = { ...prev[id], torque: !torqueOn }
+        updated[id] = { ...prev[id], torque: enable }
       }
-      return next
+      return updated
     })
+    setLoading(prev => ({ ...prev, 'torque-all': true }))
+    setError('')
+    api.torqueAllServos(enable)
+      .then(() => fetchServos())
+      .catch(e => {
+        setError(e.message)
+        setTorqueOn(!enable)
+      })
+      .finally(() => setLoading(prev => ({ ...prev, 'torque-all': false })))
   }
 
   // --- atom helpers ---
@@ -180,11 +185,11 @@ function App() {
           <h2>Servos</h2>
           <div className="section-actions">
             <button
-              className={`btn ${torqueOn ? 'btn-on' : 'btn-off'}`}
+              className={`btn ${torqueOn ? 'btn-off' : 'btn-on'}`}
               onClick={handleTorqueToggle}
               disabled={!connected || loading['torque-all']}
             >
-              {loading['torque-all'] ? '...' : torqueOn ? 'Torque On' : 'Torque Off'}
+              {loading['torque-all'] ? '...' : torqueOn ? 'Disengage All' : 'Engage All'}
             </button>
             <button
               className="btn"
