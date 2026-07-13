@@ -1,6 +1,9 @@
 import sys
 import os
 
+from dotenv import load_dotenv
+load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from fastapi import FastAPI, HTTPException
@@ -12,6 +15,7 @@ from mycobot280 import MyCobot280
 
 SERIAL_PORT = os.environ.get("MYCOBOT_PORT", "/dev/ttyAMA0")
 SERIAL_BAUD = int(os.environ.get("MYCOBOT_BAUD", "1000000"))
+CORS_ORIGINS = os.environ.get("MYCOBOT_CORS_ORIGINS", "*")
 
 arm: MyCobot280 | None = None
 
@@ -30,10 +34,13 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="MyCobot280 API", lifespan=lifespan)
 
+origins = CORS_ORIGINS.split(",") if CORS_ORIGINS != "*" else ["*"]
+allow_creds = CORS_ORIGINS != "*"
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=origins,
+    allow_credentials=allow_creds,
     allow_methods=["*"],
     allow_headers=["*"],
 )

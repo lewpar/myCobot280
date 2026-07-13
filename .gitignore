@@ -1,3 +1,5 @@
 venv
 pymycobot
 __pycache__
+.env
+*.log
