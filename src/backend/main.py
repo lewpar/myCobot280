@@ -266,6 +266,9 @@ def torque_all_servos(req: TorqueRequest):
     a = _get_arm()
     for sid in sorted(a.servo_ids):
         a.set_torque(sid, req.enabled)
-    return {"success": True, "enabled": req.enabled}:
+    return {"success": True, "enabled": req.enabled}
+
+
+if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
