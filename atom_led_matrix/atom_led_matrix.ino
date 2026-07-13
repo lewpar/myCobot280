@@ -125,6 +125,7 @@ void setup() {
     BusSerial.begin(UART_BAUD, SERIAL_8N1, BUS_RX, BUS_TX);
 
     strip.begin();
+    strip.setBrightness(128);   // 50% — prevents ESP32 burnout from 25x full-current LEDs
     strip.clear();
     strip.show();
 
