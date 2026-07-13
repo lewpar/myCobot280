@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import * as api from './api'
 import './App.css'
 
@@ -12,11 +12,13 @@ function App() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState({})
   const [color, setColor] = useState('#ff0000')
-  const [selectedPixel, setSelectedPixel] = useState(null)
   const [brightness, setBrightness] = useState(50)
   const [torqueOn, setTorqueOn] = useState(false)
   const [homePositions, setHomePositions] = useState({})
   const [atomState, setAtomState] = useState(null)
+  const [activePixel, setActivePixel] = useState(null)
+  const [pixelColor, setPixelColor] = useState('#ff0000')
+  const pixelDebounce = useRef(null)
 
   const fetchServos = useCallback(async () => {
     try {
@@ -180,11 +182,32 @@ function App() {
     doAction('atom-color', () => api.setAtomColor(r, g, b))
   }
 
-  const handlePixelSet = (x, y) => {
-    const r = parseInt(color.slice(1, 3), 16)
-    const g = parseInt(color.slice(3, 5), 16)
-    const b = parseInt(color.slice(5, 7), 16)
-    doAction(`pixel-${x}-${y}`, () => api.setAtomPixel(x, y, r, g, b))
+  const handlePixelClick = (x, y) => {
+    const hwIdx = (4 - y) * 5 + (4 - x)
+    const pxRgb = atomState?.pixels?.[hwIdx]
+    const initColor = pxRgb && (pxRgb[0] || pxRgb[1] || pxRgb[2])
+      ? `#${pxRgb[0].toString(16).padStart(2, '0')}${pxRgb[1].toString(16).padStart(2, '0')}${pxRgb[2].toString(16).padStart(2, '0')}`
+      : color
+    setPixelColor(initColor)
+    setActivePixel({ x, y })
+  }
+
+  const handlePixelColorChange = (x, y, hex) => {
+    setPixelColor(hex)
+    const hx = 4 - x
+    const hy = 4 - y
+    if (pixelDebounce.current) clearTimeout(pixelDebounce.current)
+    pixelDebounce.current = setTimeout(() => {
+      const r = parseInt(hex.slice(1, 3), 16)
+      const g = parseInt(hex.slice(3, 5), 16)
+      const b = parseInt(hex.slice(5, 7), 16)
+      doAction(`pixel-${x}-${y}`, () => api.setAtomPixel(hx, hy, r, g, b))
+    }, 2000)
+  }
+
+  const closePixelPicker = () => {
+    if (pixelDebounce.current) clearTimeout(pixelDebounce.current)
+    setActivePixel(null)
   }
 
   const handleBrightness = (pct) => {
@@ -365,25 +388,35 @@ function App() {
           </div>
 
           <div className="pixel-grid-section">
-            <p className="hint">Click a pixel to set it to the selected colour</p>
             <div className="pixel-grid">
               {Array.from({ length: 5 }, (_, y) => (
                 <div key={y} className="pixel-row">
                   {Array.from({ length: 5 }, (_, x) => {
-                    const i = y * 5 + x
-                    const pxRgb = atomState?.pixels?.[i]
+                    const hwIdx = (4 - y) * 5 + (4 - x)
+                    const pxRgb = atomState?.pixels?.[hwIdx]
                     const bg = pxRgb ? `rgb(${pxRgb[0]},${pxRgb[1]},${pxRgb[2]})` : '#000'
+                    const isActive = activePixel?.x === x && activePixel?.y === y
                     return (
-                    <button
-                      key={x}
-                      className={`pixel ${selectedPixel?.x === x && selectedPixel?.y === y ? 'selected' : ''} ${pxRgb ? 'live' : ''}`}
-                      style={{ backgroundColor: pxRgb ? bg : color }}
-                      onClick={() => {
-                        setSelectedPixel({ x, y })
-                        handlePixelSet(x, y)
-                      }}
-                      title={`(${x},${y})`}
-                    />
+                    <div key={x} className="pixel-wrapper">
+                      <button
+                        className={`pixel ${isActive ? 'active' : ''} ${pxRgb ? 'live' : ''}`}
+                        style={{ backgroundColor: pxRgb ? bg : color }}
+                        onClick={() => handlePixelClick(x, y)}
+                        title={`(${x},${y})`}
+                      />
+                      {isActive && (
+                        <div className="pixel-color-popover">
+                          <input
+                            type="color"
+                            value={pixelColor}
+                            onChange={e => handlePixelColorChange(x, y, e.target.value)}
+                            className="pixel-color-input"
+                            autoFocus
+                          />
+                          <button className="btn btn-sm" onClick={closePixelPicker}>Done</button>
+                        </div>
+                      )}
+                    </div>
                     )
                   })}
                 </div>
