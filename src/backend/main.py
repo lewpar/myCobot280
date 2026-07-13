@@ -261,6 +261,11 @@ def center_all_servos():
     return {"success": True, "servos": results}
 
 
-if __name__ == "__main__":
+@app.post("/api/servos/torque_all")
+def torque_all_servos(req: TorqueRequest):
+    a = _get_arm()
+    for sid in sorted(a.servo_ids):
+        a.set_torque(sid, req.enabled)
+    return {"success": True, "enabled": req.enabled}:
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

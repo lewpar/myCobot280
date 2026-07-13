@@ -68,6 +68,10 @@ export function setHomeAll() {
   return request('/servos/home', { method: 'POST' })
 }
 
+export function torqueAllServos(enabled) {
+  return request('/servos/torque_all', { method: 'POST', body: JSON.stringify({ enabled }) })
+}
+
 export function setAtomColor(r, g, b) {
   return request('/atom/color', {
     method: 'POST',

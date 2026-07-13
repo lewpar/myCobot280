@@ -14,6 +14,7 @@ function App() {
   const [color, setColor] = useState('#ff0000')
   const [selectedPixel, setSelectedPixel] = useState(null)
   const [brightness, setBrightness] = useState(50)
+  const [torqueOn, setTorqueOn] = useState(false)
 
   const fetchServos = useCallback(async () => {
     try {
@@ -121,6 +122,22 @@ function App() {
     })
   }
 
+  const handleTorqueToggle = () => {
+    const next = !torqueOn
+    doAction('torque-all', async () => {
+      await api.torqueAllServos(next)
+      setTorqueOn(next)
+    })
+    // Optimistic update for per-servo state too
+    setServos(prev => {
+      const next = {}
+      for (const id of SERVO_IDS) {
+        next[id] = { ...prev[id], torque: !torqueOn }
+      }
+      return next
+    })
+  }
+
   // --- atom helpers ---
 
   const handleColorSet = () => {
@@ -162,6 +179,13 @@ function App() {
         <div className="section-header">
           <h2>Servos</h2>
           <div className="section-actions">
+            <button
+              className={`btn ${torqueOn ? 'btn-on' : 'btn-off'}`}
+              onClick={handleTorqueToggle}
+              disabled={!connected || loading['torque-all']}
+            >
+              {loading['torque-all'] ? '...' : torqueOn ? 'Torque On' : 'Torque Off'}
+            </button>
             <button
               className="btn"
               onClick={handleSetHome}
