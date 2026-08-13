@@ -10,6 +10,9 @@ UART bus using the Feetech SCS protocol.
     arm.servo(1).move(2048)
     arm.atom.color = (255, 0, 0)
 
+    # coordinated multi-joint motion (all joints move at once):
+    arm.move_many({1: 2048, 2: 1500, 3: 2600})
+
 All serial access is thread-safe.
 """
 
@@ -106,7 +109,8 @@ class Servo:
     @property
     def limits(self) -> tuple[int, int]:
         """Safe min/max position with safety buffer applied."""
-        return self._bus._safe_limits(self.id)
+        with self._bus._lock:
+            return self._bus._safe_limits(self.id)
 
     @property
     def raw_limits(self) -> tuple[int | None, int | None]:
@@ -118,27 +122,49 @@ class Servo:
     # -- move ----------------------------------------------------------------
 
     def move(self, target: int, speed: int = 600, accel: int = 20) -> tuple[bool, int | None]:
-        """Move to an absolute position. Returns (ok, final_position)."""
+        """Move to an absolute position and block until settled (or timeout).
+
+        Returns (ok, final_position). For moving several servos at once,
+        use ``arm.move_many(...)`` instead — calling ``move()`` on several
+        servos in a row runs them strictly one-after-another.
+        """
         return self._bus._move(self.id, target, speed, accel)
 
+    def move_async(self, target: int, speed: int = 600, accel: int = 20) -> int:
+        """Send the goal position and return immediately (no settle-wait).
+
+        Returns the clamped target that was actually sent. Combine with
+        ``arm.wait_until_settled(servo_id)`` or ``arm.move_many(...)`` for
+        coordinated multi-joint motion.
+        """
+        return self._bus._move_async(self.id, target, speed, accel)
+
     def move_rel(self, delta: int, speed: int = 600, accel: int = 20) -> tuple[bool, int | None]:
-        """Move relative to current position. Returns (ok, final_position)."""
-        with self._bus._lock:
-            cur = self._bus._read_u16(self.id, _ADDR_PRESENT_POSITION)
-            if cur is None:
-                return False, None
-        return self._bus._move(self.id, cur + delta, speed, accel)
+        """Move relative to current position (atomic read+move). Returns (ok, final_position)."""
+        return self._bus._move_rel(self.id, delta, speed, accel)
 
     def center(self, position: int = 2048, speed: int = 600, accel: int = 20) -> tuple[bool, int | None]:
         """Move to a center position (default 2048)."""
         return self.move(position, speed, accel)
+
+    def wait_until_settled(self, target: int | None = None,
+                            timeout: float = _MOVE_SETTLE_TIMEOUT) -> tuple[bool, int | None]:
+        """Poll until this servo reaches ``target`` (or its last commanded
+        target if omitted) or the timeout elapses."""
+        if target is None:
+            target = self._bus._read_u16(self.id, _ADDR_PRESENT_POSITION)
+            if target is None:
+                return False, None
+        results = self._bus._wait_settled({self.id: target}, timeout=timeout)
+        return results[self.id]
 
     # -- torque --------------------------------------------------------------
 
     @property
     def torque(self) -> bool:
         """Is torque enabled?"""
-        return self._bus._read_u8(self.id, _ADDR_TORQUE_ENABLE) == 1
+        with self._bus._lock:
+            return self._bus._read_u8(self.id, _ADDR_TORQUE_ENABLE) == 1
 
     @torque.setter
     def torque(self, enable: bool):
@@ -185,27 +211,30 @@ class _Atom:
     def color(self) -> None:
         """Write-only: set all 25 LEDs to an RGB colour.
 
-        ``arm.atom.color = (255, 0, 0)``"""
+        ``arm.atom.color = (255, 0, 0)``. For confirmation of success, use
+        ``set_color()`` instead, which returns a bool.
+        """
         return None  # write-only, reading returns nothing useful
 
     @color.setter
     def color(self, rgb: tuple[int, int, int]):
-        r, g, b = rgb
+        self.set_color(*rgb)
+
+    def set_color(self, r: int = 0, g: int = 0, b: int = 0) -> bool:
+        """Set all 25 LEDs to the given colour. Returns True if the ATOM acked."""
         with self._bus._lock:
-            self._bus._write_raw(_ATOM_ID, _ATOM_ADDR_SET_COLOR, bytes([r, g, b]))
+            resp = self._bus._write_raw(_ATOM_ID, _ATOM_ADDR_SET_COLOR, bytes([r, g, b]))
+        return resp is not None
 
-    def set_color(self, r: int = 0, g: int = 0, b: int = 0):
-        """Set all 25 LEDs to the given colour."""
-        self.color = (r, g, b)
-
-    def pixel(self, x: int, y: int, r: int = 255, g: int = 0, b: int = 0):
-        """Set a single pixel on the 5×5 matrix (x, y = 0–4)."""
+    def pixel(self, x: int, y: int, r: int = 255, g: int = 0, b: int = 0) -> bool:
+        """Set a single pixel on the 5×5 matrix (x, y = 0–4). Returns True if acked."""
         with self._bus._lock:
-            self._bus._write_raw(_ATOM_ID, _ATOM_ADDR_SET_PIXEL,
-                                 bytes([x, y, r, g, b]))
+            resp = self._bus._write_raw(_ATOM_ID, _ATOM_ADDR_SET_PIXEL,
+                                        bytes([x, y, r, g, b]))
+        return resp is not None
 
-    def set_brightness(self, percent: int):
-        """Set LED brightness as a percentage (1–100).
+    def set_brightness(self, percent: int) -> bool:
+        """Set LED brightness as a percentage (1–100). Returns True if acked.
 
         Mapped to 0–128 on the hardware (0–50% of the NeoPixel range) to
         prevent ESP32 regulator burnout.
@@ -214,14 +243,17 @@ class _Atom:
         percent = max(1, min(100, percent))
         raw = int(percent * 128 / 100)
         with self._bus._lock:
-            self._bus._write_raw(_ATOM_ID, _ATOM_ADDR_SET_BRIGHTNESS,
-                                 bytes([raw]))
+            resp = self._bus._write_raw(_ATOM_ID, _ATOM_ADDR_SET_BRIGHTNESS,
+                                        bytes([raw]))
+        return resp is not None
 
     @property
     def brightness(self) -> None:
         """Write-only: set LED brightness as a percentage (1–100).
 
-        ``arm.atom.brightness = 50``"""
+        ``arm.atom.brightness = 50``. For confirmation of success, use
+        ``set_brightness()`` instead, which returns a bool.
+        """
         return None
 
     @brightness.setter
@@ -312,11 +344,17 @@ class _Bus:
             lo = self._read_u16(servo_id, _ADDR_MIN_ANGLE_LIMIT)
             hi = self._read_u16(servo_id, _ADDR_MAX_ANGLE_LIMIT)
             if lo is None or hi is None or (lo == 0 and hi == 0):
-                self._limit_cache[servo_id] = (_RANGE_MIN + _SAFETY_BUFFER,
-                                                _RANGE_MAX - _SAFETY_BUFFER)
+                lo_b, hi_b = _RANGE_MIN + _SAFETY_BUFFER, _RANGE_MAX - _SAFETY_BUFFER
             else:
-                self._limit_cache[servo_id] = (lo + _SAFETY_BUFFER,
-                                                hi - _SAFETY_BUFFER)
+                lo_b, hi_b = lo + _SAFETY_BUFFER, hi - _SAFETY_BUFFER
+                # If the safety buffer is wider than the servo's own raw
+                # range, the buffered bounds invert (lo_b > hi_b), which
+                # makes _clamp() collapse every target to lo_b regardless
+                # of what was asked for. Fall back to the raw (unbuffered)
+                # limits for narrow-range joints rather than freezing them.
+                if lo_b >= hi_b:
+                    lo_b, hi_b = lo, hi
+            self._limit_cache[servo_id] = (lo_b, hi_b)
         return self._limit_cache[servo_id]
 
     def _clamp(self, servo_id: int, target: int) -> int:
@@ -325,28 +363,65 @@ class _Bus:
 
     # -- move ----------------------------------------------------------------
 
-    def _move(self, servo_id: int, target: int, speed: int, accel: int):
+    def _send_goal(self, servo_id: int, target: int, speed: int, accel: int) -> int:
+        """Write goal position/speed/accel. Caller must hold self._lock."""
+        target = self._clamp(servo_id, target)
+        self._write_raw(servo_id, _ADDR_TORQUE_ENABLE, bytes([1]))
+        self._write_raw(servo_id, _ADDR_ACCELERATION,  bytes([accel & 0xFF]))
+        self._write_raw(servo_id, _ADDR_GOAL_SPEED,
+                        bytes([speed & 0xFF, (speed >> 8) & 0xFF]))
+        self._write_raw(servo_id, _ADDR_GOAL_POSITION,
+                        bytes([target & 0xFF, (target >> 8) & 0xFF]))
+        return target
+
+    def _move_async(self, servo_id: int, target: int, speed: int, accel: int) -> int:
+        """Send the goal position without waiting for it to settle."""
         with self._lock:
-            target = self._clamp(servo_id, target)
-            self._write_raw(servo_id, _ADDR_TORQUE_ENABLE, bytes([1]))
-            self._write_raw(servo_id, _ADDR_ACCELERATION,  bytes([accel & 0xFF]))
-            self._write_raw(servo_id, _ADDR_GOAL_SPEED,
-                            bytes([speed & 0xFF, (speed >> 8) & 0xFF]))
-            self._write_raw(servo_id, _ADDR_GOAL_POSITION,
-                            bytes([target & 0xFF, (target >> 8) & 0xFF]))
+            return self._send_goal(servo_id, target, speed, accel)
 
-            deadline = time.time() + _MOVE_SETTLE_TIMEOUT
-            pos = None
-            while time.time() < deadline:
-                time.sleep(_MOVE_SETTLE_POLL)
-                p = self._read_u16(servo_id, _ADDR_PRESENT_POSITION)
+    def _wait_settled(self, targets: dict[int, int],
+                       timeout: float = _MOVE_SETTLE_TIMEOUT,
+                       tolerance: int = _MOVE_TOLERANCE) -> dict[int, tuple[bool, int | None]]:
+        """Poll one or more servos until each reaches its target or times out.
+
+        Polling multiple servos in the same wait loop is what makes
+        coordinated multi-joint motion possible — the lock is only held for
+        the brief duration of each individual read, not for the whole wait.
+        """
+        deadline = time.time() + timeout
+        positions: dict[int, int | None] = {sid: None for sid in targets}
+        pending = set(targets)
+
+        while pending and time.time() < deadline:
+            time.sleep(_MOVE_SETTLE_POLL)
+            for sid in list(pending):
+                with self._lock:
+                    p = self._read_u16(sid, _ADDR_PRESENT_POSITION)
                 if p is not None:
-                    pos = p
-                    if abs(p - target) <= _MOVE_TOLERANCE:
-                        break
+                    positions[sid] = p
+                    if abs(p - targets[sid]) <= tolerance:
+                        pending.discard(sid)
 
-        ok = pos is not None and abs(pos - target) <= _MOVE_TOLERANCE
-        return ok, pos
+        results = {}
+        for sid, target in targets.items():
+            p = positions[sid]
+            ok = p is not None and abs(p - target) <= tolerance
+            results[sid] = (ok, p)
+        return results
+
+    def _move(self, servo_id: int, target: int, speed: int, accel: int) -> tuple[bool, int | None]:
+        target = self._move_async(servo_id, target, speed, accel)
+        return self._wait_settled({servo_id: target})[servo_id]
+
+    def _move_rel(self, servo_id: int, delta: int, speed: int, accel: int) -> tuple[bool, int | None]:
+        """Atomic read-current-position-then-move, so a concurrent move on
+        the same servo can't change the base position mid-calculation."""
+        with self._lock:
+            cur = self._read_u16(servo_id, _ADDR_PRESENT_POSITION)
+            if cur is None:
+                return False, None
+            target = self._send_goal(servo_id, cur + delta, speed, accel)
+        return self._wait_settled({servo_id: target})[servo_id]
 
     def close(self):
         self._ser.close()
@@ -362,6 +437,7 @@ class MyCobot280:
     >>> arm = MyCobot280("/dev/ttyAMA0")
     >>> arm.servo(1).move(2048)
     >>> arm.atom.color = (255, 0, 0)
+    >>> arm.move_many({1: 2048, 2: 1500})   # coordinated multi-joint move
     """
 
     def __init__(self, port: str, baud: int = 1_000_000):
@@ -373,10 +449,16 @@ class MyCobot280:
     # -- scanning ------------------------------------------------------------
 
     def scan(self) -> list[int]:
-        """Scan the bus for servos (IDs 1–50). Returns the list of found IDs."""
+        """Scan the bus for servos (IDs 1–50). Returns the list of found IDs.
+
+        ID 7 is reserved for the ATOM ESP32 and is skipped even though it
+        would not normally answer a real PING (only WRITE frames).
+        """
         with self._bus._lock:
             ids = []
             for sid in range(1, 51):
+                if sid == _ATOM_ID:
+                    continue
                 if self._bus._ping(sid):
                     ids.append(sid)
                 time.sleep(0.015)
@@ -412,8 +494,27 @@ class MyCobot280:
     # -- convenience: direct servo operations ----------------------------------
 
     def move(self, servo_id: int, target: int, speed: int = 600, accel: int = 20):
-        """Move a servo to an absolute position."""
+        """Move a single servo to an absolute position and block until settled.
+
+        For several servos at once, use ``move_many()`` — calling this in a
+        loop runs the joints strictly one-after-another.
+        """
         return self.servo(servo_id).move(target, speed, accel)
+
+    def move_many(self, targets: dict[int, int], speed: int = 600, accel: int = 20,
+                   timeout: float = _MOVE_SETTLE_TIMEOUT) -> dict[int, tuple[bool, int | None]]:
+        """Move several servos at once, coordinated.
+
+        Sends all goal positions first, then waits for every servo to settle
+        together, instead of moving them one at a time.
+
+        >>> arm.move_many({1: 2048, 2: 1500, 3: 2600})
+        {1: (True, 2048), 2: (True, 1500), 3: (True, 2601)}
+        """
+        clamped = {}
+        for sid, target in targets.items():
+            clamped[sid] = self._bus._move_async(sid, target, speed, accel)
+        return self._bus._wait_settled(clamped, timeout=timeout)
 
     def move_rel(self, servo_id: int, delta: int, speed: int = 600, accel: int = 20):
         """Move a servo relative to its current position."""
@@ -422,6 +523,18 @@ class MyCobot280:
     def center(self, servo_id: int, position: int = 2048, speed: int = 600, accel: int = 20):
         """Center a servo."""
         return self.servo(servo_id).center(position, speed, accel)
+
+    def wait_until_settled(self, *servo_ids: int, timeout: float = _MOVE_SETTLE_TIMEOUT):
+        """Block until the given servos (already in motion) reach their last
+        commanded position, or the timeout elapses. Useful after
+        ``move_async()``/``move_many()`` if you want to wait later rather
+        than immediately."""
+        targets = {}
+        for sid in servo_ids:
+            p = self.get_position(sid)
+            if p is not None:
+                targets[sid] = p
+        return self._bus._wait_settled(targets, timeout=timeout)
 
     def get_position(self, servo_id: int) -> int | None:
         """Read a servo's current position."""

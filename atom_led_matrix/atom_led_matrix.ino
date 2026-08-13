@@ -93,8 +93,8 @@ void process_frame(const uint8_t* frame, int frame_len) {
 
     commanded = true;   // stop the startup animation
 
-    int len   = frame[3];                             // payload length after LEN byte
-    int dlen  = len - 2;                              // minus INSTR + ADDR
+    int len   = frame[3];                             // = INSTR + ADDR + DATA + CHK
+    int dlen  = len - 3;                               // minus INSTR + ADDR + CHK
     uint8_t addr = frame[5];
     const uint8_t* d = frame + 6;                     // data starts after ADDR
 
