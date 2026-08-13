@@ -213,17 +213,18 @@ def print_menu():
     print(f"  {B}2{R})  Read a servo's position")
     print(f"  {B}3{R})  Move a servo (absolute)")
     print(f"  {B}4{R})  Jog a servo (live +/-)")
-    print(f"  {B}5{R})  Center a servo")
-    print(f"  {B}6{R})  Enable/disable torque (single)")
-    print(f"  {B}7{R})  Re-scan the bus")
-    print(f"  {B}8{R})  Servo count")
-    print(f"  {B}9{R})  Ping a servo")
-    print(f"  {B}10{R}) Torque ALL servos on/off")
+    print(f"  {B}5{R})  Set servo center position")
+    print(f"  {B}6{R})  Center a servo")
+    print(f"  {B}7{R})  Enable/disable torque (single)")
+    print(f"  {B}8{R})  Re-scan the bus")
+    print(f"  {B}9{R})  Servo count")
+    print(f"  {B}10{R}) Ping a servo")
+    print(f"  {B}11{R}) Torque ALL servos on/off")
     print()
     print(f"  {CY}─── ATOM ───{R}")
-    print(f"  {B}11{R}) Set ATOM LED color (all)")
-    print(f"  {B}12{R}) Ping ATOM")
-    print(f"  {B}13{R}) Set ATOM LED pixel (single)")
+    print(f"  {B}12{R}) Set ATOM LED color (all)")
+    print(f"  {B}13{R}) Ping ATOM")
+    print(f"  {B}14{R}) Set ATOM LED pixel (single)")
     print()
     print(f"  {D}0{R})  Quit")
     print()
@@ -375,28 +376,86 @@ def run_menu(sock: socket.socket):
                     pass
                 print(f"\n{D}Jogging ended.{R}")
 
-        # ---- CENTER ----
+        # ---- SET CENTER ----
         elif choice == "5":
             sid = select_servo(ids)
             if sid is not None:
-                center_pos = prompt_int("Center position", 2048)
-                speed = prompt_int("Speed (0–3400)", 600)
-                accel = prompt_int("Acceleration (0–254)", 20)
-                confirm = input(f"\nCenter servo {sid} → {center_pos}  "
-                                f"speed={speed}  accel={accel}  [{B}y{R}/{D}N{R}] ").strip().lower()
+                # Show current saved center if any
+                try:
+                    cur_center_resp = send_command(sock, f"GET_CENTER {sid}")
+                    if not cur_center_resp.startswith("ERR"):
+                        print(f"\nCurrent saved center: {B}{cur_center_resp}{R}")
+                except Exception:
+                    pass
+
+                # Show current position for reference
+                pos_resp = send_command(sock, f"POS {sid}")
+                label = SERVO_LABELS.get(sid, "")
+                try:
+                    cur_pos = int(pos_resp)
+                    print(f"Current position:    {B}{cur_pos}{R}")
+                except ValueError:
+                    print(f"Current position:    {pos_resp}")
+
+                print(f"\nTip: move the servo to the desired center, then enter that position.")
+                center_pos = prompt_int("New center position (0–4095)", int(cur_pos) if pos_resp.isdigit() else 2048)
+                confirm = input(f"\nSet center for servo {sid} ({label}) → {center_pos}?  [{B}y{R}/{D}N{R}] ").strip().lower()
                 if confirm == "y":
-                    sys.stdout.write(f"{D}Moving...{R}")
-                    sys.stdout.flush()
-                    resp = send_command(sock, f"CENTER {sid} {center_pos} {speed} {accel}")
+                    resp = send_command(sock, f"SET_CENTER {sid} {center_pos}")
                     if resp.startswith("OK"):
-                        print(f"\r{ok(resp)}   ")
+                        print(f"\n{ok(resp)}")
                     else:
-                        print(f"\r{fail(resp)}   ")
+                        print(f"\n{fail(resp)}")
                 else:
                     print("Cancelled.")
 
-        # ---- TORQUE ----
+        # ---- CENTER ----
         elif choice == "6":
+            sid = select_servo(ids)
+            if sid is not None:
+                # Show saved center
+                try:
+                    cur_center_resp = send_command(sock, f"GET_CENTER {sid}")
+                    if not cur_center_resp.startswith("ERR"):
+                        print(f"\nSaved center: {B}{cur_center_resp}{R}")
+                except Exception:
+                    pass
+
+                override = input(f"Use saved center? [{B}Y{R}/{D}N = enter custom{R}] ").strip().lower()
+                if override == "n":
+                    center_pos = prompt_int("Center position", 2048)
+                    speed = prompt_int("Speed (0–3400)", 600)
+                    accel = prompt_int("Acceleration (0–254)", 20)
+                    confirm = input(f"\nCenter servo {sid} → {center_pos}  "
+                                    f"speed={speed}  accel={accel}  [{B}y{R}/{D}N{R}] ").strip().lower()
+                    if confirm == "y":
+                        sys.stdout.write(f"{D}Moving...{R}")
+                        sys.stdout.flush()
+                        resp = send_command(sock, f"CENTER {sid} {center_pos} {speed} {accel}")
+                        if resp.startswith("OK"):
+                            print(f"\r{ok(resp)}   ")
+                        else:
+                            print(f"\r{fail(resp)}   ")
+                    else:
+                        print("Cancelled.")
+                else:
+                    speed = prompt_int("Speed (0–3400)", 600)
+                    accel = prompt_int("Acceleration (0–254)", 20)
+                    confirm = input(f"\nCenter servo {sid} to saved center  "
+                                    f"speed={speed}  accel={accel}  [{B}y{R}/{D}N{R}] ").strip().lower()
+                    if confirm == "y":
+                        sys.stdout.write(f"{D}Moving...{R}")
+                        sys.stdout.flush()
+                        resp = send_command(sock, f"CENTER {sid} {speed} {accel}")
+                        if resp.startswith("OK"):
+                            print(f"\r{ok(resp)}   ")
+                        else:
+                            print(f"\r{fail(resp)}   ")
+                    else:
+                        print("Cancelled.")
+
+        # ---- TORQUE ----
+        elif choice == "7":
             sid = select_servo(ids)
             if sid is not None:
                 on_off = input(f"Torque on ({B}1{R}) or off ({D}0{R})? [{B}1{R}]: ").strip()
@@ -410,7 +469,7 @@ def run_menu(sock: socket.socket):
                     print(warn("Invalid, enter 0 or 1."))
 
         # ---- SCAN ----
-        elif choice == "7":
+        elif choice == "8":
             sys.stdout.write(f"{D}Scanning...{R} ")
             sys.stdout.flush()
             ids = fetch_ids(sock)
@@ -421,11 +480,11 @@ def run_menu(sock: socket.socket):
                 print(f"\r{warn('no servos detected')}   ")
 
         # ---- COUNT ----
-        elif choice == "8":
+        elif choice == "9":
             print(f"\n{B}{len(ids)}{R} servo(s) detected")
 
         # ---- PING ----
-        elif choice == "9":
+        elif choice == "10":
             sid = select_servo(ids)
             if sid is not None:
                 resp = send_command(sock, f"PING {sid}")
@@ -446,7 +505,7 @@ def run_menu(sock: socket.socket):
             break
 
         # ---- TORQUE ALL ----
-        elif choice == "10":
+        elif choice == "11":
             if not ids:
                 print(f"\n{warn('No servos detected.')}")
             else:
@@ -465,7 +524,7 @@ def run_menu(sock: socket.socket):
                     print(warn("Invalid, enter 0 or 1."))
 
         # ---- ATOM LED COLOR ----
-        elif choice == "11":
+        elif choice == "12":
             print(f"\n{CY}Set ATOM LED color{R}\n")
             try:
                 r = int(input(f"  Red   {D}(0-255){R} [{B}255{R}]: ").strip() or "255")
@@ -481,7 +540,7 @@ def run_menu(sock: socket.socket):
                     print(f"\n{fail(resp)}")
 
         # ---- ATOM INFO (PING) ----
-        elif choice == "12":
+        elif choice == "13":
             sys.stdout.write(f"{D}Pinging ATOM...{R} ")
             sys.stdout.flush()
             ping_resp = send_command(sock, "ATOM_PING")
@@ -491,7 +550,7 @@ def run_menu(sock: socket.socket):
                 sys.stdout.write(f"\r{fail('ATOM not responding')}   \n")
 
         # ---- ATOM SET PIXEL ----
-        elif choice == "13":
+        elif choice == "14":
             print(f"\n{CY}Set ATOM LED pixel{R} (5×5 grid, x/y 0-4)\n")
             try:
                 x = int(input(f"  X {D}(0-4){R}: ").strip())
@@ -516,7 +575,7 @@ def run_menu(sock: socket.socket):
                     print(warn("Coordinates must be 0-4."))
 
         else:
-            print(warn("Invalid choice. Enter a number from the menu (0–13)."))
+            print(warn("Invalid choice. Enter a number from the menu (0–14)."))
 
         if choice != "0":
             input(f"\n{D}Press Enter to return to menu...{R}")

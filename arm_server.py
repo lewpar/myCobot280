@@ -15,6 +15,8 @@ Commands:
     MOVE_REL <id> <delta> [speed] [accel]  -> OK <new_pos>
     TORQUE <id> <0|1>            -> OK
     CENTER <id> [pos] [speed] [accel]  -> OK <new_pos>
+    SET_CENTER <id> [target]     -> OK (writes to servo EEPROM, no move)
+    GET_CENTER <id>              -> <center> correction=<n>
     PING <id>                    -> OK / ERR no response
     ATOM_PING                    -> OK / ERR no response
     ATOM_COLOR <r> <g> <b>       -> OK
@@ -27,8 +29,70 @@ import signal
 import socket
 import sys
 import threading
+import time
 
 from mycobot280 import MyCobot280
+
+
+# ---------------------------------------------------------------------------
+# SCS servo EEPROM helpers
+# ---------------------------------------------------------------------------
+
+_ADDR_POSITION_CORRECTION = 31   # EEPROM, 2 bytes, sign-magnitude, range -2047..+2047
+_ADDR_LOCK = 55
+
+
+def _encode_signed_11bit(value: int) -> bytes:
+    """Feetech sign-magnitude 16-bit: bit 11 = sign, bits 0-10 = magnitude."""
+    value = max(-2047, min(2047, value))
+    if value < 0:
+        word = 0x0800 | (-value)
+    else:
+        word = value & 0x07FF
+    return bytes([word & 0xFF, (word >> 8) & 0xFF])
+
+
+def _decode_signed_11bit(low: int, high: int) -> int:
+    word = low | (high << 8)
+    magnitude = word & 0x07FF
+    if word & 0x0800:
+        return -magnitude
+    return magnitude
+
+
+def _read_correction(bus, servo_id: int) -> int | None:
+    """Read the Position Correction register from a servo's EEPROM."""
+    with bus._lock:
+        # Build read packet for address 31, length 2
+        body = bytes([servo_id, 0x04, 0x02, _ADDR_POSITION_CORRECTION, 2])
+        pkt = bytes([0xFF, 0xFF]) + body + bytes([((~sum(body)) & 0xFF)])
+        bus._ser.reset_input_buffer()
+        bus._ser.write(pkt)
+        time.sleep(0.05)
+        n = bus._ser.in_waiting
+        resp = bus._ser.read(n) if n else b""
+    if (len(resp) >= 7 and resp[0] == 0xFF and resp[1] == 0xFF
+            and resp[3] >= 4):
+        params = resp[5:5 + (resp[3] - 2)]
+        return _decode_signed_11bit(params[0], params[1])
+    return None
+
+
+def _read_present_position(bus, servo_id: int) -> int | None:
+    """Read present position (address 56, 2 bytes unsigned)."""
+    with bus._lock:
+        body = bytes([servo_id, 0x04, 0x02, 56, 2])
+        pkt = bytes([0xFF, 0xFF]) + body + bytes([((~sum(body)) & 0xFF)])
+        bus._ser.reset_input_buffer()
+        bus._ser.write(pkt)
+        time.sleep(0.05)
+        n = bus._ser.in_waiting
+        resp = bus._ser.read(n) if n else b""
+    if (len(resp) >= 7 and resp[0] == 0xFF and resp[1] == 0xFF
+            and resp[3] >= 4):
+        params = resp[5:5 + (resp[3] - 2)]
+        return params[0] | (params[1] << 8)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -161,11 +225,79 @@ def handle_client(conn: socket.socket, addr: tuple, arm: MyCobot280,
                         reply("ERR usage: CENTER <id> [pos] [speed] [accel]")
                         continue
                     sid  = int(parts[1])
-                    pos  = int(parts[2]) if len(parts) > 2 else 2048
                     spd  = int(parts[3]) if len(parts) > 3 else 600
                     accl = int(parts[4]) if len(parts) > 4 else 20
+                    if len(parts) > 2:
+                        pos = int(parts[2])
+                    else:
+                        # No position given — read the servo's Position
+                        # Correction register and compute the hardware center.
+                        # center = 2048 - correction
+                        correction = _read_correction(arm._bus, sid)
+                        if correction is not None:
+                            pos = 2048 - correction
+                        else:
+                            pos = 2048  # fallback
                     ok, new_pos = arm.center(sid, pos, spd, accl)
                     reply(f"OK {new_pos}" if ok else f"ERR center failed, pos={new_pos}")
+
+                # ---- SET_CENTER <id> [target] ----
+                # Rewrites the servo's Position Correction EEPROM register so
+                # the current physical position maps to the target center
+                # (default 2048).  This does NOT move the servo.
+                elif op == "SET_CENTER":
+                    if len(parts) < 2:
+                        reply("ERR usage: SET_CENTER <id> [target_center]")
+                        continue
+                    sid = int(parts[1])
+                    target_center = int(parts[2]) if len(parts) > 2 else 2048
+
+                    # 1. Read current reported position
+                    current_pos = _read_present_position(arm._bus, sid)
+                    if current_pos is None:
+                        reply(f"ERR could not read position of servo {sid}")
+                        continue
+
+                    # 2. Read existing Position Correction
+                    old_correction = _read_correction(arm._bus, sid)
+                    if old_correction is None:
+                        reply(f"ERR could not read correction of servo {sid}")
+                        continue
+
+                    # 3. Calculate new correction so current_pos -> target_center
+                    new_correction = old_correction + (current_pos - target_center)
+                    new_correction = max(-2047, min(2047, new_correction))
+
+                    # 4. Unlock EEPROM, write, re-lock
+                    with arm._bus._lock:
+                        arm._bus._write_raw(sid, _ADDR_LOCK, bytes([0]))
+                        arm._bus._write_raw(sid, _ADDR_POSITION_CORRECTION,
+                                            _encode_signed_11bit(new_correction))
+                        arm._bus._write_raw(sid, _ADDR_LOCK, bytes([1]))
+                    time.sleep(0.1)
+
+                    # 5. Verify — read back position
+                    verify_pos = _read_present_position(arm._bus, sid)
+
+                    if verify_pos is not None and abs(verify_pos - target_center) <= 5:
+                        reply(f"OK servo {sid} center set to {target_center} "
+                              f"(correction={new_correction}, verified={verify_pos})")
+                    else:
+                        reply(f"WARN servo {sid} correction written ({new_correction}) "
+                              f"but verify={verify_pos} != target {target_center}")
+
+                # ---- GET_CENTER <id> ----
+                elif op == "GET_CENTER":
+                    if len(parts) < 2:
+                        reply("ERR usage: GET_CENTER <id>")
+                        continue
+                    sid = int(parts[1])
+                    correction = _read_correction(arm._bus, sid)
+                    if correction is not None:
+                        hardware_center = 2048 - correction
+                        reply(f"{hardware_center} correction={correction}")
+                    else:
+                        reply(f"ERR could not read servo {sid}")
 
                 # ---- PING <id> ----
                 elif op == "PING":
