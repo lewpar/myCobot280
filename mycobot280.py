@@ -83,6 +83,23 @@ def _parse_status(resp: bytes) -> bytes | None:
     return None
 
 
+def _encode_signed_11bit(value: int) -> bytes:
+    """Feetech sign-magnitude 16-bit field: bit 11 = sign, bits 0-10 = magnitude."""
+    value = max(-2047, min(2047, value))
+    if value < 0:
+        word = 0x0800 | (-value)
+    else:
+        word = value & 0x07FF
+    return bytes([word & 0xFF, (word >> 8) & 0xFF])
+
+
+def _decode_signed_11bit(word: int) -> int:
+    magnitude = word & 0x07FF
+    if word & 0x0800:
+        return -magnitude
+    return magnitude
+
+
 # ---------------------------------------------------------------------------
 # Servo — represents a single servo joint
 # ---------------------------------------------------------------------------
@@ -146,6 +163,27 @@ class Servo:
     def center(self, position: int = 2048, speed: int = 600, accel: int = 20) -> tuple[bool, int | None]:
         """Move to a center position (default 2048)."""
         return self.move(position, speed, accel)
+
+    # -- center register ------------------------------------------------------
+
+    def set_center_register(self, center: int = 2048) -> tuple[bool, int | None]:
+        """Write the servo's Position Correction EEPROM register so the
+        current physical position reports as ``center`` (default 2048).
+
+        This is Feetech's "set center position" / CalibrationOfs operation.
+        It does NOT move the servo — it calibrates the servo's zero so the
+        current physical position becomes the new reported center.
+
+        Returns (ok, new_correction).
+        """
+        return self._bus._set_center_register(self.id, center)
+
+    def get_center_register(self) -> int | None:
+        """Read the Position Correction (center) register value.
+
+        Returns the signed correction offset, or None if unreadable.
+        """
+        return self._bus._read_correction(self.id)
 
     def wait_until_settled(self, target: int | None = None,
                             timeout: float = _MOVE_SETTLE_TIMEOUT) -> tuple[bool, int | None]:
@@ -337,6 +375,39 @@ class _Bus:
         resp = self._read_resp()
         return len(resp) >= 6 and resp[0] == 0xFF and resp[1] == 0xFF
 
+    # -- center register -----------------------------------------------------
+
+    def _read_correction(self, servo_id: int) -> int | None:
+        """Read the signed 11-bit Position Correction register (EEPROM addr 31)."""
+        with self._lock:
+            word = self._read_u16(servo_id, _ADDR_POSITION_CORRECTION)
+        return _decode_signed_11bit(word) if word is not None else None
+
+    def _write_correction(self, servo_id: int, value: int) -> bool:
+        """Unlock EEPROM, write the Position Correction register, re-lock."""
+        with self._lock:
+            self._write_raw(servo_id, _ADDR_LOCK, bytes([0]))
+            ok = self._write_raw(servo_id, _ADDR_POSITION_CORRECTION,
+                                 _encode_signed_11bit(value)) is not None
+            self._write_raw(servo_id, _ADDR_LOCK, bytes([1]))
+        return ok
+
+    def _set_center_register(self, servo_id: int, center: int) -> tuple[bool, int | None]:
+        """Calibrate the servo's center: rewrite Position Correction so the
+        current physical position reports as ``center``. Does not move."""
+        with self._lock:
+            current = self._read_u16(servo_id, _ADDR_PRESENT_POSITION)
+            old_word = self._read_u16(servo_id, _ADDR_POSITION_CORRECTION)
+            if current is None or old_word is None:
+                return False, None
+            old = _decode_signed_11bit(old_word)
+            new = max(-2047, min(2047, old + (current - center)))
+            self._write_raw(servo_id, _ADDR_LOCK, bytes([0]))
+            ok = self._write_raw(servo_id, _ADDR_POSITION_CORRECTION,
+                                 _encode_signed_11bit(new)) is not None
+            self._write_raw(servo_id, _ADDR_LOCK, bytes([1]))
+        return (ok, new if ok else None)
+
     # -- limits --------------------------------------------------------------
 
     def _safe_limits(self, servo_id: int) -> tuple[int, int]:
@@ -523,6 +594,15 @@ class MyCobot280:
     def center(self, servo_id: int, position: int = 2048, speed: int = 600, accel: int = 20):
         """Center a servo."""
         return self.servo(servo_id).center(position, speed, accel)
+
+    def set_center_register(self, servo_id: int, center: int = 2048):
+        """Write the servo's Position Correction register so its current
+        physical position reports as ``center``. Does not move the servo."""
+        return self.servo(servo_id).set_center_register(center)
+
+    def get_center_register(self, servo_id: int) -> int | None:
+        """Read the servo's Position Correction (center) register."""
+        return self.servo(servo_id).get_center_register()
 
     def wait_until_settled(self, *servo_ids: int, timeout: float = _MOVE_SETTLE_TIMEOUT):
         """Block until the given servos (already in motion) reach their last

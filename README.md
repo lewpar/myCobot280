@@ -43,15 +43,27 @@ Adjust `BUS_RX` / `BUS_TX` at the top of the `.ino` if your ATOM uses different 
 
 ### TCP client/server
 
+The client/server pair is:
+
+- `server.py` / `client.py` — basic pair for the core operations:
+  absolute moves, async moves, set/move-to center (stored in the servo's
+  Position Correction register), and ATOM LED colors.
+
+Or use the launcher:
+```
+./run.sh server
+./run.sh client
+```
+
 **On the robot:**
 ```
-python3 arm_server.py
+python3 server.py
 ```
 Only one client at a time. The server sends keepalive pings every 15 seconds and drops unresponsive clients.
 
 **On a client machine:**
 ```
-python3 arm_client.py
+python3 client.py
 ```
 Prompts for server IP and port, then shows the interactive menu.
 

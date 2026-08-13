@@ -1,61 +1,45 @@
 #!/usr/bin/env python3
 """
-arm_server.py - TCP server for myCobot280 arm control.
+server.py - basic TCP server for the myCobot280 arm.
 
-Listens for TCP connections and relays commands to the arm via mycobot280.
-One client at a time. Heartbeat kicks unresponsive clients after ~30s.
+Thin, line-based protocol over TCP. One client at a time; a keepalive
+"PING" is sent every 15 seconds and the client is expected to answer
+"PONG".
 
 Commands:
-    SCAN                         -> OK <id1,id2,...>
-    COUNT                        -> <n>
-    POS <id>                     -> <position>
-    LIMITS <id>                  -> <min>,<max>
-    INFO <id>                    -> pos:<pos> min:<min> max:<max>
-    MOVE <id> <pos> [speed] [accel]   -> OK <new_pos>
-    MOVE_REL <id> <delta> [speed] [accel]  -> OK <new_pos>
-    TORQUE <id> <0|1>            -> OK
-    CENTER <id> [pos] [speed] [accel]  -> OK <new_pos>
-    SET_CENTER <id> <pos>        -> OK (saved to server)
-    GET_CENTER <id>              -> <pos> or ERR
-    PING <id>                    -> OK / ERR no response
-    ATOM_PING                    -> OK / ERR no response
-    ATOM_COLOR <r> <g> <b>       -> OK
-    ATOM_PIXEL <x> <y> <r> <g> <b> -> OK
-    QUIT                         -> BYE
+    SCAN                              -> OK 1,2,3,...
+    COUNT                             -> <n>
+    POS <id>                          -> <position>  (or ERR)
+    MOVE <id> <pos> [speed] [accel]   -> OK <final_pos>   (blocks until settled)
+    MOVE_ASYNC <id> <pos> [speed] [accel] -> OK <sent_pos> (returns immediately)
+    WAIT <id> <target> [timeout]      -> OK <final_pos>   (wait for async move)
+    SET_CENTER <id> [center]          -> OK correction=<n> verified=<pos>
+                                         (writes the servo Position Correction
+                                          EEPROM register, does NOT move)
+    GET_CENTER <id>                   -> correction=<n> center=<pos>
+    CENTER <id> [speed] [accel]       -> OK <final_pos>   (move to stored center)
+    PING <id>                         -> OK / ERR
+    ATOM_PING                         -> OK / ERR
+    ATOM_COLOR <r> <g> <b>            -> OK
+    QUIT                              -> BYE
+
+The center position is stored in the servo's Position Correction register
+(Feetech "set center position" / CalibrationOfs). Because that register
+stores the *offset* rather than the numeric center target, the server also
+caches the numeric center (default 2048) so the CENTER command knows where
+to move.
 """
 
 import argparse
-import json
-import os
 import signal
 import socket
 import sys
 import threading
+import time
 
 from mycobot280 import MyCobot280
 
-
-# ---------------------------------------------------------------------------
-# Center position persistence (JSON file next to this script)
-# ---------------------------------------------------------------------------
-
-_CENTER_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "center_positions.json")
-
-
-def _load_centers() -> dict:
-    """Load saved center positions from disk."""
-    try:
-        with open(_CENTER_FILE, "r") as f:
-            return {int(k): v for k, v in json.load(f).items()}
-    except (FileNotFoundError, json.JSONDecodeError, ValueError):
-        return {}
-
-
-def _save_centers(data: dict):
-    """Persist center positions to disk."""
-    with open(_CENTER_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+DEFAULT_TIMEOUT = 15.0
 
 
 # ---------------------------------------------------------------------------
@@ -63,9 +47,10 @@ def _save_centers(data: dict):
 # ---------------------------------------------------------------------------
 
 def handle_client(conn: socket.socket, addr: tuple, arm: MyCobot280,
-                  active_conn: threading.Lock):
-    conn.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+                  active_conn: threading.Lock, center_cache: dict):
+    # Keep the TCP connection alive across idle periods.
     try:
+        conn.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
         conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 10)
         conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 5)
         conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
@@ -92,6 +77,19 @@ def handle_client(conn: socket.socket, addr: tuple, arm: MyCobot280,
 
     threading.Thread(target=heartbeat, daemon=True).start()
 
+    def parse_ints(parts, start, count, defaults):
+        """Parse up to `count` optional ints from parts[start:]. Missing
+        values fall back to `defaults`."""
+        out = list(defaults)
+        for i in range(count):
+            idx = start + i
+            if idx < len(parts):
+                try:
+                    out[i] = int(parts[idx])
+                except ValueError:
+                    out[i] = defaults[i]
+        return out
+
     try:
         buf = b""
         while True:
@@ -102,10 +100,11 @@ def handle_client(conn: socket.socket, addr: tuple, arm: MyCobot280,
                 continue
             if not data:
                 break
+
             buf += data
             while b"\n" in buf:
                 line, buf = buf.split(b"\n", 1)
-                cmd = line.decode().strip()
+                cmd = line.decode(errors="replace").strip()
                 if not cmd or cmd.upper() == "PONG":
                     continue
 
@@ -115,7 +114,7 @@ def handle_client(conn: socket.socket, addr: tuple, arm: MyCobot280,
                 # ---- SCAN ----
                 if op == "SCAN":
                     ids = arm.scan()
-                    reply(f"OK {','.join(str(i) for i in ids) if ids else ''}")
+                    reply("OK " + ",".join(str(i) for i in ids) if ids else "OK")
 
                 # ---- COUNT ----
                 elif op == "COUNT":
@@ -129,86 +128,61 @@ def handle_client(conn: socket.socket, addr: tuple, arm: MyCobot280,
                     pos = arm.get_position(int(parts[1]))
                     reply(str(pos) if pos is not None else "ERR no response")
 
-                # ---- LIMITS <id> ----
-                elif op == "LIMITS":
-                    if len(parts) < 2:
-                        reply("ERR usage: LIMITS <id>")
-                        continue
-                    lo, hi = arm.get_limits(int(parts[1]))
-                    reply(f"{lo},{hi}")
-
-                # ---- INFO <id> ----
-                elif op == "INFO":
-                    if len(parts) < 2:
-                        reply("ERR usage: INFO <id>")
-                        continue
-                    sid = int(parts[1])
-                    pos = arm.get_position(sid)
-                    lo, hi = arm.get_limits(sid)
-                    if pos is None:
-                        reply("ERR no response")
-                    else:
-                        reply(f"pos:{pos} min:{lo} max:{hi}")
-
                 # ---- MOVE <id> <pos> [speed] [accel] ----
                 elif op == "MOVE":
                     if len(parts) < 3:
                         reply("ERR usage: MOVE <id> <pos> [speed] [accel]")
                         continue
-                    sid    = int(parts[1])
+                    sid = int(parts[1])
                     target = int(parts[2])
-                    speed  = int(parts[3]) if len(parts) > 3 else 600
-                    accel  = int(parts[4]) if len(parts) > 4 else 20
+                    speed, accel = parse_ints(parts, 3, 2, [600, 20])
                     ok, pos = arm.move(sid, target, speed, accel)
-                    reply(f"OK {pos}" if ok else f"ERR move failed, pos={pos}")
+                    reply(f"OK {pos}" if ok else f"ERR move failed pos={pos}")
 
-                # ---- MOVE_REL <id> <delta> [speed] [accel] ----
-                elif op == "MOVE_REL":
+                # ---- MOVE_ASYNC <id> <pos> [speed] [accel] ----
+                elif op == "MOVE_ASYNC":
                     if len(parts) < 3:
-                        reply("ERR usage: MOVE_REL <id> <delta> [speed] [accel]")
-                        continue
-                    sid   = int(parts[1])
-                    delta = int(parts[2])
-                    speed = int(parts[3]) if len(parts) > 3 else 600
-                    accel = int(parts[4]) if len(parts) > 4 else 20
-                    ok, pos = arm.move_rel(sid, delta, speed, accel)
-                    reply(f"OK {pos}" if ok else "ERR move failed")
-
-                # ---- TORQUE <id> <0|1> ----
-                elif op == "TORQUE":
-                    if len(parts) < 3:
-                        reply("ERR usage: TORQUE <id> <0|1>")
-                        continue
-                    arm.set_torque(int(parts[1]), parts[2] == "1")
-                    reply("OK")
-
-                # ---- CENTER <id> [pos] [speed] [accel] ----
-                elif op == "CENTER":
-                    if len(parts) < 2:
-                        reply("ERR usage: CENTER <id> [pos] [speed] [accel]")
-                        continue
-                    sid  = int(parts[1])
-                    spd  = int(parts[3]) if len(parts) > 3 else 600
-                    accl = int(parts[4]) if len(parts) > 4 else 20
-                    if len(parts) > 2:
-                        pos = int(parts[2])
-                    else:
-                        centers = _load_centers()
-                        pos = centers.get(sid, 2048)
-                    ok, new_pos = arm.center(sid, pos, spd, accl)
-                    reply(f"OK {new_pos}" if ok else f"ERR center failed, pos={new_pos}")
-
-                # ---- SET_CENTER <id> <pos> ----
-                elif op == "SET_CENTER":
-                    if len(parts) < 3:
-                        reply("ERR usage: SET_CENTER <id> <pos>")
+                        reply("ERR usage: MOVE_ASYNC <id> <pos> [speed] [accel]")
                         continue
                     sid = int(parts[1])
-                    pos = int(parts[2])
-                    centers = _load_centers()
-                    centers[sid] = pos
-                    _save_centers(centers)
-                    reply(f"OK center for servo {sid} set to {pos}")
+                    target = int(parts[2])
+                    speed, accel = parse_ints(parts, 3, 2, [600, 20])
+                    sent = arm.servo(sid).move_async(target, speed, accel)
+                    reply(f"OK {sent}")
+
+                # ---- WAIT <id> <target> [timeout] ----
+                elif op == "WAIT":
+                    if len(parts) < 3:
+                        reply("ERR usage: WAIT <id> <target> [timeout]")
+                        continue
+                    sid = int(parts[1])
+                    target = int(parts[2])
+                    timeout = float(parts[3]) if len(parts) > 3 else DEFAULT_TIMEOUT
+                    ok, pos = arm.servo(sid).wait_until_settled(target, timeout=timeout)
+                    reply(f"OK {pos}" if ok else f"ERR timeout pos={pos}")
+
+                # ---- SET_CENTER <id> [center] ----
+                elif op == "SET_CENTER":
+                    if len(parts) < 2:
+                        reply("ERR usage: SET_CENTER <id> [center]")
+                        continue
+                    sid = int(parts[1])
+                    center = int(parts[2]) if len(parts) > 2 else 2048
+
+                    ok, correction = arm.servo(sid).set_center_register(center)
+                    if not ok:
+                        reply(f"ERR could not write center register for servo {sid}")
+                        continue
+
+                    # Verify the new reported position landed on the target.
+                    time.sleep(0.15)
+                    verify = arm.get_position(sid)
+                    center_cache[sid] = center
+                    if verify is not None and abs(verify - center) <= 5:
+                        reply(f"OK correction={correction} verified={verify} center={center}")
+                    else:
+                        reply(f"WARN correction={correction} verify={verify} "
+                              f"expected={center} (sign convention may be flipped)")
 
                 # ---- GET_CENTER <id> ----
                 elif op == "GET_CENTER":
@@ -216,12 +190,23 @@ def handle_client(conn: socket.socket, addr: tuple, arm: MyCobot280,
                         reply("ERR usage: GET_CENTER <id>")
                         continue
                     sid = int(parts[1])
-                    centers = _load_centers()
-                    pos = centers.get(sid)
-                    if pos is not None:
-                        reply(str(pos))
+                    correction = arm.servo(sid).get_center_register()
+                    center = center_cache.get(sid, 2048)
+                    if correction is not None:
+                        reply(f"correction={correction} center={center}")
                     else:
-                        reply(f"ERR no saved center for servo {sid}")
+                        reply(f"ERR could not read center register for servo {sid}")
+
+                # ---- CENTER <id> [speed] [accel] ----
+                elif op == "CENTER":
+                    if len(parts) < 2:
+                        reply("ERR usage: CENTER <id> [speed] [accel]")
+                        continue
+                    sid = int(parts[1])
+                    speed, accel = parse_ints(parts, 2, 2, [600, 20])
+                    center = center_cache.get(sid, 2048)
+                    ok, pos = arm.move(sid, center, speed, accel)
+                    reply(f"OK {pos}" if ok else f"ERR center failed pos={pos}")
 
                 # ---- PING <id> ----
                 elif op == "PING":
@@ -239,17 +224,9 @@ def handle_client(conn: socket.socket, addr: tuple, arm: MyCobot280,
                     if len(parts) < 4:
                         reply("ERR usage: ATOM_COLOR <r> <g> <b>")
                         continue
-                    arm.atom.set_color(int(parts[1]), int(parts[2]), int(parts[3]))
-                    reply("OK")
-
-                # ---- ATOM_PIXEL <x> <y> <r> <g> <b> ----
-                elif op == "ATOM_PIXEL":
-                    if len(parts) < 6:
-                        reply("ERR usage: ATOM_PIXEL <x> <y> <r> <g> <b>")
-                        continue
-                    arm.atom.pixel(int(parts[1]), int(parts[2]),
-                                   int(parts[3]), int(parts[4]), int(parts[5]))
-                    reply("OK")
+                    r, g, b = (int(parts[1]), int(parts[2]), int(parts[3]))
+                    arm.atom.set_color(r, g, b)
+                    reply(f"OK rgb={r},{g},{b}")
 
                 # ---- QUIT ----
                 elif op == "QUIT":
@@ -281,11 +258,12 @@ def run_server(host: str, port: int, arm: MyCobot280):
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind((host, port))
     sock.listen(1)
-    print(f"Arm server listening on {host}:{port}")
+    print(f"myCobot280 server listening on {host}:{port}")
     print(f"Detected servos: {arm.servo_ids}")
 
     running = True
     active_conn = threading.Lock()
+    center_cache: dict[int, int] = {}
 
     def shutdown(signum, frame):
         nonlocal running
@@ -316,9 +294,9 @@ def run_server(host: str, port: int, arm: MyCobot280):
                 continue
 
             print(f"Client connected: {addr}")
-            t = threading.Thread(target=handle_client,
-                                 args=(conn, addr, arm, active_conn), daemon=True)
-            t.start()
+            threading.Thread(target=handle_client,
+                             args=(conn, addr, arm, active_conn, center_cache),
+                             daemon=True).start()
     finally:
         print("Closing serial port...")
         arm.close()
@@ -330,7 +308,7 @@ def run_server(host: str, port: int, arm: MyCobot280):
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="myCobot280 Arm Server")
+    parser = argparse.ArgumentParser(description="myCobot280 basic arm server")
     parser.add_argument("--host", default="0.0.0.0", help="Bind address")
     parser.add_argument("--port", type=int, default=5000, help="TCP port")
     parser.add_argument("--serial-port", default="/dev/ttyAMA0", help="Serial port")
