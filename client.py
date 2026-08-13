@@ -143,8 +143,10 @@ def print_menu():
     print(f"  {B}5{R})  Set center in register")
     print(f"  {B}6{R})  Move to center")
     print(f"  {B}7{R})  Read center register")
-    print(f"  {B}8{R})  Set ATOM color")
-    print(f"  {B}9{R})  Ping ATOM")
+    print(f"  {B}8{R})  Torque single servo on/off")
+    print(f"  {B}9{R})  Torque all servos on/off")
+    print(f"  {B}10{R}) Set ATOM color")
+    print(f"  {B}11{R}) Ping ATOM")
     print(f"  {B}0{R})  Quit")
     print()
 
@@ -233,6 +235,31 @@ def run_menu(sock: socket.socket):
                 print(f"\n  Servo {sid} center register: {B}{resp}{R}")
 
         elif choice == "8":
+            sid = pick_servo(ids)
+            if sid is not None:
+                on_off = input(f"  Torque on ({B}1{R}) or off ({D}0{R})? [{B}1{R}]: ").strip()
+                if on_off == "":
+                    on_off = "1"
+                if on_off not in ("0", "1"):
+                    print(warn("Enter 0 or 1."))
+                else:
+                    resp = send_command(sock, f"TORQUE {sid} {on_off}")
+                    print("  " + show(resp))
+
+        elif choice == "9":
+            if not ids:
+                print(warn("No servos detected."))
+            else:
+                on_off = input(f"  Torque ALL servos on ({B}1{R}) or off ({D}0{R})? [{B}1{R}]: ").strip()
+                if on_off == "":
+                    on_off = "1"
+                if on_off not in ("0", "1"):
+                    print(warn("Enter 0 or 1."))
+                else:
+                    resp = send_command(sock, f"TORQUE_ALL {on_off}")
+                    print("  " + show(resp))
+
+        elif choice == "10":
             print(f"\n  {CY}Set ATOM LED color{R}")
             try:
                 r = int(input(f"  Red   {D}[255]{R}: ").strip() or "255")
@@ -244,7 +271,7 @@ def run_menu(sock: socket.socket):
                 resp = send_command(sock, f"ATOM_COLOR {r} {g} {b}")
                 print("  " + show(resp))
 
-        elif choice == "9":
+        elif choice == "11":
             resp = send_command(sock, "ATOM_PING")
             print("  " + show(resp))
 
@@ -257,7 +284,7 @@ def run_menu(sock: socket.socket):
             break
 
         else:
-            print(warn("Invalid choice (0-9)."))
+            print(warn("Invalid choice (0-11)."))
 
         if choice != "0":
             input(f"\n{D}Press Enter to return to the menu...{R}")

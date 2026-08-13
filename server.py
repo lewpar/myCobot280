@@ -19,6 +19,8 @@ Commands:
     GET_CENTER <id>                   -> correction=<n> center=<pos>
     CENTER <id> [speed] [accel]       -> OK <final_pos>   (move to stored center)
     PING <id>                         -> OK / ERR
+    TORQUE <id> <0|1>                 -> OK
+    TORQUE_ALL <0|1>                  -> OK n=<servos>
     ATOM_PING                         -> OK / ERR
     ATOM_COLOR <r> <g> <b>            -> OK
     QUIT                              -> BYE
@@ -214,6 +216,32 @@ def handle_client(conn: socket.socket, addr: tuple, arm: MyCobot280,
                         reply("ERR usage: PING <id>")
                         continue
                     reply("OK" if arm.servo_ping(int(parts[1])) else "ERR no response")
+
+                # ---- TORQUE <id> <0|1> ----
+                elif op == "TORQUE":
+                    if len(parts) < 3:
+                        reply("ERR usage: TORQUE <id> <0|1>")
+                        continue
+                    sid = int(parts[1])
+                    if parts[2] not in ("0", "1"):
+                        reply("ERR torque state must be 0 or 1")
+                        continue
+                    arm.set_torque(sid, parts[2] == "1")
+                    reply(f"OK torque {parts[2]}")
+
+                # ---- TORQUE_ALL <0|1> ----
+                elif op == "TORQUE_ALL":
+                    if len(parts) < 2 or parts[1] not in ("0", "1"):
+                        reply("ERR usage: TORQUE_ALL <0|1>")
+                        continue
+                    ids = arm.servo_ids
+                    if not ids:
+                        reply("ERR no servos detected")
+                        continue
+                    enable = parts[1] == "1"
+                    for sid in ids:
+                        arm.set_torque(sid, enable)
+                    reply(f"OK torque {parts[1]} servos={len(ids)}")
 
                 # ---- ATOM_PING ----
                 elif op == "ATOM_PING":
