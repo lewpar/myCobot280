@@ -380,25 +380,29 @@ def run_menu(sock: socket.socket):
         elif choice == "5":
             sid = select_servo(ids)
             if sid is not None:
+                label = SERVO_LABELS.get(sid, "")
+
                 # Show current saved center if any
                 try:
                     cur_center_resp = send_command(sock, f"GET_CENTER {sid}")
                     if not cur_center_resp.startswith("ERR"):
                         print(f"\nCurrent saved center: {B}{cur_center_resp}{R}")
+                    else:
+                        print(f"\n{D}No center saved yet for servo {sid}.{R}")
                 except Exception:
                     pass
 
                 # Show current position for reference
                 pos_resp = send_command(sock, f"POS {sid}")
-                label = SERVO_LABELS.get(sid, "")
                 try:
                     cur_pos = int(pos_resp)
                     print(f"Current position:    {B}{cur_pos}{R}")
                 except ValueError:
                     print(f"Current position:    {pos_resp}")
 
-                print(f"\nTip: move the servo to the desired center, then enter that position.")
-                center_pos = prompt_int("New center position (0–4095)", int(cur_pos) if pos_resp.isdigit() else 2048)
+                print(f"\nTip: jog the servo to the desired center, then enter that position.")
+                default = int(pos_resp) if pos_resp.isdigit() else 2048
+                center_pos = prompt_int("New center position (0–4095)", default)
                 confirm = input(f"\nSet center for servo {sid} ({label}) → {center_pos}?  [{B}y{R}/{D}N{R}] ").strip().lower()
                 if confirm == "y":
                     resp = send_command(sock, f"SET_CENTER {sid} {center_pos}")
