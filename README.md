@@ -1,6 +1,6 @@
 # myCobot280 Arm Control
 
-TCP client/server for controlling the myCobot280 robotic arm and its ATOM ESP32.
+FastAPI backend and browser IK simulator for controlling the myCobot280 robotic arm and its ATOM ESP32.
 
 ## Hardware Architecture
 
@@ -26,7 +26,8 @@ All devices share the same half-duplex UART bus. Two protocols coexist on the wi
 ## Setup
 
 ```
-pip install -r requirements.txt
+pip install -r src/backend/requirements.txt
+cp src/backend/.env.example src/backend/.env
 ```
 
 Flash `atom_led_matrix/atom_led_matrix.ino` to the ATOM ESP32. Default UART pins in the sketch:
@@ -41,55 +42,34 @@ Adjust `BUS_RX` / `BUS_TX` at the top of the `.ino` if your ATOM uses different 
 
 ### Password
 
-Everything that can move the arm asks for a password: the web UI, the IK simulator, the REST API
-and the TCP server. Set it in `src/backend/.env`:
+Everything that can move the arm asks for a password: the IK simulator, the WebSocket link and the
+REST API. Set it in `src/backend/.env`:
 
 ```
 MYCOBOT_PASSWORD=choose-something
 ```
 
-If it's empty, the backend (and `arm_server.py`) make up a random password at startup and print it.
+If it's empty, the backend makes up a random password at startup and print it.
 
 - REST: send it in the `X-Arm-Password` header on every `/api` request.
 - WebSocket `/ws/arm`: browsers can't set headers on a WebSocket, so the first message is
   `{"type": "auth", "password": "..."}`.
-- TCP server: the first command is `AUTH <password>`. `arm_client.py` asks for it (or reads `$MYCOBOT_PASSWORD`).
 
 Five wrong passwords from one address within a minute lock that address out for the rest of the minute.
-The connection is plain HTTP/TCP, so the password keeps casual users on the network out; it doesn't
+The connection is plain HTTP, so the password keeps casual users on the network out; it doesn't
 protect against someone capturing traffic. Put the backend behind HTTPS if that matters.
 
 ## Usage
 
-Only one program can have the serial port open at a time: the backend or `arm_server.py`, not both.
+Only one program can have the serial port open at a time (the backend or one of the tools, not both).
 The second one to start exits with a "port is already in use" message.
 
-### Web UI and IK simulator
-
 ```
-./run.sh backend      # API on :8000, simulator at http://<pi>:8000/sim
-./run.sh frontend     # React UI on :5173 (dev server)
+./run.sh              # API on :8000, docs at /docs, simulator at http://<pi>:8000/sim
 ```
 
 `./run.sh backend` no longer uses uvicorn's `--reload` (it restarts the server whenever a file
 changes). Set `MYCOBOT_DEV=1` to get it back while editing code.
-
-### TCP client/server
-
-**On the robot:**
-```
-python3 arm_server.py
-```
-Only one client at a time. The server sends keepalive pings every 15 seconds and drops unresponsive clients.
-The first command must be `AUTH <password>`; three wrong attempts close the connection.
-Bad arguments get an `ERR ...` reply explaining what was wrong instead of dropping the client.
-`STOP` holds every joint and refuses moves until `RESUME` (menu keys `s` and `r` in the client).
-
-**On a client machine:**
-```
-python3 arm_client.py
-```
-Prompts for server IP and port, then shows the interactive menu.
 
 ### Python API (mycobot280)
 
@@ -220,15 +200,14 @@ Key servo registers:
 - **Limits:** each servo's min/max angle limits are read from EEPROM. Every move is clamped to
   `[min+50, max-50]`; servos with limits `0,0` (J6) get 50–4045. The IK link also keeps each joint
   inside the URDF limits.
-- **Register ranges:** speed must be 1–4000 steps/s and acceleration 1–254. The API and TCP server
-  reject values outside these ranges, and the library clamps them rather than letting them wrap.
-- **Collisions:** every move (IK, REST, TCP, Home All) is checked against the table, the base and
+- **Register ranges:** speed must be 1–4000 steps/s and acceleration 1–254. The API
+  rejects values outside these ranges, and the library clamps them rather than letting them wrap.
+- **Collisions:** every move (IK, REST, Home All) is checked against the table, the base and
   shoulder column, and the wrist folding into the upper arm, both at the target and along the way
-  (a straight joint-space path). Refused moves say what would have hit (HTTP 409 / `ERR move refused, ...`).
+  (a straight joint-space path). Refused moves say what would have hit (HTTP 409).
   The model lives in `arm_model.py`; the simulator carries a copy so it refuses the same poses before
   sending anything. The check uses the IK calibration, so calibrate first (see below).
-- **Stop:** `POST /api/stop`, the Stop button in the web UI or simulator, Esc in either page, or
-  `STOP` over TCP. Every joint holds where it is (torque stays on, so nothing drops) and all motion is
+- **Stop:** `POST /api/stop`, or the Stop button / Esc in the simulator. Every joint holds where it is (torque stays on, so nothing drops) and all motion is
   refused until you resume.
 
 ## ATOM Protocol
@@ -263,8 +242,8 @@ Calibration is saved to `ik_calibration.json` (zeros seeded from `center_positio
 then). If a zero sits far from the middle of a servo's travel, the page says how much range that
 joint has lost.
 
-Home positions (Set Home All / Home All in the web UI, `SET_CENTER` / `CENTER` over TCP) are all
-stored in `center_positions.json`. Home All moves every joint together after a collision check.
+Home positions (`GET`/`POST /api/servos/home`, `POST /api/servos/center_all`) are stored in
+`center_positions.json`. Home All moves every joint together after a collision check.
 
 ## Checking the model against your arm
 

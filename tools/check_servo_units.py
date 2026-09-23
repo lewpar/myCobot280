@@ -9,7 +9,7 @@ servos actually use, so the sim and the real arm move at the same pace.
     python3 tools/check_servo_units.py              # measures J6 (wrist roll: no load from gravity)
     python3 tools/check_servo_units.py --write      # also saves the result to ik_calibration.json
 
-Stop the backend / arm_server.py first (only one program can hold the serial port).
+Stop the backend first (only one program can hold the serial port).
 The joint turns about 45 degrees each way from where it is now and comes back.
 """
 import argparse

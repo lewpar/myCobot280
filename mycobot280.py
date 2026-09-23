@@ -312,13 +312,13 @@ class _Bus:
         self._lock = threading.Lock()
         # short read timeout: replies arrive within ~1 ms at 1 Mbaud, so we poll instead of sleeping.
         # exclusive=True takes an advisory lock on the port, so a second program using this library
-        # (arm_server.py while the backend runs, say) fails to open it instead of garbling the bus.
+        # (a tool while the backend runs, say) fails to open it instead of garbling the bus.
         try:
             self._ser = serial.Serial(port, baud, timeout=0.002, exclusive=True)
         except serial.SerialException as e:
             if "lock" in str(e).lower() or "busy" in str(e).lower() or "resource temporarily" in str(e).lower():
-                raise RuntimeError(f"{port} is already in use by another program (is arm_server.py or "
-                                   f"the backend already running?)") from e
+                raise RuntimeError(f"{port} is already in use by another program (is the backend "
+                                   f"already running?)") from e
             raise
         self._reply_timeout = timeout
         self._limit_cache: dict[int, tuple[int, int]] = {}

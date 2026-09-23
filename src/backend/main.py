@@ -227,7 +227,7 @@ def resume():
 
 @app.get("/api/servos")
 def list_servos(rescan: bool = False):
-    # the frontend polls this every second; re-scanning the whole bus each time kept the bus
+    # clients may poll this often; re-scanning the whole bus each time kept the bus
     # locked for seconds, so use the cached IDs unless a rescan is asked for
     a = _get_arm()
     ids = a.scan() if rescan or not a.servo_ids else a.servo_ids
@@ -355,7 +355,7 @@ def servos_status():
     return [{"id": sid, "position": pos} for sid, pos in zip(ids, a.read_positions(ids))]
 
 
-# Home positions live in center_positions.json, shared with arm_server.py's SET_CENTER/CENTER.
+# Home positions (raw ticks) live in center_positions.json.
 @app.get("/api/servos/home")
 def get_home_positions():
     return {"home": model.load_centers()}

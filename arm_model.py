@@ -1,5 +1,5 @@
 """
-arm_model — shared model of the myCobot280 used by the backend, the TCP server and the tools.
+arm_model — shared model of the myCobot280 used by the backend and the tools.
 
 * Kinematics from Elephant Robotics' mycobot_280_pi URDF (base frame: metres, Z up).
 * Calibration: per-joint zero tick and direction that map servo ticks to URDF joint angles,
@@ -211,7 +211,7 @@ def pose_from_ticks(c, ticks):
 
 
 def check_tick_move(c, current_ticks, new_ticks):
-    """Collision check for a raw-tick move (REST / TCP single-servo moves).
+    """Collision check for a raw-tick move (REST single-servo moves).
 
     ``current_ticks`` and ``new_ticks`` are lists of 6 (None where unknown). Returns None if clear."""
     if any(t is None for t in current_ticks):
