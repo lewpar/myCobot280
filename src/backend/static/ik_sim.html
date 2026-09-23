@@ -313,60 +313,86 @@ reachRing.position.z=0.001;root.add(reachRing);
 const axesHelper=new THREE.AxesHelper(0.08);axesHelper.position.set(-0.13,-0.13,0.001);root.add(axesHelper);
 
 /* ---------- Materials ---------- */
-const shell=new THREE.MeshStandardMaterial({color:0xf1f2f0,roughness:0.42,metalness:0.05});
+const shell=new THREE.MeshStandardMaterial({color:0xf1f2f0,roughness:0.42,metalness:0.05});   // white arm shell
+const capMat=new THREE.MeshStandardMaterial({color:0xe3e6e8,roughness:0.38,metalness:0.05});  // servo caps, a shade darker
+const baseMat=new THREE.MeshStandardMaterial({color:0xa3a8ad,roughness:0.6,metalness:0.1});   // grey Pi base
 const graphite=new THREE.MeshStandardMaterial({color:0x31353c,roughness:0.55,metalness:0.35});
-const steel=new THREE.MeshStandardMaterial({color:0x9aa3ab,roughness:0.3,metalness:0.85});
+const flangeMat=new THREE.MeshStandardMaterial({color:0xaab0b5,roughness:0.5,metalness:0.1});
+const holeMat=new THREE.MeshStandardMaterial({color:0x1f2226,roughness:0.9});
 const ledMats=[];
 function shade(o){o.traverse(m=>{if(m.isMesh){m.castShadow=true;m.receiveShadow=true;}});return o;}
 
-/* Visual layout, authored in the base frame at the zero pose. Housing centres sit on each joint's axis line,
-   so the geometry matches the kinematics; brackets are polylines between housings.
-   Placement follows a photo of the real arm (servo_ids.png): J1 is a flat ring on top of the base; J2, J3 and J4
-   sit in one line ~30 mm to -Y of the base axis, and the links zigzag either side of them
-   (link 1 at y=0, link 2 at y=-66 mm, link 3 back at y=0, link 4 out to the J5 axis at y=-63.6 mm). */
+/* Visual layout, authored in the base frame at the zero pose, following a photo of the real arm (servo_ids.png).
+   Housing centres sit on each joint's axis line, so the geometry matches the kinematics.
+   J1 is the seam where the white column leaves the grey base; J2, J3 and J4 sit in one line ~30 mm to -Y of the
+   base axis and the tube links zigzag either side of them (link 1 at y=0, link 2 at y=-68 mm, link 3 back at y=0,
+   link 4 out to the J5 axis at y=-63.6 mm). The J5 body carries the ATOM head (LED face backwards, -X, opposite the flange) and the J6
+   servo, whose flange (3x3 Lego peg holes) is the only part J6 turns.
+   s = where the seam (the glowing motion ring) sits along the housing axis, -1..1. */
 const V=(x,y,z)=>new THREE.Vector3(x,y,z);
 const HOUSINGS=[
-  {c:V(0,0,0.085),       a:V(0,0,1), r:0.038,L:0.024},
-  {c:V(0,-0.035,0.1386), a:V(0,1,0), r:0.030,L:0.040},
-  {c:V(0,-0.031,0.249),  a:V(0,1,0), r:0.027,L:0.036},
-  {c:V(0,-0.029,0.345),  a:V(0,1,0), r:0.025,L:0.034},
-  {c:V(0,-0.0636,0.378), a:V(0,0,1), r:0.023,L:0.034},
-  {c:V(0.026,-0.0636,0.4181),a:V(1,0,0),r:0.021,L:0.036},
+  {c:V(0,0,0.074),       a:V(0,0,1), r:0.0255,L:0.016},
+  {c:V(0,-0.035,0.1386), a:V(0,1,0), r:0.030, L:0.036},
+  {c:V(0,-0.031,0.249),  a:V(0,1,0), r:0.028, L:0.032},
+  {c:V(0,-0.029,0.345),  a:V(0,1,0), r:0.024, L:0.028},
+  {c:V(0,-0.0636,0.381), a:V(0,0,1), r:0.0205,L:0.014},
+  {c:V(0.023,-0.0636,0.4181),a:V(1,0,0),r:0.021,L:0.034,s:1},
 ];
-const BRACKETS=[ // bracket k belongs to link k (moves with joint k), from housing k to housing k+1
-  {w:0.042,pts:[V(0,0,0.1),V(0,0,0.1386),V(0,-0.035,0.1386)]},
-  {w:0.040,pts:[V(0,-0.035,0.1386),V(0,-0.066,0.1386),V(0,-0.066,0.249),V(0,-0.031,0.249)]},
-  {w:0.036,pts:[V(0,-0.031,0.249),V(0,0,0.249),V(0,0,0.345),V(0,-0.029,0.345)]},
-  {w:0.032,pts:[V(0,-0.029,0.345),V(0,-0.0636,0.345),V(0,-0.0636,0.362)]},
-  {w:0.030,pts:[V(0,-0.0636,0.39),V(0,-0.0636,0.4181),V(0.012,-0.0636,0.4181)]},
+const LINKS=[ // link k moves with joint k: a round tube through pts (rounded at the corners), housing k to housing k+1
+  {r:0.0245,pts:[V(0,0,0.074),V(0,0,0.1386),V(0,-0.035,0.1386)]},
+  {r:0.023, pts:[V(0,-0.035,0.1386),V(0,-0.068,0.1386),V(0,-0.068,0.249),V(0,-0.031,0.249)]},
+  {r:0.021, pts:[V(0,-0.031,0.249),V(0,0,0.249),V(0,0,0.345),V(0,-0.029,0.345)]},
+  {r:0.020, pts:[V(0,-0.029,0.345),V(0,-0.0636,0.345),V(0,-0.0636,0.381)]},
+  {r:0.019, pts:[V(0,-0.0636,0.381),V(0,-0.0636,0.4181)],end:true},
 ];
 function makeHousing(h){
   const g=new THREE.Group();
-  const drum=new THREE.Mesh(new THREE.CylinderGeometry(h.r,h.r,h.L,40),graphite);g.add(drum);
-  const capG=new THREE.CylinderGeometry(h.r*1.05,h.r*1.05,h.L*0.16,40);
-  [1,-1].forEach(s=>{const c=new THREE.Mesh(capG,shell);c.position.y=s*h.L*0.46;g.add(c);});
-  const led=new THREE.MeshStandardMaterial({color:0x2a2a2a,emissive:0xffa000,emissiveIntensity:0.15,roughness:0.4});
+  g.add(new THREE.Mesh(new THREE.CylinderGeometry(h.r,h.r,h.L,40),capMat));
+  const led=new THREE.MeshStandardMaterial({color:0x3a3d42,emissive:0xffa000,emissiveIntensity:0.15,roughness:0.4});
   ledMats.push(led);
-  const ring=new THREE.Mesh(new THREE.TorusGeometry(h.r*1.01,h.r*0.07,10,48),led);ring.rotation.x=Math.PI/2;ring.position.y=h.L*0.3;g.add(ring);
-  const hub=new THREE.Mesh(new THREE.CylinderGeometry(h.r*0.36,h.r*0.36,h.L*1.1,24),steel);g.add(hub);
+  const ring=new THREE.Mesh(new THREE.TorusGeometry(h.r*1.005,Math.max(h.r*0.05,0.0009),8,48),led);
+  ring.rotation.x=Math.PI/2;ring.position.y=(h.s||0)*h.L/2;g.add(ring);
   g.quaternion.setFromUnitVectors(V(0,1,0),h.a);g.position.copy(h.c);
   return shade(g);
 }
-function makeBracket(b){
-  const g=new THREE.Group();
-  for(let k=0;k<b.pts.length-1;k++){
-    const p=b.pts[k],q=b.pts[k+1],d=q.clone().sub(p),len=d.length();if(len<1e-6)continue;
-    d.normalize();
-    const box=new THREE.Mesh(new THREE.BoxGeometry(b.w,len+b.w,b.w*0.86),shell);
-    box.quaternion.setFromUnitVectors(V(0,1,0),d);box.position.copy(p).add(q).multiplyScalar(0.5);g.add(box);
-  }
+function makeLink(l){
+  const g=new THREE.Group(),ball=new THREE.SphereGeometry(l.r,32,16);
+  l.pts.forEach((p,k)=>{
+    if(k>0){const q=l.pts[k-1],d=p.clone().sub(q),len=d.length();
+      const c=new THREE.Mesh(new THREE.CylinderGeometry(l.r,l.r,len,32),shell);
+      c.quaternion.setFromUnitVectors(V(0,1,0),d.normalize());c.position.copy(p).add(q).multiplyScalar(0.5);g.add(c);}
+    if((k>0&&k<l.pts.length-1)||(l.end&&k===l.pts.length-1)){const b=new THREE.Mesh(ball,shell);b.position.copy(p);g.add(b);}
+  });
+  return shade(g);
+}
+function makeAtomHead(){ // on the J5 body, behind the J5 axis on the J6 line, LED matrix facing backwards (-X)
+  const g=new THREE.Group(),c=V(-0.012,-0.0636,0.4181);
+  const head=new THREE.Mesh(new THREE.CylinderGeometry(0.0155,0.0155,0.036,40),shell);
+  head.rotation.z=Math.PI/2;head.position.copy(c);g.add(head);
+  const faceX=c.x-0.018;
+  const panel=new THREE.Mesh(new THREE.BoxGeometry(0.003,0.021,0.021),new THREE.MeshStandardMaterial({color:0x3b3f44,roughness:0.5}));
+  panel.position.set(faceX-0.0015,c.y,c.z);g.add(panel);
+  const dotG=new THREE.BoxGeometry(0.0008,0.0022,0.0022),dotM=new THREE.MeshStandardMaterial({color:0x1d5a33,emissive:0x2bd46a,emissiveIntensity:0.55});
+  for(let i=0;i<5;i++)for(let j=0;j<5;j++){const d=new THREE.Mesh(dotG,dotM);d.position.set(faceX-0.0033,c.y+(i-2)*0.0038,c.z+(j-2)*0.0038);g.add(d);}
   return shade(g);
 }
 
-// base (my own simple pedestal, sized so the J1 axis origin lands at 139.56 mm)
+// base: the grey Pi base, ports on its -X face, and the collar the J1 seam sits on
 const base=new THREE.Group();root.add(base);
-const foot=new THREE.Mesh(new THREE.BoxGeometry(0.12,0.12,0.05),graphite);foot.position.z=0.025;base.add(foot);
-const collar=new THREE.Mesh(new THREE.CylinderGeometry(0.04,0.046,0.024,48),shell);collar.rotation.x=Math.PI/2;collar.position.z=0.062;base.add(collar);
+const foot=new THREE.Mesh(new THREE.BoxGeometry(0.092,0.092,0.062),baseMat);foot.position.z=0.031;base.add(foot);
+const collar=new THREE.Mesh(new THREE.CylinderGeometry(0.028,0.042,0.012,48),baseMat);collar.rotation.x=Math.PI/2;collar.position.z=0.068;base.add(collar);
+[ // [left,right,top,bottom] as fractions of the face seen from -X (left = +Y, top = z 62 mm), colour
+  [0.23,0.40,0.23,0.37,0xc83232],  // power switch
+  [0.60,0.77,0.22,0.41,0x26292d],  // power jack
+  [0.20,0.82,0.44,0.50,0x26292d],  // GPIO header
+  [0.20,0.36,0.67,0.88,0x33373c],  // USB 2
+  [0.41,0.56,0.67,0.88,0x2d6fb7],  // USB 3
+  [0.62,0.80,0.67,0.88,0x33373c],  // Ethernet
+].forEach(([u0,u1,v0,v1,col])=>{
+  const w=(u1-u0)*0.092,h=(v1-v0)*0.062;
+  const m=new THREE.Mesh(new THREE.BoxGeometry(0.002,w,h),new THREE.MeshStandardMaterial({color:col,roughness:0.6}));
+  m.position.set(-0.0465,0.046-(u0+u1)/2*0.092,0.062-(v0+v1)/2*0.062);base.add(m);
+});
 shade(base);
 root.add(makeHousing(HOUSINGS[0]));
 
@@ -379,11 +405,15 @@ const rotGroups=[];const zeroInv=[];
    T.multiply(FIX[i]);zeroInv.push(T.clone().invert());parent=r;
  }}
 function attach(obj,k){obj.applyMatrix4(zeroInv[k]);rotGroups[k].add(obj);}
-for(let k=0;k<N-1;k++){attach(makeBracket(BRACKETS[k]),k);attach(makeHousing(HOUSINGS[k+1]),k);}
-// flange on J6 (in J6's own frame the flange normal is +Z)
+for(let k=0;k<N-1;k++){attach(makeLink(LINKS[k]),k);attach(makeHousing(HOUSINGS[k+1]),k);}
+attach(makeAtomHead(),4);
+// J6 flange with the 3x3 grid of Lego peg holes (in J6's own frame the flange normal is +Z, face at z=0)
 const flangeG=new THREE.Group();rotGroups[N-1].add(flangeG);
-const flange=new THREE.Mesh(new THREE.CylinderGeometry(0.02,0.02,0.005,36),steel);flange.rotation.x=Math.PI/2;flange.position.z=-0.0025;flangeG.add(flange);
-const mark=new THREE.Mesh(new THREE.BoxGeometry(0.004,0.012,0.002),graphite);mark.position.set(0,0.012,0.0005);flangeG.add(mark); // shows J6 rotation
+const flange=new THREE.Mesh(new THREE.CylinderGeometry(0.019,0.019,0.005,40),flangeMat);flange.rotation.x=Math.PI/2;flange.position.z=-0.0025;flangeG.add(flange);
+const holeG=new THREE.CylinderGeometry(0.0024,0.0024,0.0003,20);
+for(const hx of [-0.008,0,0.008])for(const hy of [-0.008,0,0.008]){
+  const h=new THREE.Mesh(holeG,holeMat);h.rotation.x=Math.PI/2;h.position.set(hx,hy,0.0001);flangeG.add(h);}
+const mark=new THREE.Mesh(new THREE.BoxGeometry(0.003,0.004,0.001),holeMat);mark.position.set(0,0.0155,0.0003);flangeG.add(mark); // shows J6 rotation
 const toolStub=new THREE.Mesh(new THREE.CylinderGeometry(0.006,0.004,1,20),graphite);toolStub.rotation.x=Math.PI/2;flangeG.add(toolStub);
 shade(flangeG);
 const tcpDot=new THREE.Mesh(new THREE.SphereGeometry(0.004,16,12),new THREE.MeshBasicMaterial({color:0xff5a36}));flangeG.add(tcpDot);
