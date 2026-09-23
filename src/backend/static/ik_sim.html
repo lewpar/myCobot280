@@ -69,7 +69,10 @@ label.chk input{accent-color:var(--amber);width:15px;height:15px;flex:none}
 .note{color:var(--muted);font-size:12px;margin:8px 0 0}
 textarea{width:100%;font:12px/1.4 "IBM Plex Mono",ui-monospace,monospace;background:var(--code);color:var(--text);
   border:1px solid var(--panel-edge);border-radius:8px;padding:8px;resize:none}
-input[type=text]{font:12px "IBM Plex Mono",ui-monospace,monospace;flex:1;min-width:0;background:var(--code);color:var(--text);border:1px solid var(--panel-edge);border-radius:8px;padding:6px 8px}
+button.stop{background:var(--bad);border-color:var(--bad);color:#fff;font-weight:600;width:100%;padding:8px}
+button.stop:hover{filter:brightness(1.08);background:var(--bad)}
+button.stop[aria-pressed="true"]{background:var(--good);border-color:var(--good);color:#fff}
+input[type=text],input[type=password]{font:12px "IBM Plex Mono",ui-monospace,monospace;flex:1;min-width:0;background:var(--code);color:var(--text);border:1px solid var(--panel-edge);border-radius:8px;padding:6px 8px}
 #hint{position:fixed;left:12px;bottom:calc(12px + env(safe-area-inset-bottom,0px));max-width:min(440px,calc(100% - 370px));
   padding:8px 12px;border-radius:10px;background:var(--panel);border:1px solid var(--panel-edge);color:var(--muted);font-size:12.5px}
 #fail{position:fixed;inset:0;display:none;align-items:center;justify-content:center;padding:24px;text-align:center}
@@ -89,6 +92,7 @@ input[type=text]{font:12px "IBM Plex Mono",ui-monospace,monospace;flex:1;min-wid
   <header><h1>Six-axis arm, 280 kinematics</h1><button id="toggle" aria-expanded="true">Hide</button></header>
   <div class="scroll">
     <div class="status" id="status"><span class="dot"></span><span id="statusText">Moving</span><span class="err" id="errText">–</span></div>
+    <div class="row"><button id="btnStop" class="stop" aria-pressed="false" title="Esc also stops">Stop</button></div>
 
     <h2>Target point in the base frame (mm)</h2>
     <div class="axis"><b>X</b><input type="range" id="tx" min="-350" max="350" step="1"><output id="oxv"></output></div>
@@ -113,7 +117,9 @@ input[type=text]{font:12px "IBM Plex Mono",ui-monospace,monospace;flex:1;min-wid
     <p class="note">Amber is the simulated servo, the thin line is the solved angle, green is the real servo's reading, and the faint mark is zero. Bars span the joint limits from the official URDF.</p>
 
     <h2>Real arm over the Feetech bus</h2>
-    <div class="row"><input type="text" id="wsUrl" value="ws://raspberrypi.local:8000/ws/arm" aria-label="Backend address"><button id="btnWs" aria-pressed="false">Connect</button></div>
+    <div class="row"><input type="text" id="wsUrl" value="ws://raspberrypi.local:8000/ws/arm" aria-label="Backend address"></div>
+    <div class="row"><input type="password" id="wsPw" placeholder="Arm password" autocomplete="current-password" aria-label="Arm password"><button id="btnWs" aria-pressed="false">Connect</button></div>
+    <label class="chk"><input type="checkbox" id="optRemember"> Remember the password on this device</label>
     <label class="chk"><input type="checkbox" id="optSend" checked> Drive the servos with the solved angles</label>
     <label class="chk"><input type="checkbox" id="optReal" checked> Show the real arm's measured pose</label>
     <div class="row"><button id="btnLimp" aria-pressed="false" disabled>Hand-guide mode</button></div>
@@ -122,9 +128,10 @@ input[type=text]{font:12px "IBM Plex Mono",ui-monospace,monospace;flex:1;min-wid
     <p class="note" style="margin-top:0">In hand-guide mode, pose the arm like the sim's zero pose, then set the zero. Bend each joint by hand: if the green pose turns the opposite way, reverse that joint.</p>
     <div class="row"><button id="btnZero" disabled>Set zero to the arm's current pose</button></div>
     <div class="row" id="dirRow" role="group" aria-label="Reverse joint direction"></div>
+    <p class="note" id="calNote"></p>
   </div>
 </aside>
-<div id="hint">Click the floor to drop the target there. Drag the arrows on the target to move it in 3D. Drag empty space to orbit, scroll to zoom.</div>
+<div id="hint">Click the floor to drop the target there. Drag the arrows on the target to move it in 3D. Drag empty space to orbit, scroll to zoom. Press Esc to stop.</div>
 
 <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/controls/OrbitControls.js"></script>
@@ -233,10 +240,43 @@ function ikRescue(qCur,target,orient){
     const q=[y,sgn*b[0],sgn*b[1],sgn*b[2],0,0];
     const r=ikIterate(q,target,80,orient);
     let move=0;for(let i=0;i<N;i++)move+=Math.abs(q[i]-qCur[i]);
-    const score=r.pos*1000+r.ori*20+move*0.5;
+    const score=r.pos*1000+r.ori*20+move*0.5+(checkPose(q)?1e6:0);
     if(score<bestScore){bestScore=score;best={q,r};}
   }
   return best;
+}
+
+/* ---------- Collision model: keep in sync with arm_model.py (metres) ---------- */
+const COLLISION={FLOOR_MARGIN:0.005,TCP_MIN_Z:0.003,BASE_R:0.075,BASE_TOP:0.12,COLUMN_R:0.05,COLUMN_TOP:0.19,WRIST_TO_UPPER_ARM:0.05};
+const colF=makeFK(),_fl=new THREE.Vector3(),_sd=new THREE.Vector3(),_sd2=new THREE.Vector3();
+function segDist(p,a,b){
+  _sd.subVectors(b,a);const L=_sd.lengthSq();
+  const f=L===0?0:THREE.MathUtils.clamp(_sd2.subVectors(p,a).dot(_sd)/L,0,1);
+  return _sd2.copy(a).addScaledVector(_sd,f).distanceTo(p);
+}
+function checkPose(q){ // q in radians; null if clear, otherwise a reason
+  for(let i=0;i<N;i++)if(q[i]<URDF_LIM[i][0]-0.5*DEG||q[i]>URDF_LIM[i][1]+0.5*DEG)return `${JOINTS[i].name} would pass its limit`;
+  fk(q,colF);const j=colF.pos,C=COLLISION;
+  _fl.copy(colF.tcp).addScaledVector(colF.dir,-toolLen);
+  const body=[['the elbow (J3)',j[2],0.03,0.03,false],['the forearm',j[2].clone().lerp(j[3],0.5),0.028,0.028,false],
+    ['J4',j[3],0.026,0.026,false],['the wrist (J5)',j[4],0.024,0.024,true],['J6',j[5],0.022,0.022,true],['the flange',_fl,0,0.02,true]];
+  if(toolLen>0.002)body.push(['the tool',_fl.clone().lerp(colF.tcp,0.5),0,0.01,true]);
+  for(const [name,p,rf,rs,wrist] of body){
+    if(p.z-rf<C.FLOOR_MARGIN)return `${name} would hit the table`;
+    const rad=Math.hypot(p.x,p.y);
+    if(rad<C.BASE_R+rs&&p.z-rs<C.BASE_TOP)return `${name} would hit the base`;
+    if(wrist&&rad<C.COLUMN_R+rs&&p.z-rs<C.COLUMN_TOP)return `${name} would hit the shoulder`;
+    if(wrist&&segDist(p,j[1],j[2])<C.WRIST_TO_UPPER_ARM)return `${name} would hit the upper arm`;
+  }
+  if(colF.tcp.z<C.TCP_MIN_Z)return 'the tool tip would go below the table';
+  return null;
+}
+const _pq=new Array(N).fill(0);
+function checkPath(q0,q1,steps=16){ // straight joint-space move, like the servos roughly do
+  if(checkPose(q0))return checkPose(q1);   // already in contact: allow moving to any clear pose
+  for(let s=1;s<=steps;s++){const f=s/steps;for(let i=0;i<N;i++)_pq[i]=q0[i]+(q1[i]-q0[i])*f;
+    const why=checkPose(_pq);if(why)return why+(s<steps?' on the way there':'');}
+  return null;
 }
 
 /* ---------- Scene (Three is Y-up; the robot root turns the Z-up base frame upright) ---------- */
@@ -386,7 +426,10 @@ if(THREE.TransformControls){
 }
 
 /* ---------- State & UI ---------- */
-const qIK=new Array(N).fill(0);const servo=FIX.map(()=>({pos:0,vel:0}));
+const qIK=new Array(N).fill(0);   // what the solver found
+const qCmd=new Array(N).fill(0);  // what the servos are told: only collision-free poses get here
+const servo=FIX.map(()=>({pos:0,vel:0}));
+let stopped=false,blocked=null,remoteBlocked=null;
 const servoF=makeFK(),ghostF=makeFK();
 let ikErr={pos:0,ori:0},demo=false,demoT=0,homeLock=false,lastRescue=null,lastRescueKey='',lastRescueT=0;
 const tx=$('#tx'),ty=$('#ty'),tz=$('#tz');
@@ -412,8 +455,8 @@ syncSliders();applyTool();
 
 function setDemo(on){demo=on;$('#btnDemo').setAttribute('aria-pressed',on);}
 $('#btnDemo').addEventListener('click',()=>{homeLock=false;setDemo(!demo);if(demo){demoT=0;$('#optDown').checked=true;
-  const b=ikRescue(qIK,V(0.2,0,0.11),true);if(b)for(let i=0;i<N;i++)qIK[i]=b.q[i];}});
-$('#btnHome').addEventListener('click',()=>{setDemo(false);for(let i=0;i<N;i++)qIK[i]=0;fk(qIK,ikF);setTarget(ikF.tcp.clone());$('#optDown').checked=false;homeLock=true;});
+  const b=ikRescue(qIK,V(0.23,0,0.11),true);if(b)for(let i=0;i<N;i++)qIK[i]=b.q[i];}});
+$('#btnHome').addEventListener('click',()=>{setDemo(false);setStopped(false);for(let i=0;i<N;i++)qIK[i]=0;fk(qIK,ikF);setTarget(ikF.tcp.clone());$('#optDown').checked=false;homeLock=true;});
 $('#btnRandom').addEventListener('click',()=>{setDemo(false);homeLock=false;
   const r=0.12+Math.random()*0.13,a=Math.random()*Math.PI*2,z=0.03+Math.random()*0.2;setTarget(V(Math.cos(a)*r,Math.sin(a)*r,z));});
 $('#optDown').addEventListener('change',()=>{homeLock=false;lastRescueKey='';});
@@ -435,43 +478,67 @@ const dirBoxes=JOINTS.map((j,i)=>{const l=document.createElement('label');l.clas
 $('#btnZero').addEventListener('click',()=>{
   if(!confirm('Make the arm\'s current pose the zero pose for every joint?'))return;send({type:'set_zero'});});
 function adoptMeasured(){ // start the sim from the arm's real pose so the next command doesn't swing it
-  for(let i=0;i<N;i++){qIK[i]=THREE.MathUtils.clamp(measured[i]*DEG,LIM[i][0],LIM[i][1]);servo[i].pos=measured[i]*DEG;servo[i].vel=0;}
+  for(let i=0;i<N;i++){qIK[i]=THREE.MathUtils.clamp(measured[i]*DEG,LIM[i][0],LIM[i][1]);qCmd[i]=qIK[i];servo[i].pos=measured[i]*DEG;servo[i].vel=0;}
   fk(qIK,ikF);setTarget(ikF.tcp.clone());homeLock=true;setDemo(false);lastSent='';
 }
-const anglesDeg=()=>qIK.map(a=>+(a/DEG).toFixed(2));
+const anglesDeg=()=>qCmd.map(a=>+(a/DEG).toFixed(2));
 function wsNote(t){$('#wsNote').textContent=t;}
 function send(o){if(ws&&ws.readyState===1)ws.send(JSON.stringify(o));}
 function setLimp(on){
   limp=on;$('#btnLimp').setAttribute('aria-pressed',on);
   if(on){setDemo(false);send({type:'torque',on:false});wsNote('Torque is off. Move the arm by hand and the sim follows it.');}
   else{ // hold where the arm is now: adopt the measured pose as the new goal before torque comes back
-    if(measured&&measured.every(v=>v!==null)){for(let i=0;i<N;i++){qIK[i]=measured[i]*DEG;servo[i].pos=qIK[i];servo[i].vel=0;}fk(qIK,ikF);setTarget(ikF.tcp.clone());}
+    if(measured&&measured.every(v=>v!==null)){for(let i=0;i<N;i++){qIK[i]=qCmd[i]=measured[i]*DEG;servo[i].pos=qIK[i];servo[i].vel=0;}fk(qIK,ikF);setTarget(ikF.tcp.clone());}
     homeLock=true;send({type:'torque',on:true});wsNote('Torque is on. The arm holds its pose until you set a new target.');}
 }
 $('#btnLimp').addEventListener('click',()=>setLimp(!limp));
+
+function setStopped(on,fromArm){
+  if(on===stopped)return;
+  stopped=on;const b=$('#btnStop');b.setAttribute('aria-pressed',on);b.textContent=on?'Resume':'Stop';
+  if(on){setDemo(false);for(let i=0;i<N;i++){qCmd[i]=servo[i].pos;servo[i].vel=0;}if(!fromArm)send({type:'stop'});}
+  else{
+    if(!fromArm)send({type:'resume'});
+    if(ws&&measured)resync=true;   // re-read the real pose before sending anything new
+    else{for(let i=0;i<N;i++)qIK[i]=qCmd[i];fk(qIK,ikF);setTarget(ikF.tcp.clone());homeLock=true;}
+  }
+}
+$('#btnStop').addEventListener('click',()=>setStopped(!stopped));
+addEventListener('keydown',e=>{if(e.key==='Escape')setStopped(true);});
+
+const PW_KEY='mycobot-password';
+try{const saved=sessionStorage.getItem(PW_KEY)||localStorage.getItem(PW_KEY);if(saved){$('#wsPw').value=saved;$('#optRemember').checked=!!localStorage.getItem(PW_KEY);}}catch(_){}
+function storePw(pw){try{sessionStorage.setItem(PW_KEY,pw);if($('#optRemember').checked)localStorage.setItem(PW_KEY,pw);else localStorage.removeItem(PW_KEY);}catch(_){}}
+function forgetPw(){try{sessionStorage.removeItem(PW_KEY);localStorage.removeItem(PW_KEY);}catch(_){}$('#wsPw').value='';}
+let toolTimer=null;
+toolIn.addEventListener('input',()=>{clearTimeout(toolTimer);toolTimer=setTimeout(()=>send({type:'set_tool',mm:+toolIn.value}),300);});
 function wsStop(msg){
   if(wsTimer)clearInterval(wsTimer);wsTimer=null;
   if(ws){const w=ws;ws=null;try{w.close();}catch(_){}}
-  measured=null;limp=false;calibKey='';resync=false;$('#btnLimp').disabled=true;$('#btnZero').disabled=true;dirBoxes.forEach(b=>b.disabled=true);
+  measured=null;limp=false;calibKey='';resync=false;remoteBlocked=null;$('#calNote').textContent='';$('#btnLimp').disabled=true;$('#btnZero').disabled=true;dirBoxes.forEach(b=>b.disabled=true);
   for(let i=0;i<N;i++){LIM[i][0]=URDF_LIM[i][0];LIM[i][1]=URDF_LIM[i][1];}$('#btnLimp').setAttribute('aria-pressed','false');
   $('#btnWs').textContent='Connect';$('#btnWs').setAttribute('aria-pressed','false');if(msg)wsNote(msg);
 }
 $('#btnWs').addEventListener('click',()=>{
   if(ws){wsStop('Disconnected from the backend.');return;}
+  const pw=$('#wsPw').value;
+  if(!pw){wsNote('Enter the arm password first.');$('#wsPw').focus();return;}
   let sock;
   try{sock=new WebSocket($('#wsUrl').value.trim());}catch(err){wsNote('That address is not a valid WebSocket URL. It should look like ws://raspberrypi.local:8000/ws/arm.');return;}
   ws=sock;$('#btnWs').textContent='Disconnect';$('#btnWs').setAttribute('aria-pressed','true');wsNote('Connecting…');
   let opened=false;
+  let toolSynced=false;
   sock.onopen=()=>{opened=true;lastSent='';$('#btnLimp').disabled=false;
+    sock.send(JSON.stringify({type:'auth',password:pw}));storePw(pw);
     wsNote('Connected. Waiting for servo readings before sending anything.');
     wsTimer=setInterval(()=>{
-      if(sock.readyState!==1||limp||resync||!$('#optSend').checked||!measured)return;
+      if(sock.readyState!==1||limp||resync||stopped||!$('#optSend').checked||!measured)return;
       const msg=JSON.stringify({type:'goal',angles:anglesDeg(),speed:+spd.value,acc:+acc.value});
       if(msg!==lastSent){sock.send(msg);lastSent=msg;}
     },100);};
   sock.onmessage=ev=>{
     let m;try{m=JSON.parse(ev.data);}catch(_){return;}
-    if(m.type==='error'){wsStop(m.message||'The backend reported an error.');return;}
+    if(m.type==='error'){if(m.code==='auth')forgetPw();wsStop(m.code==='auth'?'The backend rejected that password.':(m.message||'The backend reported an error.'));return;}
     if(m.type!=='state'||!Array.isArray(m.angles))return;
     const first=!measured;
     measured=m.angles.slice(0,N).map(v=>typeof v==='number'?v:null);measuredAt=performance.now();armTorque=m.torque;
@@ -479,6 +546,15 @@ $('#btnWs').addEventListener('click',()=>{
     if(Array.isArray(m.limits))m.limits.forEach((l,i)=>{if(i<N&&l[1]>l[0]){LIM[i][0]=l[0]*DEG;LIM[i][1]=l[1]*DEG;}});
     if(Array.isArray(m.dir))m.dir.forEach((d,i)=>{if(dirBoxes[i]){dirBoxes[i].checked=d<0;dirBoxes[i].disabled=false;}});
     $('#btnZero').disabled=false;
+    remoteBlocked=m.blocked||null;
+    if(typeof m.stopped==='boolean'&&m.stopped!==stopped)setStopped(m.stopped,true);
+    if(!toolSynced&&typeof m.tool_mm==='number'){toolSynced=true;toolIn.value=m.tool_mm;toolLen=m.tool_mm/1000;applyTool();syncSliders();}
+    // warn when calibration is missing or a zero leaves a joint short of its travel
+    const notes=[];
+    if(m.calibrated===false)notes.push('Not calibrated yet, so the angles use default zeros and the arm-side collision check is only approximate.');
+    if(Array.isArray(m.limits))m.limits.forEach((l,i)=>{const u=JOINTS[i];const lo=u.min/DEG,hi=u.max/DEG;
+      if(l[0]>lo+10||l[1]<hi-10)notes.push(`${u.name} can only turn ${l[0].toFixed(0)}° to ${l[1].toFixed(0)}° with this zero (full travel ${lo.toFixed(0)}° to ${hi.toFixed(0)}°). A zero nearer mid-travel gives it more room.`);});
+    $('#calNote').textContent=notes.join(' ');
     // a zero or direction change re-maps every angle, so re-read the pose before sending anything
     const key=JSON.stringify([m.zero,m.dir]);
     if(calibKey&&key!==calibKey){resync=true;wsNote('Calibration changed. Re-reading the arm\'s pose.');}
@@ -519,13 +595,13 @@ const clock=new THREE.Clock();
 function frame(){
   requestAnimationFrame(frame);
   const dt=Math.min(clock.getDelta(),0.05);
-  if(demo){demoT+=dt*0.7;setTarget(V(0.2+0.05*Math.sin(2*demoT),0.08*Math.sin(demoT),0.11+0.03*Math.sin(3*demoT)));}
+  if(demo){demoT+=dt*0.7;setTarget(V(0.23+0.04*Math.sin(2*demoT),0.08*Math.sin(demoT),0.11+0.03*Math.sin(3*demoT)));}
   const orient=$('#optDown').checked;
   const haveReal=measured&&measured.every(v=>v!==null)&&performance.now()-measuredAt<1500;
-  if(limp&&haveReal){for(let i=0;i<N;i++)qIK[i]=measured[i]*DEG;fk(qIK,ikF);setTarget(ikF.tcp.clone());ikErr={pos:0,ori:0};}
+  if(limp&&haveReal){for(let i=0;i<N;i++)qIK[i]=qCmd[i]=measured[i]*DEG;fk(qIK,ikF);setTarget(ikF.tcp.clone());ikErr={pos:0,ori:0};}
   else if(!homeLock){
     ikErr=ikIterate(qIK,target,14,orient);
-    const stuck=ikErr.pos>0.002||(orient&&ikErr.ori>2*DEG);
+    const stuck=ikErr.pos>0.002||(orient&&ikErr.ori>2*DEG)||!!checkPose(qIK);
     const k=target.toArray().map(v=>v.toFixed(4)).join()+orient+toolLen;
     if(stuck&&!demo&&k!==lastRescueKey&&performance.now()-lastRescueT>250){
       lastRescueKey=k;lastRescueT=performance.now();
@@ -533,20 +609,27 @@ function frame(){
       if(b&&(b.r.pos<ikErr.pos-0.001||(b.r.pos<0.002&&b.r.ori<ikErr.ori-DEG))){for(let i=0;i<N;i++)qIK[i]=b.q[i];ikErr=b.r;}
     }
   }else ikErr={pos:0,ori:0};
+  // only collision-free poses (and paths) reach the servos
+  blocked=null;
+  if(!stopped&&!(limp&&haveReal)){
+    const cur=servo.map(s=>s.pos);
+    blocked=checkPose(qIK)||checkPath(cur,qIK);
+    if(!blocked)for(let i=0;i<N;i++)qCmd[i]=qIK[i];
+  }
 
   const vmax=spd.value*DEG,amax=acc.value*DEG;let moving=false;
   for(let i=0;i<N;i++){
-    const s=servo[i],err=qIK[i]-s.pos;
+    const s=servo[i],err=qCmd[i]-s.pos;
     const vdes=Math.sign(err)*Math.min(vmax,Math.sqrt(2*amax*Math.abs(err))*0.95);
     s.vel+=THREE.MathUtils.clamp(vdes-s.vel,-amax*dt,amax*dt);
     let step=s.vel*dt;
     if(Math.abs(step)>Math.abs(err)&&Math.sign(step)===Math.sign(err)){step=err;s.vel=0;}
     s.pos=THREE.MathUtils.clamp(s.pos+step,LIM[i][0],LIM[i][1]);
-    if(Math.abs(qIK[i]-s.pos)<3e-4&&Math.abs(s.vel)<0.02){s.pos=qIK[i];s.vel=0;}
+    if(Math.abs(qCmd[i]-s.pos)<3e-4&&Math.abs(s.vel)<0.02){s.pos=qCmd[i];s.vel=0;}
     rotGroups[i].rotation.z=s.pos;
     ledMats[i].emissiveIntensity=0.12+1.6*Math.abs(s.vel)/vmax;
-    if(Math.abs(s.vel)>0.01||Math.abs(qIK[i]-s.pos)>3e-4)moving=true;
-    const ui=jointUI[i];ui.pos.style.left=pct(i,s.pos);ui.tgt.style.left=pct(i,qIK[i]);ui.val.textContent=(s.pos/DEG).toFixed(1)+'°';
+    if(Math.abs(s.vel)>0.01||Math.abs(qCmd[i]-s.pos)>3e-4)moving=true;
+    const ui=jointUI[i];ui.pos.style.left=pct(i,s.pos);ui.tgt.style.left=pct(i,qCmd[i]);ui.val.textContent=(s.pos/DEG).toFixed(1)+'°';
   }
   fk(servo.map(s=>s.pos),servoF);
   if(trail.visible)pushTrail(servoF.tcp);
@@ -554,6 +637,7 @@ function frame(){
   const ga=ghostGeo.attributes.position.array;ga.set([0,0,0.06],0);
   ghostF.pos.forEach((p,k)=>ga.set([p.x,p.y,p.z],(k+1)*3));ga.set([ghostF.tcp.x,ghostF.tcp.y,ghostF.tcp.z],(N+1)*3);
   ghostGeo.attributes.position.needsUpdate=true;
+  const gc=blocked?cssVar('--bad'):'#3b82c4';ghost.material.color.set(gc);ghostDots.material.color.set(gc);
 
   const reachable=ikErr.pos<0.003&&(!orient||ikErr.ori<3*DEG);
   targetMat.color.set(reachable?cssVar('--amber'):cssVar('--bad'));targetMat.emissive.copy(targetMat.color);
@@ -563,7 +647,10 @@ function frame(){
   floorRing.position.set(target.x,target.y,0.0008);
 
   const st=$('#status');
-  if(!reachable){st.className='status bad';$('#statusText').textContent=orient&&ikErr.pos<0.003?'Reachable, but not facing straight down':'Out of reach, holding the closest pose';}
+  if(stopped){st.className='status bad';$('#statusText').textContent='Stopped. Press Resume to move again';}
+  else if(blocked||remoteBlocked){st.className='status bad';const why=blocked||remoteBlocked;
+    $('#statusText').textContent=`Blocked: ${why}${blocked?'':' (checked by the arm)'}`;}
+  else if(!reachable){st.className='status bad';$('#statusText').textContent=orient&&ikErr.pos<0.003?'Reachable, but not facing straight down':'Out of reach, holding the closest pose';}
   else if(moving){st.className='status';$('#statusText').textContent='Servos moving';}
   else{st.className='status ok';$('#statusText').textContent='At target';}
   $('#errText').textContent=(servoF.tcp.distanceTo(target)*1000).toFixed(1)+' mm';

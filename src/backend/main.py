@@ -1,38 +1,81 @@
-import sys
+import asyncio
+import hmac
+import json
 import os
+import secrets
+import sys
+import time
+from collections import defaultdict, deque
+from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-import asyncio
-import json
-
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from pydantic import BaseModel
-from contextlib import asynccontextmanager
+from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel, Field
 
-from mycobot280 import MyCobot280
+import arm_model as model
+from mycobot280 import MyCobot280, SPEED_MIN, SPEED_MAX, ACCEL_MIN, ACCEL_MAX
 from ik_link import IKLink
 
 SERIAL_PORT = os.environ.get("MYCOBOT_PORT", "/dev/ttyAMA0")
 SERIAL_BAUD = int(os.environ.get("MYCOBOT_BAUD", "1000000"))
 CORS_ORIGINS = os.environ.get("MYCOBOT_CORS_ORIGINS", "*")
 
+# ---------------------------------------------------------------------------
+# Password
+# ---------------------------------------------------------------------------
+# Every /api request must carry the password in the X-Arm-Password header. Browsers can't set
+# headers on a WebSocket, so /ws/arm expects {"type": "auth", "password": ...} as its first message.
+# Note this is plain HTTP: the password protects against casual use on the network, not against
+# someone capturing traffic. Put the backend behind HTTPS if that matters.
+PASSWORD = os.environ.get("MYCOBOT_PASSWORD", "")
+if not PASSWORD:
+    PASSWORD = secrets.token_urlsafe(9)
+    print("\n" + "=" * 64)
+    print(f"  No MYCOBOT_PASSWORD set. Password for this run:  {PASSWORD}")
+    print("  Set MYCOBOT_PASSWORD in src/backend/.env to choose your own.")
+    print("=" * 64 + "\n", flush=True)
+
+AUTH_HEADER = "X-Arm-Password"
+FAIL_WINDOW, FAIL_LIMIT = 60.0, 5
+_failures: dict[str, deque] = defaultdict(deque)
+
+
+def _password_ok(given: str | None) -> bool:
+    return given is not None and hmac.compare_digest(given.encode(), PASSWORD.encode())
+
+
+def _locked_out(ip: str) -> bool:
+    q = _failures[ip]
+    while q and time.monotonic() - q[0] > FAIL_WINDOW:
+        q.popleft()
+    return len(q) >= FAIL_LIMIT
+
+
+async def _record_failure(ip: str):
+    _failures[ip].append(time.monotonic())
+    await asyncio.sleep(0.5)   # slows down guessing
+
+
+# ---------------------------------------------------------------------------
+# App
+# ---------------------------------------------------------------------------
+
 arm: MyCobot280 | None = None
-ik_link: IKLink | None = None
-home_positions: dict[int, int] = {}
+link: IKLink | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global arm, ik_link
+    global arm, link
     try:
         arm = MyCobot280(SERIAL_PORT, SERIAL_BAUD)
-        ik_link = IKLink(arm)
+        link = IKLink(arm)
     except Exception as e:
         print(f"WARNING: Could not open serial port {SERIAL_PORT}: {e}")
     yield
@@ -43,15 +86,26 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="MyCobot280 API", lifespan=lifespan)
 
 origins = CORS_ORIGINS.split(",") if CORS_ORIGINS != "*" else ["*"]
-allow_creds = CORS_ORIGINS != "*"
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_credentials=allow_creds,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def require_password(request: Request, call_next):
+    if request.url.path.startswith("/api") and request.method != "OPTIONS":
+        ip = request.client.host if request.client else "?"
+        if _locked_out(ip):
+            return JSONResponse({"detail": "Too many wrong passwords. Wait a minute and try again."},
+                                status_code=429)
+        if not _password_ok(request.headers.get(AUTH_HEADER)):
+            await _record_failure(ip)
+            return JSONResponse({"detail": "Password required"}, status_code=401)
+    return await call_next(request)
 
 
 def _get_arm() -> MyCobot280:
@@ -60,20 +114,40 @@ def _get_arm() -> MyCobot280:
     return arm
 
 
+def _guard_motion(new_ticks: dict[int, int]):
+    """Refuse a move while stopped or if it would collide. ``new_ticks`` maps servo id -> target."""
+    if link.stopped:
+        raise HTTPException(423, "The arm is stopped. Resume it before moving.")
+    targets = [new_ticks.get(sid) for sid in model.JOINT_IDS]
+    if any(sid not in model.JOINT_IDS for sid in new_ticks):
+        return   # not an arm joint: nothing to check
+    why = link.check_ticks(targets)
+    if why:
+        raise HTTPException(409, f"Move refused: {why}.")
+
+
+def _aborted():
+    return link is not None and link.stopped
+
+
 # ---------------------------------------------------------------------------
-# Pydantic models
+# Pydantic models (ranges match the servo registers, so bad values are rejected, not wrapped)
 # ---------------------------------------------------------------------------
 
+Speed = Field(600, ge=SPEED_MIN, le=SPEED_MAX, description="steps/s")
+Accel = Field(20, ge=ACCEL_MIN, le=ACCEL_MAX, description="100 steps/s² per unit")
+
+
 class MoveRequest(BaseModel):
-    position: int
-    speed: int = 600
-    accel: int = 20
+    position: int = Field(ge=0, le=4095)
+    speed: int = Speed
+    accel: int = Accel
 
 
 class MoveRelRequest(BaseModel):
-    delta: int
-    speed: int = 600
-    accel: int = 20
+    delta: int = Field(ge=-4095, le=4095)
+    speed: int = Speed
+    accel: int = Accel
 
 
 class TorqueRequest(BaseModel):
@@ -81,31 +155,31 @@ class TorqueRequest(BaseModel):
 
 
 class CenterRequest(BaseModel):
-    position: int = 2048
-    speed: int = 600
-    accel: int = 20
+    position: int = Field(2048, ge=0, le=4095)
+    speed: int = Speed
+    accel: int = Accel
 
 
 class ColorRequest(BaseModel):
-    r: int = 0
-    g: int = 0
-    b: int = 0
+    r: int = Field(0, ge=0, le=255)
+    g: int = Field(0, ge=0, le=255)
+    b: int = Field(0, ge=0, le=255)
 
 
 class PixelRequest(BaseModel):
-    x: int = 0
-    y: int = 0
-    r: int = 255
-    g: int = 0
-    b: int = 0
+    x: int = Field(0, ge=0, le=4)
+    y: int = Field(0, ge=0, le=4)
+    r: int = Field(255, ge=0, le=255)
+    g: int = Field(0, ge=0, le=255)
+    b: int = Field(0, ge=0, le=255)
 
 
 class BrightnessRequest(BaseModel):
-    percent: int
+    percent: int = Field(ge=1, le=100)
 
 
 # ---------------------------------------------------------------------------
-# Health
+# Health, auth, safety
 # ---------------------------------------------------------------------------
 
 @app.get("/api/health")
@@ -118,6 +192,33 @@ def health():
         "servo_ids": servos,
         "serial_port": SERIAL_PORT,
     }
+
+
+@app.get("/api/auth")
+def auth_check():
+    """200 if the X-Arm-Password header is right (the middleware already checked it)."""
+    return {"ok": True}
+
+
+@app.get("/api/safety")
+def safety_state():
+    return {"stopped": bool(link and link.stopped),
+            "calibrated": bool(link and link.calib["calibrated"])}
+
+
+@app.post("/api/stop")
+def stop():
+    """Hold every joint where it is and refuse motion until /api/resume."""
+    _get_arm()
+    link.stop()
+    return {"success": True, "stopped": True}
+
+
+@app.post("/api/resume")
+def resume():
+    _get_arm()
+    link.resume()
+    return {"success": True, "stopped": False}
 
 
 # ---------------------------------------------------------------------------
@@ -163,14 +264,23 @@ def get_servo(servo_id: int):
 @app.post("/api/servo/{servo_id}/move")
 def servo_move(servo_id: int, req: MoveRequest):
     a = _get_arm()
-    ok, pos = a.move(servo_id, req.position, req.speed, req.accel)
+    lo, hi = a.safe_limits(servo_id)
+    target = max(lo, min(hi, req.position))
+    _guard_motion({servo_id: target})
+    ok, pos = a.move(servo_id, target, req.speed, req.accel, should_abort=_aborted)
     return {"success": ok, "id": servo_id, "position": pos, "target": req.position}
 
 
 @app.post("/api/servo/{servo_id}/move_rel")
 def servo_move_rel(servo_id: int, req: MoveRelRequest):
     a = _get_arm()
-    ok, pos = a.move_rel(servo_id, req.delta, req.speed, req.accel)
+    cur = a.get_position(servo_id)
+    if cur is None:
+        raise HTTPException(502, f"Servo {servo_id} did not respond")
+    lo, hi = a.safe_limits(servo_id)
+    target = max(lo, min(hi, cur + req.delta))
+    _guard_motion({servo_id: target})
+    ok, pos = a.move(servo_id, target, req.speed, req.accel, should_abort=_aborted)
     return {"success": ok, "id": servo_id, "position": pos}
 
 
@@ -183,9 +293,7 @@ def servo_torque(servo_id: int, req: TorqueRequest):
 
 @app.post("/api/servo/{servo_id}/center")
 def servo_center(servo_id: int, req: CenterRequest):
-    a = _get_arm()
-    ok, pos = a.center(servo_id, req.position, req.speed, req.accel)
-    return {"success": ok, "id": servo_id, "position": pos}
+    return servo_move(servo_id, MoveRequest(position=req.position, speed=req.speed, accel=req.accel))
 
 
 @app.post("/api/servo/{servo_id}/ping")
@@ -224,7 +332,7 @@ def atom_ping():
 def atom_brightness(req: BrightnessRequest):
     a = _get_arm()
     a.atom.set_brightness(req.percent)
-    return {"success": True, "percent": max(1, min(100, req.percent))}
+    return {"success": True, "percent": req.percent}
 
 
 @app.get("/api/atom/state")
@@ -237,58 +345,59 @@ def atom_get_state():
 
 
 # ---------------------------------------------------------------------------
-# All servos quick scan (no limits, faster)
+# All servos
 # ---------------------------------------------------------------------------
 
 @app.get("/api/servos/status")
 def servos_status():
     a = _get_arm()
     ids = a.servo_ids
-    result = []
-    for sid in ids:
-        pos = a.get_position(sid)
-        result.append({"id": sid, "position": pos})
-    return result
+    return [{"id": sid, "position": pos} for sid, pos in zip(ids, a.read_positions(ids))]
 
 
+# Home positions live in center_positions.json, shared with arm_server.py's SET_CENTER/CENTER.
 @app.get("/api/servos/home")
 def get_home_positions():
-    return {"home": home_positions}
+    return {"home": model.load_centers()}
 
 
 @app.post("/api/servos/home")
 def set_home_positions():
-    global home_positions
     a = _get_arm()
-    home_positions = {}
-    for sid in sorted(a.servo_ids):
-        pos = a.get_position(sid)
-        if pos is not None:
-            home_positions[sid] = pos
-    return {"success": True, "home": home_positions}
+    ids = sorted(a.servo_ids)
+    home = {sid: pos for sid, pos in zip(ids, a.read_positions(ids)) if pos is not None}
+    centers = model.load_centers()
+    centers.update(home)
+    model.save_centers(centers)
+    return {"success": True, "home": centers}
 
 
 @app.post("/api/servos/center_all")
 def center_all_servos():
+    """Move every joint to its home position together, after checking the path is clear."""
     a = _get_arm()
-    results = []
+    centers = model.load_centers()
+    targets = {}
     for sid in sorted(a.servo_ids):
-        target = home_positions.get(sid, 2048)
-        ok, pos = a.move(sid, target)
-        results.append({"id": sid, "success": ok, "position": pos, "target": target})
-    return {"success": True, "servos": results}
+        lo, hi = a.safe_limits(sid)
+        targets[sid] = max(lo, min(hi, centers.get(sid, 2048)))
+    _guard_motion({sid: t for sid, t in targets.items() if sid in model.JOINT_IDS})
+    results = a.move_all(targets, should_abort=_aborted)
+    return {"success": all(ok for ok, _ in results.values()),
+            "servos": [{"id": sid, "success": ok, "position": pos, "target": targets[sid]}
+                       for sid, (ok, pos) in results.items()]}
 
 
 @app.post("/api/servos/torque_all")
 def torque_all_servos(req: TorqueRequest):
     a = _get_arm()
-    for sid in sorted(a.servo_ids):
-        a.set_torque(sid, req.enabled)
+    a.sync_torque(sorted(a.servo_ids), req.enabled)
     return {"success": True, "enabled": req.enabled}
 
 
 # ---------------------------------------------------------------------------
-# IK simulator page, served from here so it can reach /ws/arm on the same host
+# IK simulator page, served from here so it can reach /ws/arm on the same host.
+# The page itself holds no secrets; it asks for the password before connecting.
 # ---------------------------------------------------------------------------
 
 @app.get("/sim")
@@ -303,16 +412,34 @@ def ik_sim_page():
 @app.websocket("/ws/arm")
 async def ws_arm(ws: WebSocket):
     await ws.accept()
-    if ik_link is None:
-        await ws.send_json({"type": "error", "message": f"Robot not connected on {SERIAL_PORT}"})
+    ip = ws.client.host if ws.client else "?"
+    if _locked_out(ip):
+        await ws.send_json({"type": "error", "code": "locked",
+                            "message": "Too many wrong passwords. Wait a minute and try again."})
+        await ws.close(code=4429)
+        return
+    try:
+        first = json.loads(await asyncio.wait_for(ws.receive_text(), timeout=5))
+    except (asyncio.TimeoutError, ValueError, WebSocketDisconnect):
+        first = {}
+    if not (isinstance(first, dict) and first.get("type") == "auth" and _password_ok(first.get("password"))):
+        await _record_failure(ip)
+        try:
+            await ws.send_json({"type": "error", "code": "auth", "message": "Wrong or missing password."})
+            await ws.close(code=4401)
+        except Exception:
+            pass
+        return
+    if link is None:
+        await ws.send_json({"type": "error", "code": "no_arm", "message": f"Robot not connected on {SERIAL_PORT}"})
         await ws.close()
         return
-    ik_link.add_client()
+    link.add_client()
 
     async def sender():
         while True:
             await asyncio.sleep(0.1)
-            state = await asyncio.to_thread(ik_link.state)
+            state = await asyncio.to_thread(link.state)
             await ws.send_json(state)
 
     task = asyncio.create_task(sender())
@@ -324,12 +451,12 @@ async def ws_arm(ws: WebSocket):
             except ValueError:
                 continue
             if isinstance(msg, dict):
-                ik_link.handle(msg)
+                await asyncio.to_thread(link.handle, msg)
     except WebSocketDisconnect:
         pass
     finally:
         task.cancel()
-        ik_link.remove_client()
+        link.remove_client()
 
 
 if __name__ == "__main__":

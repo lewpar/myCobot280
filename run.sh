@@ -64,10 +64,14 @@ run_backend() {
     echo -e "${GREEN}Starting FastAPI backend on http://0.0.0.0:8000${NC}"
     echo -e "${GREEN}  Serial port: $MYCOBOT_PORT${NC}"
     echo -e "${GREEN}  API docs at http://localhost:8000/docs${NC}"
+    echo -e "${GREEN}  IK simulator at http://localhost:8000/sim${NC}"
     echo
     check_deps
     trap '' INT
-    $PYTHON -m uvicorn main:app --app-dir "$PROJECT_DIR/src/backend" --host 0.0.0.0 --port 8000 --reload
+    # --reload restarts the server whenever a file changes: handy while editing, risky with the arm moving
+    local reload=""
+    [ "${MYCOBOT_DEV:-0}" = "1" ] && reload="--reload"
+    $PYTHON -m uvicorn main:app --app-dir "$PROJECT_DIR/src/backend" --host 0.0.0.0 --port 8000 $reload
 }
 
 run_frontend() {

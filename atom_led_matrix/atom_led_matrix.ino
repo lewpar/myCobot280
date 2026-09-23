@@ -159,6 +159,59 @@ void process_frame(const uint8_t* frame, int frame_len) {
     }
 }
 
+// ---- Frame parser ------------------------------------------------------------
+// Everything on the bus passes through here: commands for the servos, their replies, our own
+// replies echoed back, and occasionally a corrupted byte. The parser must never mistake the
+// middle of someone else's frame for the start of one addressed to us.
+int skip_bytes = 0;   // bytes left of a frame too long to buffer (never one of ours)
+
+void feed_byte(uint8_t b);
+
+// A frame failed its checksum: drop its first byte and re-feed the rest, so a real header that
+// started inside the bad frame is still found.
+void resync() {
+    uint8_t tmp[MAX_FRAME];
+    int n = buf_pos - 1;
+    memcpy(tmp, buf + 1, n);
+    buf_pos = 0;
+    for (int i = 0; i < n; i++) feed_byte(tmp[i]);
+}
+
+void feed_byte(uint8_t b) {
+    if (skip_bytes > 0) { skip_bytes--; return; }
+
+    // ---- header: FF FF (an extra FF is still header; 0xFF is never a valid ID) ----
+    if (buf_pos < 2) {
+        if (b == FEETECH_HEADER) buf[buf_pos++] = b;
+        else buf_pos = 0;
+        return;
+    }
+    if (buf_pos == 2 && b == FEETECH_HEADER) return;
+
+    buf[buf_pos++] = b;
+    if (buf_pos < 4) return;
+
+    int len = buf[3];                 // bytes after LEN: instruction/error + params + checksum
+    if (len < 2) { resync(); return; }
+    int total = len + 4;              // FF FF ID LEN ... CHK
+    if (total > MAX_FRAME) {
+        // too long to be for us (a big sync-write or status reply): skip it whole instead of
+        // hunting for FF FF inside its payload
+        skip_bytes = total - buf_pos;
+        buf_pos = 0;
+        return;
+    }
+    if (buf_pos < total) return;
+
+    if (checksum(buf + 2, total - 3) == buf[total - 1]) {
+        if (buf[2] == OUR_ID) process_frame(buf, total);
+        buf_pos = 0;
+    } else {
+        resync();
+    }
+}
+// ---- end frame parser --------------------------------------------------------
+
 // ---- Setup ----------------------------------------------------------------
 
 void setup() {
@@ -193,35 +246,6 @@ void loop() {
     }
 
     while (BusSerial.available()) {
-        uint8_t b = BusSerial.read();
-
-        // ---- look for Feetech header 0xFF 0xFF ----
-        if (buf_pos < 2) {
-            if (b == FEETECH_HEADER) {
-                buf[buf_pos++] = b;
-            } else {
-                buf_pos = 0;
-            }
-            continue;
-        }
-
-        buf[buf_pos++] = b;
-
-        // Once we have LEN (buf[3]), we know the total frame size
-        if (buf_pos >= 4) {
-            int total = buf[3] + 4;   // Feetech frame: 2 headers + ID + LEN + payload + checksum
-            if (total > MAX_FRAME) {
-                buf_pos = 0;
-                continue;
-            }
-            if (buf_pos >= total) {
-                // Validate checksum (over ID..last byte before checksum)
-                uint8_t chk = checksum(buf + 2, total - 3);
-                if (chk == buf[total - 1] && buf[2] == OUR_ID) {
-                    process_frame(buf, total);
-                }
-                buf_pos = 0;
-            }
-        }
+        feed_byte(BusSerial.read());
     }
 }

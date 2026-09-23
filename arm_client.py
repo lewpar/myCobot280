@@ -11,6 +11,7 @@ interactive menu for controlling the arm.
 
 import os
 import queue
+import getpass
 import socket
 import sys
 import termios
@@ -226,6 +227,10 @@ def print_menu():
     print(f"  {B}13{R}) Ping ATOM")
     print(f"  {B}14{R}) Set ATOM LED pixel (single)")
     print()
+    print(f"  {CY}─── SAFETY ───{R}")
+    print(f"  {B}s{R})  STOP: hold every joint where it is")
+    print(f"  {B}r{R})  Resume after a stop")
+    print()
     print(f"  {D}0{R})  Quit")
     print()
 
@@ -249,6 +254,16 @@ def run_menu(sock: socket.socket):
         except (EOFError, KeyboardInterrupt):
             print("\nQuit")
             break
+
+        # ---- STOP / RESUME ----
+        if choice.lower() in ("s", "stop"):
+            resp = send_command(sock, "STOP")
+            print(f"\n{ok('Stopped. Moves are refused until you resume.') if resp.startswith('OK') else fail(resp)}")
+            continue
+        if choice.lower() in ("r", "resume"):
+            resp = send_command(sock, "RESUME")
+            print(f"\n{ok('Resumed.') if resp.startswith('OK') else fail(resp)}")
+            continue
 
         # ---- STATUS ----
         if choice == "1":
@@ -579,7 +594,7 @@ def run_menu(sock: socket.socket):
                     print(warn("Coordinates must be 0-4."))
 
         else:
-            print(warn("Invalid choice. Enter a number from the menu (0–14)."))
+            print(warn("Invalid choice. Enter a number from the menu (0–14), s or r."))
 
         if choice != "0":
             input(f"\n{D}Press Enter to return to menu...{R}")
@@ -625,6 +640,24 @@ def main():
     stop = threading.Event()
     reader = threading.Thread(target=reader_thread, args=(sock, stop), daemon=True)
     reader.start()
+
+    # the server wants AUTH <password> before anything else
+    for attempt in range(3):
+        password = os.environ.get("MYCOBOT_PASSWORD") if attempt == 0 else None
+        if not password:
+            password = getpass.getpass(f"  Arm password: ")
+        try:
+            resp = send_command(sock, f"AUTH {password}")
+        except ConnectionError as e:
+            print(fail(f"Connection lost: {e}"))
+            sys.exit(1)
+        if resp.startswith("OK"):
+            print(f"  {ok('Signed in')}\n")
+            break
+        print(f"  {fail(resp)}")
+    else:
+        print(fail("Too many wrong passwords."))
+        sys.exit(1)
 
     try:
         run_menu(sock)

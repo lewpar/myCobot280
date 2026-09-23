@@ -1,14 +1,14 @@
 """Test script for myCobot280 using the pymycobot library.
 
 Uses the official 0xFE 0xFE binary protocol over /dev/ttyAMA0 at 1,000,000 baud.
-Run with: python test.py
+Run with: python3 tools/diagnostics/pymycobot_test.py
 """
 
 import os
 import sys
 import time
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "pymycobot"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "pymycobot"))
 
 import pymycobot
 

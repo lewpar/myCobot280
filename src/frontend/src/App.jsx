@@ -6,8 +6,70 @@ const SERVO_IDS = [1, 2, 3, 4, 5, 6]
 const SERVO_NAMES = { 1: 'Base', 2: 'Joint 1', 3: 'Joint 2', 4: 'Joint 3', 5: 'Joint 4', 6: 'End Effector' }
 const JOG_STEP = 100
 
+function Login({ onSignedIn }) {
+  const [value, setValue] = useState('')
+  const [remember, setRemember] = useState(false)
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const submit = async e => {
+    e.preventDefault()
+    if (!value) return
+    setBusy(true)
+    setError('')
+    api.setPassword(value, remember)
+    try {
+      await api.checkAuth()
+      onSignedIn()
+    } catch (err) {
+      setError(err instanceof api.AuthError ? 'That password is not right.' : err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="app">
+      <form className="login" onSubmit={submit}>
+        <h1>MyCobot280</h1>
+        <label htmlFor="pw">Arm password</label>
+        <input id="pw" type="password" autoFocus autoComplete="current-password"
+               value={value} onChange={e => setValue(e.target.value)} />
+        <label className="remember">
+          <input type="checkbox" checked={remember} onChange={e => setRemember(e.target.checked)} />
+          Remember on this device
+        </label>
+        <button className="btn btn-accent" type="submit" disabled={busy || !value}>
+          {busy ? 'Checking...' : 'Sign in'}
+        </button>
+        {error && <div className="error">{error}</div>}
+        <p className="hint">The password is MYCOBOT_PASSWORD in src/backend/.env, or the one the backend prints when it starts.</p>
+      </form>
+    </div>
+  )
+}
+
 function App() {
+  // null = checking the saved password, false = need to sign in, true = signed in
+  const [authed, setAuthed] = useState(null)
+
+  useEffect(() => {
+    api.setAuthFailureHandler(() => setAuthed(false))
+    if (!api.hasPassword()) {
+      setAuthed(false)
+      return
+    }
+    api.checkAuth().then(() => setAuthed(true)).catch(() => setAuthed(false))
+  }, [])
+
+  if (authed === null) return <div className="app"><p className="hint">Checking password...</p></div>
+  if (!authed) return <Login onSignedIn={() => setAuthed(true)} />
+  return <ArmPanel onSignOut={() => { api.clearPassword(); setAuthed(false) }} />
+}
+
+function ArmPanel({ onSignOut }) {
   const [connected, setConnected] = useState(false)
+  const [stopped, setStopped] = useState(false)
   const [servos, setServos] = useState({})
   const [error, setError] = useState('')
   const [loading, setLoading] = useState({})
@@ -19,6 +81,15 @@ function App() {
   const [activePixel, setActivePixel] = useState(null)
   const [pixelColor, setPixelColor] = useState('#ff0000')
   const pixelDebounce = useRef(null)
+
+  const fetchSafety = useCallback(async () => {
+    try {
+      const s = await api.getSafety()
+      setStopped(s.stopped)
+    } catch {
+      // silent
+    }
+  }, [])
 
   const fetchServos = useCallback(async () => {
     try {
@@ -87,10 +158,25 @@ function App() {
     check()
     fetchHomePositions()
     fetchAtomState()
-    const interval = setInterval(fetchServos, 1000)
+    fetchSafety()
+    const interval = setInterval(() => { fetchServos(); fetchSafety() }, 1000)
     const atomInterval = setInterval(fetchAtomState, 2000)
     return () => { running = false; clearInterval(interval); clearInterval(atomInterval) }
-  }, [fetchServos, fetchHomePositions, fetchAtomState])
+  }, [fetchServos, fetchHomePositions, fetchAtomState, fetchSafety])
+
+  // Esc stops the arm from anywhere on the page
+  useEffect(() => {
+    const onKey = e => {
+      if (e.key === 'Escape') api.stopArm().then(() => setStopped(true)).catch(err => setError(err.message))
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  const handleStop = () => {
+    const call = stopped ? api.resumeArm() : api.stopArm()
+    call.then(r => setStopped(r.stopped)).catch(e => setError(e.message))
+  }
 
   const doAction = async (label, fn) => {
     setLoading(prev => ({ ...prev, [label]: true }))
@@ -226,7 +312,13 @@ function App() {
           <button className="btn btn-sm" onClick={handleScan} disabled={loading['scan']}>
             {loading['scan'] ? 'Scanning...' : 'Scan'}
           </button>
+          <button className="btn btn-sm" onClick={onSignOut}>Sign out</button>
+          <button className={`btn btn-stop ${stopped ? 'is-stopped' : ''}`} onClick={handleStop}
+                  disabled={!connected} title="Esc also stops the arm">
+            {stopped ? 'Resume' : 'Stop'}
+          </button>
         </div>
+        {stopped && <div className="error">Stopped: every joint is holding. Moves are refused until you resume.</div>}
         {error && <div className="error">{error}</div>}
       </header>
 

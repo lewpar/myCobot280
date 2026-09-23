@@ -3,8 +3,8 @@
 The myArm_Pi_Base_V1.0 board uses logic gates (tri-state buffers) that may
 need a GPIO enable signal to connect the Pi's TX to the servo bus.
 
-Run with: python test2.py
-Use -p to try a specific pin: python test2.py -p 19
+Run with: python3 tools/diagnostics/gpio_enable_test.py
+Use -p to try a specific pin: python3 tools/diagnostics/gpio_enable_test.py -p 19
 Use -l 0 to try LOW instead of HIGH: python test2.py -l 0 -p 19
 """
 
@@ -13,7 +13,7 @@ import sys
 import time
 import argparse
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "pymycobot"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "pymycobot"))
 
 
 try:

@@ -34,12 +34,45 @@ Flash `atom_led_matrix/atom_led_matrix.ino` to the ATOM ESP32. Default UART pins
 | Pin | Function |
 |-----|----------|
 | GPIO 27 | LED data (NeoPixel) |
-| GPIO 32 | Bus RX |
-| GPIO 26 | Bus TX |
+| GPIO 19 | Bus RX |
+| GPIO 22 | Bus TX |
 
 Adjust `BUS_RX` / `BUS_TX` at the top of the `.ino` if your ATOM uses different pins.
 
+### Password
+
+Everything that can move the arm asks for a password: the web UI, the IK simulator, the REST API
+and the TCP server. Set it in `src/backend/.env`:
+
+```
+MYCOBOT_PASSWORD=choose-something
+```
+
+If it's empty, the backend (and `arm_server.py`) make up a random password at startup and print it.
+
+- REST: send it in the `X-Arm-Password` header on every `/api` request.
+- WebSocket `/ws/arm`: browsers can't set headers on a WebSocket, so the first message is
+  `{"type": "auth", "password": "..."}`.
+- TCP server: the first command is `AUTH <password>`. `arm_client.py` asks for it (or reads `$MYCOBOT_PASSWORD`).
+
+Five wrong passwords from one address within a minute lock that address out for the rest of the minute.
+The connection is plain HTTP/TCP, so the password keeps casual users on the network out; it doesn't
+protect against someone capturing traffic. Put the backend behind HTTPS if that matters.
+
 ## Usage
+
+Only one program can have the serial port open at a time: the backend or `arm_server.py`, not both.
+The second one to start exits with a "port is already in use" message.
+
+### Web UI and IK simulator
+
+```
+./run.sh backend      # API on :8000, simulator at http://<pi>:8000/sim
+./run.sh frontend     # React UI on :5173 (dev server)
+```
+
+`./run.sh backend` no longer uses uvicorn's `--reload` (it restarts the server whenever a file
+changes). Set `MYCOBOT_DEV=1` to get it back while editing code.
 
 ### TCP client/server
 
@@ -48,6 +81,9 @@ Adjust `BUS_RX` / `BUS_TX` at the top of the `.ino` if your ATOM uses different 
 python3 arm_server.py
 ```
 Only one client at a time. The server sends keepalive pings every 15 seconds and drops unresponsive clients.
+The first command must be `AUTH <password>`; three wrong attempts close the connection.
+Bad arguments get an `ERR ...` reply explaining what was wrong instead of dropping the client.
+`STOP` holds every joint and refuses moves until `RESUME` (menu keys `s` and `r` in the client).
 
 **On a client machine:**
 ```
@@ -78,6 +114,13 @@ arm.atom.ping()                       # reachable?
 arm.atom.color = (255, 0, 0)          # set all LEDs red
 arm.atom.set_color(0, 255, 0)         # same, explicit method
 arm.atom.pixel(2, 2, 0, 0, 255)      # single pixel blue
+
+# Several servos at once (one sync-write packet)
+arm.sync_move({1: 2048, 2: 1900}, speed=600, accel=20)   # non-blocking
+arm.move_all({1: 2048, 2: 1900})       # waits; returns {id: (arrived, position)}
+arm.read_positions([1, 2, 3])          # [2048, 1900, 2050] (None where no reply)
+arm.hold([1, 2, 3, 4, 5, 6])           # stop where they are
+arm.sync_torque([1, 2, 3, 4, 5, 6], False)
 
 # Convenience methods on the arm itself
 arm.move(2, 1500, speed=600)
@@ -174,7 +217,19 @@ Key servo registers:
 
 ## Safety
 
-Each servo's min/max angle limits are read from EEPROM on startup. All moves are clamped to `[min+50, max-50]`. Servos with limits set to `0,0` (continuous rotation, e.g. end effector) get the full 50–4045 range. Enforced on both server and client.
+- **Limits:** each servo's min/max angle limits are read from EEPROM. Every move is clamped to
+  `[min+50, max-50]`; servos with limits `0,0` (J6) get 50–4045. The IK link also keeps each joint
+  inside the URDF limits.
+- **Register ranges:** speed must be 1–4000 steps/s and acceleration 1–254. The API and TCP server
+  reject values outside these ranges, and the library clamps them rather than letting them wrap.
+- **Collisions:** every move (IK, REST, TCP, Home All) is checked against the table, the base and
+  shoulder column, and the wrist folding into the upper arm, both at the target and along the way
+  (a straight joint-space path). Refused moves say what would have hit (HTTP 409 / `ERR move refused, ...`).
+  The model lives in `arm_model.py`; the simulator carries a copy so it refuses the same poses before
+  sending anything. The check uses the IK calibration, so calibrate first (see below).
+- **Stop:** `POST /api/stop`, the Stop button in the web UI or simulator, Esc in either page, or
+  `STOP` over TCP. Every joint holds where it is (torque stays on, so nothing drops) and all motion is
+  refused until you resume.
 
 ## ATOM Protocol
 
@@ -194,14 +249,38 @@ On boot the ATOM runs a rainbow animation on the 5×5 LED matrix until the first
 
 ## IK simulator and live link
 
-The FastAPI backend serves a 3D inverse-kinematics simulator at `http://<pi>:8000/sim` and a
-WebSocket at `/ws/arm` that streams joint angles to the servos (one sync-write packet per update)
-and measured positions back (~10 Hz).
+The backend serves a 3D inverse-kinematics simulator at `http://<pi>:8000/sim` and a WebSocket at
+`/ws/arm` that streams joint angles to the servos (one sync-write packet per update) and measured
+positions back (~10 Hz).
 
-1. `./run.sh backend`, then open `http://<pi>:8000/sim` and press **Connect**.
+1. `./run.sh backend`, open `http://<pi>:8000/sim`, enter the password and press **Connect**.
 2. Turn on **Hand-guide mode**, pose the arm like the sim's zero pose (arm straight up), press
    **Set zero to the arm's current pose**.
 3. Bend each joint by hand. If the green (measured) pose turns the other way, tick **Reverse** for it.
+4. Set **Tool length** if something is mounted on the flange; the collision check includes it.
 
-Calibration is saved to `ik_calibration.json` (zeros seeded from `center_positions.json` if present).
-Goals are clamped to the URDF joint limits and to each servo's EEPROM limits minus the 50-tick buffer.
+Calibration is saved to `ik_calibration.json` (zeros seeded from `center_positions.json` until
+then). If a zero sits far from the middle of a servo's travel, the page says how much range that
+joint has lost.
+
+Home positions (Set Home All / Home All in the web UI, `SET_CENTER` / `CENTER` over TCP) are all
+stored in `center_positions.json`. Home All moves every joint together after a collision check.
+
+## Checking the model against your arm
+
+Two things can't be known from the code alone:
+
+- **Servo speed/acceleration units.** The IK link assumes STS units (speed 1 step/s per unit,
+  acceleration 100 steps/s² per unit). With the backend stopped, run
+  `python3 tools/check_servo_units.py` to time two moves of the wrist roll and print the real units;
+  `--write` saves them to `ik_calibration.json`, and the IK link uses them from then on.
+- **Link lengths.** They come from Elephant Robotics' URDF. After calibrating, set a target in the
+  simulator with the flange facing down, let the arm get there, and measure from the centre of the
+  base to the centre of the flange. Try three or four points spread around the workspace. Errors
+  of more than a few millimetres that grow with reach mean a link length in `arm_model.py`
+  (`URDF_JOINTS`) and in the simulator's `JOINTS` table needs adjusting.
+
+## Tools
+
+- `tools/check_servo_units.py`: measures the servo speed and acceleration units (above).
+- `tools/diagnostics/`: bring-up scripts kept for reference (see its README).

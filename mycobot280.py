@@ -49,6 +49,11 @@ _RANGE_MIN    = 0
 _RANGE_MAX    = 4095
 _SAFETY_BUFFER = 50
 
+# Valid register ranges. Speed 0 and acceleration 0 both mean "no limit" on STS servos,
+# so they are never sent; values outside these ranges are clamped rather than wrapped.
+SPEED_MIN, SPEED_MAX = 1, 4000      # goal speed, steps/s
+ACCEL_MIN, ACCEL_MAX = 1, 254       # acceleration, 100 steps/s^2 per unit
+
 _MOVE_SETTLE_TIMEOUT = 15.0
 _MOVE_SETTLE_POLL    = 0.1
 _MOVE_TOLERANCE      = 10
@@ -151,9 +156,11 @@ class Servo:
 
     # -- move ----------------------------------------------------------------
 
-    def move(self, target: int, speed: int = 600, accel: int = 20) -> tuple[bool, int | None]:
-        """Move to an absolute position. Returns (ok, final_position)."""
-        return self._bus._move(self.id, target, speed, accel)
+    def move(self, target: int, speed: int = 600, accel: int = 20,
+             should_abort=None) -> tuple[bool, int | None]:
+        """Move to an absolute position and wait for it. Returns (ok, final_position).
+        ``should_abort`` is polled while waiting; returning True stops waiting early."""
+        return self._bus._move(self.id, target, speed, accel, should_abort)
 
     def move_rel(self, delta: int, speed: int = 600, accel: int = 20) -> tuple[bool, int | None]:
         """Move relative to current position. Returns (ok, final_position)."""
@@ -303,8 +310,16 @@ class _Bus:
         if serial is None:
             raise ImportError("pyserial is required: pip install pyserial")
         self._lock = threading.Lock()
-        # short read timeout: replies arrive within ~1 ms at 1 Mbaud, so we poll instead of sleeping
-        self._ser = serial.Serial(port, baud, timeout=0.002)
+        # short read timeout: replies arrive within ~1 ms at 1 Mbaud, so we poll instead of sleeping.
+        # exclusive=True takes an advisory lock on the port, so a second program using this library
+        # (arm_server.py while the backend runs, say) fails to open it instead of garbling the bus.
+        try:
+            self._ser = serial.Serial(port, baud, timeout=0.002, exclusive=True)
+        except serial.SerialException as e:
+            if "lock" in str(e).lower() or "busy" in str(e).lower() or "resource temporarily" in str(e).lower():
+                raise RuntimeError(f"{port} is already in use by another program (is arm_server.py or "
+                                   f"the backend already running?)") from e
+            raise
         self._reply_timeout = timeout
         self._limit_cache: dict[int, tuple[int, int]] = {}
 
@@ -381,12 +396,15 @@ class _Bus:
     @staticmethod
     def _motion_block(target: int, speed: int, accel: int) -> bytes:
         """Registers 41..47 in one go: accel, goal position, goal time (0), goal speed."""
+        speed = max(SPEED_MIN, min(SPEED_MAX, int(speed)))
+        accel = max(ACCEL_MIN, min(ACCEL_MAX, int(accel)))
+        target = max(_RANGE_MIN, min(_RANGE_MAX, int(target)))
         return bytes([accel & 0xFF, target & 0xFF, (target >> 8) & 0xFF, 0, 0,
                       speed & 0xFF, (speed >> 8) & 0xFF])
 
     # -- move ----------------------------------------------------------------
 
-    def _move(self, servo_id: int, target: int, speed: int, accel: int):
+    def _move(self, servo_id: int, target: int, speed: int, accel: int, should_abort=None):
         # hold the lock only for each bus transaction, never for the whole move,
         # so other requests (and the IK stream) keep working while we wait
         with self._lock:
@@ -398,6 +416,8 @@ class _Bus:
         pos = None
         while time.time() < deadline:
             time.sleep(_MOVE_SETTLE_POLL)
+            if should_abort and should_abort():
+                break
             with self._lock:
                 p = self._read_s16(servo_id, _ADDR_PRESENT_POSITION)
             if p is not None:
@@ -472,9 +492,9 @@ class MyCobot280:
 
     # -- convenience: direct servo operations ----------------------------------
 
-    def move(self, servo_id: int, target: int, speed: int = 600, accel: int = 20):
+    def move(self, servo_id: int, target: int, speed: int = 600, accel: int = 20, should_abort=None):
         """Move a servo to an absolute position."""
-        return self.servo(servo_id).move(target, speed, accel)
+        return self.servo(servo_id).move(target, speed, accel, should_abort)
 
     def move_rel(self, servo_id: int, delta: int, speed: int = 600, accel: int = 20):
         """Move a servo relative to its current position."""
@@ -523,6 +543,41 @@ class MyCobot280:
         """Torque on/off for several servos in one packet."""
         with self._bus._lock:
             self._bus._sync_write(_ADDR_TORQUE_ENABLE, {sid: bytes([1 if enable else 0]) for sid in ids})
+
+    def hold(self, ids: list[int]) -> list[int | None]:
+        """Stop where the arm is: set every goal to the present position (torque stays as it is).
+        Returns the positions it held at."""
+        now = self.read_positions(ids)
+        with self._bus._lock:
+            block = {sid: bytes([p & 0xFF, (p >> 8) & 0xFF])
+                     for sid, p in zip(ids, now) if p is not None and 0 <= p <= _RANGE_MAX}
+            self._bus._sync_write(_ADDR_GOAL_POSITION, block)
+        return now
+
+    def move_all(self, targets: dict[int, int], speed: int = 600, accel: int = 20,
+                 wait: bool = True, timeout: float = _MOVE_SETTLE_TIMEOUT,
+                 should_abort=None) -> dict[int, tuple[bool, int | None]]:
+        """Move several servos together (one sync-write) and optionally wait until all arrive.
+
+        ``should_abort`` is polled while waiting; returning True stops waiting early.
+        Returns {id: (arrived, final_position)}."""
+        with self._bus._lock:
+            clamped = {sid: self._bus._clamp(sid, t) for sid, t in targets.items()}
+            self._bus._sync_write(_ADDR_TORQUE_ENABLE, {sid: b"\x01" for sid in clamped})
+            self._bus._sync_write(_ADDR_ACCELERATION,
+                                  {sid: self._bus._motion_block(t, speed, accel) for sid, t in clamped.items()})
+        ids = list(clamped)
+        pos = dict.fromkeys(ids)
+        deadline = time.time() + (timeout if wait else 0)
+        while True:
+            for sid, p in zip(ids, self.read_positions(ids)):
+                if p is not None:
+                    pos[sid] = p
+            done = all(pos[s] is not None and abs(pos[s] - clamped[s]) <= _MOVE_TOLERANCE for s in ids)
+            if done or not wait or time.time() > deadline or (should_abort and should_abort()):
+                break
+            time.sleep(_MOVE_SETTLE_POLL)
+        return {s: (pos[s] is not None and abs(pos[s] - clamped[s]) <= _MOVE_TOLERANCE, pos[s]) for s in ids}
 
     def safe_limits(self, servo_id: int) -> tuple[int, int]:
         with self._bus._lock:
