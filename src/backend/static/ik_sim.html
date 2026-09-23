@@ -3,156 +3,333 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>280-class six-axis arm · IK simulator</title>
+<title>myCobot 280 IK Control</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
+/* ---------- Design tokens ---------- */
 :root{
-  box-sizing:border-box;
-  padding-top:env(safe-area-inset-top,0px);
-  padding-bottom:env(safe-area-inset-bottom,0px);
-  --scene:#d9dee2;--panel:rgba(246,248,249,.93);--panel-edge:#c3cad0;--text:#1d2329;--muted:#5f6a74;
-  --track:#d2d8dd;--amber:#e79a00;--bad:#c8402c;--good:#2f8a55;--btn:#e6eaed;--btn-hover:#dce1e5;--code:#eef1f3;
+  --bg:#eef1f4;--surface:#ffffff;--surface-2:#f5f7f9;--border:#dde2e7;--border-strong:#c7ced5;
+  --text:#18202a;--muted:#5d6874;--faint:#8a949e;
+  --scene:#dfe4e8;--track:#dfe4e9;--btn:#f1f3f5;--btn-hover:#e7ebee;--code:#f3f5f7;
+  --amber:#d98a00;--amber-soft:rgba(217,138,0,.14);--amber-ink:#1d1400;
+  --bad:#c8402c;--bad-soft:rgba(200,64,44,.12);--good:#23845a;--good-soft:rgba(35,132,90,.12);
+  --blue:#3b82c4;--stop:#c8402c;--shadow:0 1px 2px rgba(16,24,32,.06),0 4px 16px rgba(16,24,32,.06);
+  --radius:10px;--mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  color-scheme:light;
 }
 @media (prefers-color-scheme: dark){
   :root:not([data-theme="light"]){
-    --scene:#1b2026;--panel:rgba(32,38,45,.93);--panel-edge:#3a434d;--text:#e6eaee;--muted:#98a3ad;
-    --track:#3a434d;--amber:#ffb21f;--bad:#ff6b55;--good:#5fcf8d;--btn:#2c343c;--btn-hover:#36404a;--code:#262d34;
+    --bg:#12161b;--surface:#1a1f26;--surface-2:#20262e;--border:#2b333c;--border-strong:#3a444f;
+    --text:#e7ebef;--muted:#9aa5b0;--faint:#6f7a85;
+    --scene:#161b21;--track:#2c343d;--btn:#242b33;--btn-hover:#2d353f;--code:#20262e;
+    --amber:#ffb21f;--amber-soft:rgba(255,178,31,.16);--bad:#ff6b55;--bad-soft:rgba(255,107,85,.16);
+    --good:#4fc486;--good-soft:rgba(79,196,134,.16);--blue:#5fa2e0;--stop:#c9412c;--shadow:0 1px 2px rgba(0,0,0,.3),0 6px 20px rgba(0,0,0,.25);
+    color-scheme:dark;
   }
 }
 :root[data-theme="dark"]{
-  --scene:#1b2026;--panel:rgba(32,38,45,.93);--panel-edge:#3a434d;--text:#e6eaee;--muted:#98a3ad;
-  --track:#3a434d;--amber:#ffb21f;--bad:#ff6b55;--good:#5fcf8d;--btn:#2c343c;--btn-hover:#36404a;--code:#262d34;
+  --bg:#12161b;--surface:#1a1f26;--surface-2:#20262e;--border:#2b333c;--border-strong:#3a444f;
+  --text:#e7ebef;--muted:#9aa5b0;--faint:#6f7a85;
+  --scene:#161b21;--track:#2c343d;--btn:#242b33;--btn-hover:#2d353f;--code:#20262e;
+  --amber:#ffb21f;--amber-soft:rgba(255,178,31,.16);--bad:#ff6b55;--bad-soft:rgba(255,107,85,.16);
+  --good:#4fc486;--good-soft:rgba(79,196,134,.16);--blue:#5fa2e0;--stop:#c9412c;--shadow:0 1px 2px rgba(0,0,0,.3),0 6px 20px rgba(0,0,0,.25);
+  color-scheme:dark;
 }
-*,*::before,*::after{box-sizing:inherit}
-html{height:100%;scroll-padding-top:env(safe-area-inset-top,0px)}
-body{height:100%;margin:0;background:var(--scene);color:var(--text);
-  font:14px/1.45 "IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;overflow:hidden}
-#stage{position:fixed;inset:0}
-#stage canvas{display:block;touch-action:none}
-#panel{position:fixed;top:calc(12px + env(safe-area-inset-top,0px));right:12px;
-  bottom:calc(12px + env(safe-area-inset-bottom,0px));width:330px;max-width:calc(100% - 24px);
-  background:var(--panel);border:1px solid var(--panel-edge);border-radius:14px;
-  backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
-  display:flex;flex-direction:column;overflow:hidden;box-shadow:0 10px 30px rgba(0,0,0,.12)}
-#panel header{display:flex;align-items:center;gap:10px;padding:14px 16px 10px}
-#panel h1{font-size:16px;font-weight:600;margin:0;flex:1;letter-spacing:-.01em}
+
+/* ---------- App shell ---------- */
+*,*::before,*::after{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--text);overflow:hidden;
+  font:13.5px/1.45 "IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
+.app{position:fixed;inset:0;display:grid;
+  grid-template-columns:minmax(0,1fr) 372px;grid-template-rows:auto minmax(0,1fr) auto;
+  grid-template-areas:"top top" "view side" "status side";
+  padding:env(safe-area-inset-top,0) env(safe-area-inset-right,0) env(safe-area-inset-bottom,0) env(safe-area-inset-left,0)}
+
+.topbar{grid-area:top;display:flex;align-items:center;gap:14px;height:56px;padding:0 14px 0 16px;
+  background:var(--surface);border-bottom:1px solid var(--border)}
+.brand{display:flex;align-items:center;gap:10px;min-width:0}
+.brand svg{flex:none}
+.brand-name{font-weight:600;font-size:14.5px;letter-spacing:-.01em;white-space:nowrap}
+.brand-sub{color:var(--muted);font-size:12px;white-space:nowrap}
+.topbar .spacer{flex:1}
+.chip{display:inline-flex;align-items:center;gap:8px;height:32px;padding:0 12px;border-radius:999px;
+  border:1px solid var(--border);background:var(--surface-2);color:var(--text);font:inherit;font-size:12.5px;cursor:pointer;white-space:nowrap}
+.chip:hover{background:var(--btn-hover)}
+.chip .dot{width:8px;height:8px;border-radius:50%;background:var(--faint);flex:none}
+.chip[data-state="live"] .dot{background:var(--good);box-shadow:0 0 0 3px var(--good-soft)}
+.chip[data-state="warn"] .dot,.chip[data-state="connecting"] .dot{background:var(--amber);box-shadow:0 0 0 3px var(--amber-soft)}
+.icon-btn{display:inline-grid;place-items:center;width:34px;height:34px;padding:0;border-radius:8px;
+  border:1px solid transparent;background:transparent;color:var(--muted);cursor:pointer}
+.icon-btn:hover{background:var(--btn-hover);color:var(--text)}
+button.stop{display:inline-flex;align-items:center;gap:8px;height:36px;padding:0 16px;border-radius:8px;border:1px solid var(--stop);
+  background:var(--stop);color:#fff;font:inherit;font-weight:600;font-size:13.5px;letter-spacing:.02em;cursor:pointer}
+button.stop:hover{filter:brightness(1.07)}
+button.stop kbd{font:500 11px var(--mono);padding:1px 5px;border-radius:4px;background:rgba(255,255,255,.2)}
+button.stop[aria-pressed="true"]{background:var(--good);border-color:var(--good)}
+
+/* viewport */
+.viewport{grid-area:view;position:relative;min-width:0;min-height:0;background:var(--scene)}
+#stage{position:absolute;inset:0}
+#stage canvas{display:block;width:100%;height:100%;touch-action:none}
+.overlay{position:absolute;display:flex;gap:6px;pointer-events:none}
+.overlay>*{pointer-events:auto}
+.view-tools{top:12px;left:12px;padding:3px;border-radius:9px;background:var(--surface);border:1px solid var(--border);box-shadow:var(--shadow)}
+.view-tools button{height:28px;padding:0 10px;border:0;border-radius:6px;background:transparent;color:var(--muted);font:inherit;font-size:12.5px;cursor:pointer}
+.view-tools button:hover{background:var(--btn-hover);color:var(--text)}
+.legend{left:12px;bottom:12px;flex-wrap:wrap;gap:12px;padding:6px 10px;border-radius:8px;background:var(--surface);
+  border:1px solid var(--border);box-shadow:var(--shadow);font-size:12px;color:var(--muted)}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.legend i{width:10px;height:10px;border-radius:50%;display:inline-block}
+#fail{position:absolute;inset:0;display:none;align-items:center;justify-content:center;padding:24px;text-align:center;color:var(--muted)}
+
+/* status bar */
+.statusbar{grid-area:status;display:flex;align-items:center;gap:18px;min-height:32px;padding:0 14px;
+  background:var(--surface);border-top:1px solid var(--border);font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden}
+.status{display:flex;align-items:center;gap:8px;color:var(--text);font-weight:500;flex:0 0 auto;max-width:60%;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.status #statusText{overflow:hidden;text-overflow:ellipsis}
+.status .dot{width:8px;height:8px;border-radius:50%;background:var(--amber);flex:none}
+.status.ok .dot{background:var(--good)}.status.bad .dot{background:var(--bad)}.status.bad{color:var(--bad)}
+.sb-item{flex:none}
+.sb-item b{font:500 12px var(--mono);color:var(--text)}
+.sb-sep{width:1px;height:14px;background:var(--border);flex:none}
+#hint{flex:1 1 0;min-width:0;text-align:right;overflow:hidden;text-overflow:ellipsis}
+
+/* ---------- Inspector ---------- */
+.inspector{grid-area:side;display:flex;flex-direction:column;min-height:0;background:var(--surface);border-left:1px solid var(--border)}
+.tabs{display:flex;align-items:stretch;gap:2px;padding:0 8px;border-bottom:1px solid var(--border);flex:none}
+.tab{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;padding:10px 4px 9px;border:0;border-bottom:2px solid transparent;
+  background:transparent;color:var(--muted);font:inherit;font-size:12px;font-weight:500;cursor:pointer;margin-bottom:-1px}
+.tab svg{opacity:.85}
+.tab:hover{color:var(--text)}
+.tab[aria-selected="true"]{color:var(--text);border-bottom-color:var(--amber)}
+.tab[aria-selected="true"] svg{color:var(--amber);opacity:1}
 #toggle{display:none}
-.scroll{overflow-y:auto;padding:0 16px 16px;flex:1}
-h2{font-size:13px;font-weight:600;margin:18px 0 8px}
-.status{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:8px;background:var(--btn);font-size:13px}
-.dot{width:9px;height:9px;border-radius:50%;background:var(--amber);flex:none}
-.status.ok .dot{background:var(--good)}.status.bad .dot{background:var(--bad)}
-.status .err{margin-left:auto;font-family:"IBM Plex Mono",ui-monospace,monospace;color:var(--muted);font-size:12px;white-space:nowrap}
-.axis{display:grid;grid-template-columns:18px 1fr 64px;align-items:center;gap:8px;margin:6px 0}
-.axis b{font-weight:600;color:var(--muted)}
-.axis output,.slider output{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:12px;text-align:right}
-input[type=range]{width:100%;accent-color:var(--amber);margin:0}
-.row{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
-button{font:inherit;font-size:13px;color:var(--text);background:var(--btn);border:1px solid var(--panel-edge);border-radius:8px;padding:6px 10px;cursor:pointer}
+.scroll{overflow-y:auto;flex:1;padding:14px 14px 20px;background:var(--bg);scrollbar-width:thin;scrollbar-color:var(--border-strong) transparent}
+.tabpanel[hidden]{display:none}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:12px}
+.card-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-bottom:10px}
+.card h2{font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:0}
+.card-head .meta{font:500 11.5px var(--mono);color:var(--faint)}
+.note{color:var(--muted);font-size:12px;margin:10px 0 0}
+.note:empty{display:none}
+.callout{margin:10px 0 0;padding:8px 10px;border-radius:8px;background:var(--surface-2);border:1px solid var(--border);font-size:12px;color:var(--muted)}
+.callout:empty{display:none}
+.callout.warn{background:var(--amber-soft);border-color:transparent;color:var(--text)}
+
+/* controls */
+.field{display:grid;grid-template-columns:18px minmax(0,1fr) 58px;align-items:center;gap:10px;margin:8px 0}
+.field b{font-weight:600;color:var(--muted);font-size:12px}
+.field output,.slider output{font:500 12px var(--mono);text-align:right;color:var(--text)}
+.slider{display:grid;grid-template-columns:minmax(0,1fr) 74px;gap:4px 10px;align-items:center;margin:10px 0}
+.slider span{grid-column:1/-1;color:var(--muted);font-size:12px}
+input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:18px;margin:0;background:transparent;cursor:pointer}
+input[type=range]::-webkit-slider-runnable-track{height:4px;border-radius:2px;background:var(--track)}
+input[type=range]::-moz-range-track{height:4px;border-radius:2px;background:var(--track)}
+input[type=range]::-moz-range-progress{height:4px;border-radius:2px;background:var(--amber)}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;margin-top:-5px;border-radius:50%;background:var(--surface);border:2px solid var(--amber);box-shadow:0 1px 2px rgba(0,0,0,.2)}
+input[type=range]::-moz-range-thumb{width:10px;height:10px;border-radius:50%;background:var(--surface);border:2px solid var(--amber)}
+.row{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.row.stack{flex-direction:column}
+button{font:inherit;font-size:12.5px;color:var(--text);background:var(--btn);border:1px solid var(--border-strong);border-radius:7px;padding:6px 11px;cursor:pointer}
 button:hover{background:var(--btn-hover)}
-button[aria-pressed="true"]{background:var(--amber);border-color:var(--amber);color:#1d1400}
-button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
-label.chk{display:flex;align-items:center;gap:8px;margin:5px 0;cursor:pointer}
-label.chk input{accent-color:var(--amber);width:15px;height:15px;flex:none}
-.slider{display:grid;grid-template-columns:1fr 70px;gap:8px;align-items:center;margin:6px 0}
-.slider span{grid-column:1/-1;color:var(--muted);font-size:12px;margin-bottom:-4px}
-.joint{display:grid;grid-template-columns:24px 1fr 60px;gap:8px;align-items:center;margin:7px 0;font-size:12.5px}
+button:disabled{opacity:.5;cursor:not-allowed}
+button.primary{background:var(--amber);border-color:var(--amber);color:var(--amber-ink);font-weight:600}
+button.primary:hover{filter:brightness(1.05);background:var(--amber)}
+button.block{width:100%}
+button[aria-pressed="true"]{background:var(--amber);border-color:var(--amber);color:var(--amber-ink)}
+button:focus-visible,input:focus-visible,textarea:focus-visible,.chip:focus-visible,.tab:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
+.seg{display:flex;flex-wrap:wrap;gap:6px}
+.seg button{flex:1;white-space:nowrap}
+label.chk{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:9px 0;cursor:pointer;font-size:13px}
+label.chk input{order:2;-webkit-appearance:none;appearance:none;flex:none;width:32px;height:18px;margin:0;border-radius:9px;background:var(--track);position:relative;cursor:pointer;transition:background .15s}
+label.chk input::before{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.3);transition:transform .15s}
+label.chk input:checked{background:var(--amber)}
+label.chk input:checked::before{transform:translateX(14px)}
+label.chk input:disabled{opacity:.45;cursor:not-allowed}
+label.chk:has(input:disabled){color:var(--faint);cursor:not-allowed}
+.field-label{display:block;color:var(--muted);font-size:12px;margin:10px 0 5px}
+input[type=text],input[type=password]{font:12.5px var(--mono);flex:1;min-width:0;width:100%;background:var(--code);color:var(--text);
+  border:1px solid var(--border-strong);border-radius:7px;padding:7px 9px}
+.input-row{display:flex;gap:6px}
+.input-row button{flex:none}
+#dirRow{display:grid;grid-template-columns:1fr 1fr;column-gap:16px;margin-top:6px}
+#dirRow label.chk{margin:6px 0!important}
+
+/* joints */
+.joint{display:grid;grid-template-columns:26px minmax(0,1fr) 62px;gap:10px;align-items:center;margin:11px 0;font-size:12.5px}
 .joint .name{color:var(--muted);font-weight:600}
-.bar{position:relative;height:12px;border-radius:6px;background:var(--track);overflow:hidden}
+.bar{position:relative;height:14px;border-radius:7px;background:var(--track);overflow:hidden}
 .bar .zero{position:absolute;top:0;bottom:0;width:1px;background:var(--muted);opacity:.5}
-.bar .tgt{position:absolute;top:1px;bottom:1px;width:2px;background:var(--text);opacity:.55}
+.bar .tgt{position:absolute;top:2px;bottom:2px;width:2px;background:var(--text);opacity:.55}
 .bar .real{position:absolute;top:0;bottom:0;width:3px;margin-left:-1.5px;background:var(--good);display:none}
-.bar .pos{position:absolute;top:2px;bottom:2px;width:8px;margin-left:-4px;border-radius:4px;background:var(--amber)}
-.joint .val{font-family:"IBM Plex Mono",ui-monospace,monospace;text-align:right}
-.note{color:var(--muted);font-size:12px;margin:8px 0 0}
-textarea{width:100%;font:12px/1.4 "IBM Plex Mono",ui-monospace,monospace;background:var(--code);color:var(--text);
-  border:1px solid var(--panel-edge);border-radius:8px;padding:8px;resize:none}
-button.stop{background:var(--bad);border-color:var(--bad);color:#fff;font-weight:600;width:100%;padding:8px}
-button.stop:hover{filter:brightness(1.08);background:var(--bad)}
-button.stop[aria-pressed="true"]{background:var(--good);border-color:var(--good);color:#fff}
-input[type=text],input[type=password]{font:12px "IBM Plex Mono",ui-monospace,monospace;flex:1;min-width:0;background:var(--code);color:var(--text);border:1px solid var(--panel-edge);border-radius:8px;padding:6px 8px}
-.atom{display:flex;gap:12px;align-items:flex-start;margin-top:8px}
-.atomgrid{display:grid;grid-template-columns:repeat(5,30px);gap:4px;padding:6px;background:#1c1f23;border-radius:8px;touch-action:none;user-select:none;flex:none}
-.atomgrid button{width:30px;height:30px;padding:0;border-radius:5px;border:1px solid #3a4047}
+.bar .pos{position:absolute;top:3px;bottom:3px;width:8px;margin-left:-4px;border-radius:4px;background:var(--amber)}
+.joint .val{font:500 12px var(--mono);text-align:right}
+.key{display:grid;grid-template-columns:auto 1fr;gap:6px 10px;align-items:center;margin-top:12px;font-size:12px;color:var(--muted)}
+.key i{display:block;width:14px;height:10px;border-radius:3px}
+
+/* ATOM */
+.atom{display:flex;gap:14px;align-items:flex-start}
+.atomgrid{display:grid;grid-template-columns:repeat(5,32px);gap:5px;padding:8px;background:#15181c;border-radius:10px;touch-action:none;user-select:none;flex:none}
+.atomgrid button{width:32px;height:32px;padding:0;border-radius:6px;border:1px solid #373d44}
 .atomgrid button:hover{border-color:var(--amber)}
-.atomside{display:flex;flex-direction:column;gap:8px;flex:1;min-width:0}
-.atomside input[type=color]{width:100%;height:32px;padding:2px;border:1px solid var(--panel-edge);border-radius:8px;background:var(--btn);cursor:pointer}
-.palette{display:grid;grid-template-columns:repeat(4,22px);gap:5px}
-.palette button{width:22px;height:22px;padding:0;border-radius:50%;border:1px solid var(--panel-edge)}
-#hint{position:fixed;left:12px;bottom:calc(12px + env(safe-area-inset-bottom,0px));max-width:min(440px,calc(100% - 370px));
-  padding:8px 12px;border-radius:10px;background:var(--panel);border:1px solid var(--panel-edge);color:var(--muted);font-size:12.5px}
-#fail{position:fixed;inset:0;display:none;align-items:center;justify-content:center;padding:24px;text-align:center}
-@media (max-width:720px){
-  #panel{top:auto;left:8px;right:8px;width:auto;max-width:none;bottom:calc(8px + env(safe-area-inset-bottom,0px));height:52vh}
-  #panel.collapsed{height:auto}#panel.collapsed .scroll{display:none}
-  #toggle{display:inline-block}
-  #hint{top:calc(8px + env(safe-area-inset-top,0px));bottom:auto;left:8px;right:8px;max-width:none}
+.atomside{display:flex;flex-direction:column;gap:10px;flex:1;min-width:0}
+.atomside input[type=color]{width:100%;height:34px;padding:3px;border:1px solid var(--border-strong);border-radius:8px;background:var(--btn);cursor:pointer}
+.palette{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
+.palette button{aspect-ratio:1;width:100%;padding:0;border-radius:50%;border:1px solid var(--border-strong)}
+
+/* ---------- Narrow screens: inspector becomes a bottom sheet ---------- */
+@media (max-width:760px){
+  .app{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr) auto auto;grid-template-areas:"top" "view" "status" "side"}
+  .brand-sub,#hint,.legend,.sb-sep,.sb-target{display:none}
+  .chip #linkText{max-width:110px;overflow:hidden;text-overflow:ellipsis}
+  .topbar{gap:8px;padding:0 10px}
+  button.stop kbd{display:none}
+  .inspector{border-left:0;border-top:1px solid var(--border);height:48vh}
+  .inspector.collapsed{height:auto}.inspector.collapsed .scroll{display:none}
+  #toggle{display:grid}
+  .tab{font-size:11px}
 }
 </style>
 </head>
 <body>
-<div id="stage"></div>
-<div id="fail">WebGL could not start in this browser, so the 3D arm can't be drawn.</div>
+<div class="app">
+<header class="topbar">
+  <div class="brand">
+    <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true"><rect width="28" height="28" rx="7" fill="var(--amber)"/>
+      <path d="M8 21h12M11 21v-5l4-5 3 3" stroke="#1d1400" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/><circle cx="18" cy="14" r="1.9" fill="#1d1400"/></svg>
+    <div><div class="brand-name">myCobot 280</div><div class="brand-sub">Inverse kinematics &amp; arm control</div></div>
+  </div>
+  <div class="spacer"></div>
+  <button class="chip" id="linkChip" data-state="off" title="Robot connection"><span class="dot"></span><span id="linkText">Offline</span></button>
+  <button class="icon-btn" id="themeBtn" title="Theme: system" aria-label="Switch colour theme">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor"/></svg></button>
+  <button id="btnStop" class="stop" aria-pressed="false" title="Esc also stops">Stop <kbd>Esc</kbd></button>
+</header>
 
-<aside id="panel" aria-label="Arm controls">
-  <header><h1>Six-axis arm, 280 kinematics</h1><button id="toggle" aria-expanded="true">Hide</button></header>
+<main class="viewport" aria-label="3D view">
+  <div id="stage"></div>
+  <div class="overlay view-tools" role="toolbar" aria-label="Camera views">
+    <button data-view="persp">Perspective</button><button data-view="front">Front</button><button data-view="side">Side</button><button data-view="top">Top</button>
+  </div>
+  <div class="overlay legend" aria-hidden="true">
+    <span><i style="background:var(--amber)"></i>Target</span><span><i style="background:#3b82c4"></i>Solved pose</span>
+    <span><i style="background:#2f9a5a"></i>Real arm</span><span><i style="background:#ff5a36"></i>Tool path</span>
+  </div>
+  <div id="fail">WebGL could not start in this browser, so the 3D arm can't be drawn.</div>
+</main>
+
+<footer class="statusbar">
+  <div class="status" id="status"><span class="dot"></span><span id="statusText">Moving</span></div>
+  <span class="sb-sep"></span>
+  <span class="sb-item">Tracking error <b id="errText">–</b></span>
+  <span class="sb-sep"></span>
+  <span class="sb-item sb-target">Target <b id="sbTarget">–</b></span>
+  <span id="hint">Click the floor to drop the target · drag the arrows to move it · drag to orbit · scroll to zoom</span>
+</footer>
+
+<aside id="panel" class="inspector" aria-label="Arm controls">
+  <div class="tabs" role="tablist">
+    <button class="tab" role="tab" id="tabbtn-motion" aria-controls="tab-motion" aria-selected="true">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>Motion</button>
+    <button class="tab" role="tab" id="tabbtn-joints" aria-controls="tab-joints" aria-selected="false">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="9" cy="6" r="2" fill="var(--surface)"/><circle cx="15" cy="12" r="2" fill="var(--surface)"/><circle cx="7" cy="18" r="2" fill="var(--surface)"/></svg>Joints</button>
+    <button class="tab" role="tab" id="tabbtn-robot" aria-controls="tab-robot" aria-selected="false">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 7V3M15 7V3M7 7h10v4a5 5 0 0 1-10 0zM12 16v5"/></svg>Robot</button>
+    <button class="tab" role="tab" id="tabbtn-atom" aria-controls="tab-atom" aria-selected="false">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="4" y="4" width="4" height="4" rx="1"/><rect x="10" y="4" width="4" height="4" rx="1"/><rect x="16" y="4" width="4" height="4" rx="1"/><rect x="4" y="10" width="4" height="4" rx="1"/><rect x="10" y="10" width="4" height="4" rx="1" opacity=".4"/><rect x="16" y="10" width="4" height="4" rx="1"/><rect x="4" y="16" width="4" height="4" rx="1"/><rect x="10" y="16" width="4" height="4" rx="1"/><rect x="16" y="16" width="4" height="4" rx="1"/></svg>ATOM</button>
+    <button id="toggle" class="icon-btn" aria-expanded="true" aria-label="Hide controls" title="Hide controls">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
+  </div>
   <div class="scroll">
-    <div class="status" id="status"><span class="dot"></span><span id="statusText">Moving</span><span class="err" id="errText">–</span></div>
-    <div class="row"><button id="btnStop" class="stop" aria-pressed="false" title="Esc also stops">Stop</button></div>
 
-    <h2>Target point in the base frame (mm)</h2>
-    <div class="axis"><b>X</b><input type="range" id="tx" min="-350" max="350" step="1"><output id="oxv"></output></div>
-    <div class="axis"><b>Y</b><input type="range" id="ty" min="-350" max="350" step="1"><output id="oyv"></output></div>
-    <div class="axis"><b>Z</b><input type="range" id="tz" min="0" max="500" step="1"><output id="ozv"></output></div>
-    <div class="row">
-      <button id="btnRandom">Random point</button>
-      <button id="btnDemo" aria-pressed="false">Trace figure-8</button>
-      <button id="btnHome">Zero pose</button>
-    </div>
-
-    <h2>Solver</h2>
-    <label class="chk"><input type="checkbox" id="optDown" checked> Keep the flange facing down</label>
-    <label class="chk"><input type="checkbox" id="optGhost" checked> Show the solved pose ahead of the servos</label>
-    <label class="chk"><input type="checkbox" id="optTrail" checked> Draw the tool path</label>
-    <div class="slider"><span>Tool length past the flange</span><input type="range" id="tool" min="0" max="150" value="0"><output id="toolv"></output></div>
-
-    <h2>Simulated servos</h2>
-    <div class="slider"><span>Max speed</span><input type="range" id="spd" min="15" max="360" value="90"><output id="spdv"></output></div>
-    <div class="slider"><span>Acceleration</span><input type="range" id="acc" min="40" max="1500" value="260"><output id="accv"></output></div>
-    <div id="joints"></div>
-    <p class="note">Amber is the simulated servo, the thin line is the solved angle, green is the real servo's reading, and the faint mark is zero. Bars span the joint limits from the official URDF.</p>
-
-    <h2>Real arm over the Feetech bus</h2>
-    <div class="row"><input type="text" id="wsUrl" value="ws://raspberrypi.local:8000/ws/arm" aria-label="Backend address"></div>
-    <div class="row"><input type="password" id="wsPw" placeholder="Arm password" autocomplete="current-password" aria-label="Arm password"><button id="btnWs" aria-pressed="false">Connect</button></div>
-    <label class="chk"><input type="checkbox" id="optRemember"> Remember the password on this device</label>
-    <label class="chk"><input type="checkbox" id="optSend" checked> Drive the servos with the solved angles</label>
-    <label class="chk"><input type="checkbox" id="optReal" checked> Show the real arm's measured pose</label>
-    <div class="row"><button id="btnLimp" aria-pressed="false" disabled>Hand-guide mode</button></div>
-    <p class="note" id="wsNote">Connects to the /ws/arm endpoint of your FastAPI backend on the Pi. The page sends solved angles plus the speed and acceleration set above; the backend turns them into servo ticks and reads positions back.</p>
-    <h2>Calibration</h2>
-    <p class="note" style="margin-top:0">In hand-guide mode, pose the arm like the sim's zero pose, then set the zero. Bend each joint by hand: if the green pose turns the opposite way, reverse that joint.</p>
-    <div class="row"><button id="btnZero" disabled>Set zero to the arm's current pose</button></div>
-    <div class="row" id="dirRow" role="group" aria-label="Reverse joint direction"></div>
-    <p class="note" id="calNote"></p>
-
-    <h2>ATOM LED matrix</h2>
-    <p class="note" style="margin-top:0">Click or drag across the grid to paint with the chosen colour. Uses the backend address and password above; the arm link doesn't need to be connected.</p>
-    <div class="atom">
-      <div id="atomGrid" class="atomgrid" role="group" aria-label="ATOM LEDs, 5 by 5"></div>
-      <div class="atomside">
-        <input type="color" id="atomColor" value="#00c850" aria-label="Paint colour">
-        <div id="atomPalette" class="palette" role="group" aria-label="Colour presets"></div>
+  <section class="tabpanel" id="tab-motion" role="tabpanel" aria-labelledby="tabbtn-motion">
+    <div class="card">
+      <div class="card-head"><h2>Target</h2><span class="meta">base frame · mm</span></div>
+      <div class="field"><b>X</b><input type="range" id="tx" min="-350" max="350" step="1" aria-label="Target X"><output id="oxv"></output></div>
+      <div class="field"><b>Y</b><input type="range" id="ty" min="-350" max="350" step="1" aria-label="Target Y"><output id="oyv"></output></div>
+      <div class="field"><b>Z</b><input type="range" id="tz" min="0" max="500" step="1" aria-label="Target Z"><output id="ozv"></output></div>
+      <div class="row seg">
+        <button id="btnRandom" title="Pick a random reachable point">Random</button>
+        <button id="btnDemo" aria-pressed="false" title="Trace a figure-8 with the tool">Figure-8</button>
+        <button id="btnHome" title="Move every joint to 0°">Zero pose</button>
       </div>
     </div>
-    <div class="row"><button id="atomFill">Fill all</button><button id="atomClear">All off</button><button id="atomRead">Read from the ATOM</button></div>
-    <div class="slider"><span>Brightness</span><input type="range" id="atomBri" min="1" max="100" value="100"><output id="atomBriv">100%</output></div>
-    <p class="note" id="atomNote"></p>
+    <div class="card">
+      <div class="card-head"><h2>Solver</h2></div>
+      <label class="chk"><input type="checkbox" id="optDown" checked> Keep the flange facing down</label>
+      <label class="chk"><input type="checkbox" id="optGhost" checked> Show the solved pose ahead of the servos</label>
+      <label class="chk"><input type="checkbox" id="optTrail" checked> Draw the tool path</label>
+      <div class="slider"><span>Tool length past the flange</span><input type="range" id="tool" min="0" max="150" value="0"><output id="toolv"></output></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>Motion profile</h2><span class="meta">sim &amp; arm</span></div>
+      <div class="slider"><span>Max speed</span><input type="range" id="spd" min="15" max="360" value="90"><output id="spdv"></output></div>
+      <div class="slider"><span>Acceleration</span><input type="range" id="acc" min="40" max="1500" value="260"><output id="accv"></output></div>
+    </div>
+  </section>
+
+  <section class="tabpanel" id="tab-joints" role="tabpanel" aria-labelledby="tabbtn-joints" hidden>
+    <div class="card">
+      <div class="card-head"><h2>Joint positions</h2><span class="meta">URDF limits</span></div>
+      <div id="joints"></div>
+      <div class="key">
+        <i style="background:var(--amber)"></i><span>Simulated servo</span>
+        <i style="background:var(--text);opacity:.55;width:3px;justify-self:center"></i><span>Solved angle</span>
+        <i style="background:var(--good);width:3px;justify-self:center"></i><span>Real servo reading</span>
+        <i style="background:var(--muted);opacity:.5;width:1px;justify-self:center"></i><span>Zero</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="tabpanel" id="tab-robot" role="tabpanel" aria-labelledby="tabbtn-robot" hidden>
+    <div class="card">
+      <div class="card-head"><h2>Connection</h2><span class="meta">/ws/arm</span></div>
+      <label class="field-label" for="wsUrl">Backend address</label>
+      <input type="text" id="wsUrl" value="ws://raspberrypi.local:8000/ws/arm" spellcheck="false">
+      <label class="field-label" for="wsPw">Password</label>
+      <div class="input-row"><input type="password" id="wsPw" placeholder="Arm password" autocomplete="current-password"><button id="btnWs" class="primary" aria-pressed="false">Connect</button></div>
+      <label class="chk"><input type="checkbox" id="optRemember"> Remember the password on this device</label>
+      <p class="callout" id="wsNote">Connects to the FastAPI backend on the Pi. The page streams the solved angles with the speed and acceleration from Motion; the backend converts them to servo ticks and reads positions back.</p>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>Streaming</h2></div>
+      <label class="chk"><input type="checkbox" id="optSend" checked> Drive the servos with the solved angles</label>
+      <label class="chk"><input type="checkbox" id="optReal" checked> Show the real arm's measured pose</label>
+      <div class="row"><button id="btnLimp" class="block" aria-pressed="false" disabled>Hand-guide mode</button></div>
+      <p class="note">Hand-guide turns torque off so you can pose the arm by hand. Hold it first: it drops without torque.</p>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>Calibration</h2></div>
+      <p class="note" style="margin-top:0">In hand-guide mode, pose the arm like the sim's zero pose, then set the zero. Bend each joint by hand: if the green pose turns the opposite way, reverse that joint.</p>
+      <div class="row"><button id="btnZero" class="block" disabled>Set zero to the arm's current pose</button></div>
+      <div id="dirRow" role="group" aria-label="Reverse joint direction"></div>
+      <p class="callout warn" id="calNote"></p>
+    </div>
+  </section>
+
+  <section class="tabpanel" id="tab-atom" role="tabpanel" aria-labelledby="tabbtn-atom" hidden>
+    <div class="card">
+      <div class="card-head"><h2>LED matrix</h2><span class="meta">5 × 5 · ID 7</span></div>
+      <div class="atom">
+        <div id="atomGrid" class="atomgrid" role="group" aria-label="ATOM LEDs, 5 by 5"></div>
+        <div class="atomside">
+          <input type="color" id="atomColor" value="#00c850" aria-label="Paint colour">
+          <div id="atomPalette" class="palette" role="group" aria-label="Colour presets"></div>
+        </div>
+      </div>
+      <div class="row seg"><button id="atomFill">Fill all</button><button id="atomClear">All off</button><button id="atomRead">Read back</button></div>
+      <div class="slider"><span>Brightness</span><input type="range" id="atomBri" min="1" max="100" value="100"><output id="atomBriv">100%</output></div>
+      <p class="callout" id="atomNote"></p>
+      <p class="note">Click or drag across the grid to paint. Uses the address and password from Robot; the arm link doesn't need to be connected.</p>
+    </div>
+  </section>
+
   </div>
 </aside>
-<div id="hint">Click the floor to drop the target there. Drag the arrows on the target to move it in 3D. Drag empty space to orbit, scroll to zoom. Press Esc to stop.</div>
+</div>
 
 <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/controls/OrbitControls.js"></script>
@@ -324,7 +501,7 @@ let grid;
 function buildGrid(){
   if(grid)scene.remove(grid);
   const dark=new THREE.Color(cssVar('--scene')||'#d9dee2').getHSL({}).l<0.4;
-  grid=new THREE.GridHelper(2,40,dark?0x46505a:0xa9b2ba,dark?0x2c343c:0xc6cdd3);grid.position.y=0.0004;scene.add(grid);
+  grid=new THREE.GridHelper(2,40,dark?0x3a434d:0xa9b2ba,dark?0x232a31:0xc6cdd3);grid.position.y=0.0004;scene.add(grid);
 }
 const root=new THREE.Group();root.rotation.x=-Math.PI/2;scene.add(root);  // base frame: X,Y on the floor, Z up
 
@@ -491,7 +668,8 @@ const servoF=makeFK(),ghostF=makeFK();
 let ikErr={pos:0,ori:0},demo=false,demoT=0,homeLock=false,lastRescue=null,lastRescueKey='',lastRescueT=0;
 const tx=$('#tx'),ty=$('#ty'),tz=$('#tz');
 const mm=v=>Math.round(v*1000);
-function syncUI(){tx.value=mm(target.x);ty.value=mm(target.y);tz.value=mm(target.z);$('#oxv').textContent=mm(target.x);$('#oyv').textContent=mm(target.y);$('#ozv').textContent=mm(target.z);}
+function syncUI(){tx.value=mm(target.x);ty.value=mm(target.y);tz.value=mm(target.z);$('#oxv').textContent=mm(target.x);$('#oyv').textContent=mm(target.y);$('#ozv').textContent=mm(target.z);
+  $('#sbTarget').textContent=`${mm(target.x)}, ${mm(target.y)}, ${mm(target.z)} mm`;}
 function setTarget(v){target.copy(v);target.z=Math.max(0.003,target.z);targetObj.position.copy(target);syncUI();}
 [tx,ty,tz].forEach(el=>el.addEventListener('input',()=>{setDemo(false);homeLock=false;setTarget(V(tx.value/1000,ty.value/1000,tz.value/1000));}));
 
@@ -523,7 +701,50 @@ $('#optGhost').addEventListener('change',e=>{ghost.visible=ghostDots.visible=e.t
 if(/^https?:$/.test(location.protocol)&&location.pathname.replace(/\/$/,'').endsWith('/sim'))
   $('#wsUrl').value=(location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws/arm';
 const panel=$('#panel');
-$('#toggle').addEventListener('click',e=>{const c=panel.classList.toggle('collapsed');e.currentTarget.textContent=c?'Show':'Hide';e.currentTarget.setAttribute('aria-expanded',!c);});
+$('#toggle').addEventListener('click',e=>{const c=panel.classList.toggle('collapsed'),b=e.currentTarget;
+  b.setAttribute('aria-expanded',!c);b.setAttribute('aria-label',c?'Show controls':'Hide controls');b.title=b.getAttribute('aria-label');
+  b.firstElementChild.style.transform=c?'rotate(180deg)':'';});
+
+/* ---------- App chrome: inspector tabs, theme, camera views, connection chip ---------- */
+const uiGet=k=>{try{return localStorage.getItem(k);}catch(_){return null;}};
+const uiSet=(k,v)=>{try{v==null?localStorage.removeItem(k):localStorage.setItem(k,v);}catch(_){}};
+const tabs=[...document.querySelectorAll('.tab')];
+function showTab(name,focus){
+  tabs.forEach(t=>{const on=t.id==='tabbtn-'+name;t.setAttribute('aria-selected',on);t.tabIndex=on?0:-1;
+    $('#'+t.getAttribute('aria-controls')).hidden=!on;if(on&&focus)t.focus();});
+  if(panel.classList.contains('collapsed'))$('#toggle').click();
+  uiSet('mycobot-tab',name);
+}
+tabs.forEach((t,i)=>{
+  t.addEventListener('click',()=>showTab(t.id.slice(7)));
+  t.addEventListener('keydown',e=>{const d={ArrowRight:1,ArrowLeft:-1}[e.key];if(!d)return;e.preventDefault();
+    showTab(tabs[(i+d+tabs.length)%tabs.length].id.slice(7),true);});
+});
+{const t=uiGet('mycobot-tab');showTab(tabs.some(b=>b.id==='tabbtn-'+t)?t:'motion');}
+$('#linkChip').addEventListener('click',()=>showTab('robot'));
+const THEMES=['system','light','dark'];
+function setTheme(t){
+  if(t==='system')delete document.documentElement.dataset.theme;else document.documentElement.dataset.theme=t;
+  const b=$('#themeBtn');b.title='Theme: '+t;b.setAttribute('aria-label','Colour theme: '+t+'. Click to change.');
+  uiSet('mycobot-theme',t==='system'?null:t);if(typeof applyTheme==='function'&&scene)applyTheme();
+}
+setTheme(THEMES.includes(uiGet('mycobot-theme'))?uiGet('mycobot-theme'):'system');
+$('#themeBtn').addEventListener('click',()=>{const cur=document.documentElement.dataset.theme||'system';setTheme(THEMES[(THEMES.indexOf(cur)+1)%3]);});
+const VIEWS={persp:[0.62,0.3,0.7],front:[1,0,0],side:[0,0,1],top:[0.001,1,0]};  // three.js world: base X, base Z (up), -base Y
+document.querySelectorAll('.view-tools button').forEach(b=>b.addEventListener('click',()=>{
+  const d=V(...VIEWS[b.dataset.view]).normalize();orbit.target.set(0,0.2,0);
+  camera.position.copy(orbit.target).addScaledVector(d,1.0);orbit.update();}));
+let linkKey='';
+function updateLinkChip(){ // derived from the link state every frame; only touches the DOM when it changes
+  let state='off',text='Offline';
+  if(ws&&!measured){state='connecting';text='Connecting…';}
+  else if(ws){const n=measured.filter(v=>v!==null).length;
+    if(limp){state='warn';text='Hand-guide · torque off';}
+    else if(n<N){state='warn';text=`Connected · ${n}/${N} servos`;}
+    else{state='live';text=stopped?'Connected · stopped':'Connected · live';}}
+  if(state+text===linkKey)return;linkKey=state+text;
+  $('#linkChip').dataset.state=state;$('#linkText').textContent=text;
+}
 
 /* ---------- Real arm link (WebSocket to the FastAPI backend's /ws/arm) ----------
    page -> backend: {type:"goal", angles:[deg x6], speed:deg/s, acc:deg/s^2} and {type:"torque", on:bool}
@@ -719,8 +940,9 @@ renderer.domElement.addEventListener('pointerup',e=>{
   if(ray.ray.intersectPlane(floorPlane,hit)&&hit.length()<1){root.worldToLocal(hit);setDemo(false);homeLock=false;setTarget(V(hit.x,hit.y,target.z));}
 });
 
-function resize(){const w=innerWidth,h=innerHeight;renderer.setSize(w,h);camera.aspect=w/h;camera.updateProjectionMatrix();}
-addEventListener('resize',resize);resize();applyTheme();
+function resize(){const st=$('#stage'),w=Math.max(1,st.clientWidth),h=Math.max(1,st.clientHeight);renderer.setSize(w,h);camera.aspect=w/h;camera.updateProjectionMatrix();}
+if(window.ResizeObserver)new ResizeObserver(resize).observe($('#stage'));else addEventListener('resize',resize);
+resize();applyTheme();
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change',applyTheme);
 syncUI();
 {const b=ikRescue(qIK,target,true);if(b)for(let i=0;i<N;i++)qIK[i]=b.q[i];}
@@ -788,6 +1010,7 @@ function frame(){
   else if(moving){st.className='status';$('#statusText').textContent='Servos moving';}
   else{st.className='status ok';$('#statusText').textContent='At target';}
   $('#errText').textContent=(servoF.tcp.distanceTo(target)*1000).toFixed(1)+' mm';
+  updateLinkChip();
   const showReal=haveReal&&$('#optReal').checked;
   realLine.visible=realDots.visible=showReal;
   if(showReal){fk(measured.map(v=>v*DEG),realF);const ra=realGeo.attributes.position.array;ra.set([0,0,0.06],0);

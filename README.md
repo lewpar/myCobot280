@@ -226,7 +226,7 @@ FF FF 07 <LEN> 03 <ADDR> <DATA> <CHK>
 
 On boot the ATOM runs a rainbow animation on the 5×5 LED matrix until the first command arrives.
 
-The simulator has an **ATOM LED matrix** panel: pick a colour and click or drag across the 5×5 grid,
+The simulator's **ATOM** tab has an LED matrix panel: pick a colour and click or drag across the 5×5 grid,
 fill or clear all LEDs, set the brightness, or read the current LEDs back. It uses the REST endpoints
 (`/api/atom/pixel`, `color`, `brightness`, `state`) with the password from the connection box, so the
 arm link doesn't have to be connected. Brightness is capped at half the NeoPixel range by the firmware.
@@ -237,8 +237,9 @@ The backend serves a 3D inverse-kinematics simulator at `http://<pi>:8000/sim` a
 `/ws/arm` that streams joint angles to the servos (one sync-write packet per update) and measured
 positions back (~10 Hz).
 
-1. `./run.sh backend`, open `http://<pi>:8000/sim`, enter the password and press **Connect**.
-2. Turn on **Hand-guide mode**, pose the arm like the sim's zero pose (arm straight up), press
+1. `./run.sh backend`, open `http://<pi>:8000/sim`, go to the **Robot** tab, enter the password and press **Connect**.
+   The chip in the top bar shows the link state; **Stop** (or Esc) is always in the top-right corner.
+2. Still in **Robot**, turn on **Hand-guide mode**, pose the arm like the sim's zero pose (arm straight up), press
    **Set zero to the arm's current pose**.
 3. Bend each joint by hand. If the green (measured) pose turns the other way, tick **Reverse** for it.
 4. Set **Tool length** if something is mounted on the flange; the collision check includes it.

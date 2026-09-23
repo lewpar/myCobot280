@@ -95,6 +95,9 @@ It's deliberately conservative and approximate; it is not a substitute for watch
 
 ## Simulator page internals (`ik_sim.html`)
 
+- Layout: top bar (link chip, theme toggle, Stop), 3D viewport (camera presets, legend), tabbed inspector
+  (Motion / Joints / Robot / ATOM) and a status bar. The script finds everything by element id, so keep the
+  ids when moving markup around. The canvas sizes to `#stage` (ResizeObserver), not the window.
 - IK: damped least squares on the geometric Jacobian, **task priority** (position first, "flange
   facing down" in the null space), step scaled uniformly, joint limits clamped, and `ikRescue`
   restarts from seeded poses when stuck or colliding (collisions add a 1e6 score penalty).
