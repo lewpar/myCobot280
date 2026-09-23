@@ -101,6 +101,9 @@ It's deliberately conservative and approximate; it is not a substitute for watch
 - `qIK` = solver output; `qCmd` = what the servos are told. **Only collision-free poses and paths are
   copied from qIK to qCmd.** The simulated servos use a trapezoidal velocity profile toward qCmd.
 - Hand-guide mode: torque off, qIK/qCmd follow the measured pose. Stop: freeze qCmd, send `stop`.
+- ATOM LED panel: talks to `/api/atom/*` over REST (not the WebSocket), with the backend host from
+  the WS address field and the password field. Requests go one at a time; a 401/429 drops the rest of the
+  queue so a drag can't trip the lockout. The 3D ATOM's LEDs mirror the panel (index row×5+x, seen from behind).
 - The page auto-fills `ws://<host>/ws/arm` when served from `/sim`. It stores the password in
   sessionStorage (localStorage only if "remember" is ticked).
 - A copy was also published as a claude.ai artifact; **the repo file is the source of truth**.
@@ -116,6 +119,7 @@ tool_mm, limits[6][lo,hi]}`, or `error {code: auth|locked|no_arm, message}`.
 `servos[?rescan=true]`, `servos/status`, `servos/home` (GET/POST), `servos/center_all`,
 `servos/torque_all`, `servo/{id}` and `/move`, `/move_rel`, `/center`, `/torque`, `/ping`,
 `atom/{color,pixel,brightness,ping,state}`. Refusals: 409 collision, 423 stopped, 422 bad values.
+ATOM writes return `acked` (false = no reply; the flashed firmware may predate the reply-on-write parser).
 
 ## Testing without the arm
 

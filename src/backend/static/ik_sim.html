@@ -73,6 +73,14 @@ button.stop{background:var(--bad);border-color:var(--bad);color:#fff;font-weight
 button.stop:hover{filter:brightness(1.08);background:var(--bad)}
 button.stop[aria-pressed="true"]{background:var(--good);border-color:var(--good);color:#fff}
 input[type=text],input[type=password]{font:12px "IBM Plex Mono",ui-monospace,monospace;flex:1;min-width:0;background:var(--code);color:var(--text);border:1px solid var(--panel-edge);border-radius:8px;padding:6px 8px}
+.atom{display:flex;gap:12px;align-items:flex-start;margin-top:8px}
+.atomgrid{display:grid;grid-template-columns:repeat(5,30px);gap:4px;padding:6px;background:#1c1f23;border-radius:8px;touch-action:none;user-select:none;flex:none}
+.atomgrid button{width:30px;height:30px;padding:0;border-radius:5px;border:1px solid #3a4047}
+.atomgrid button:hover{border-color:var(--amber)}
+.atomside{display:flex;flex-direction:column;gap:8px;flex:1;min-width:0}
+.atomside input[type=color]{width:100%;height:32px;padding:2px;border:1px solid var(--panel-edge);border-radius:8px;background:var(--btn);cursor:pointer}
+.palette{display:grid;grid-template-columns:repeat(4,22px);gap:5px}
+.palette button{width:22px;height:22px;padding:0;border-radius:50%;border:1px solid var(--panel-edge)}
 #hint{position:fixed;left:12px;bottom:calc(12px + env(safe-area-inset-bottom,0px));max-width:min(440px,calc(100% - 370px));
   padding:8px 12px;border-radius:10px;background:var(--panel);border:1px solid var(--panel-edge);color:var(--muted);font-size:12.5px}
 #fail{position:fixed;inset:0;display:none;align-items:center;justify-content:center;padding:24px;text-align:center}
@@ -129,6 +137,19 @@ input[type=text],input[type=password]{font:12px "IBM Plex Mono",ui-monospace,mon
     <div class="row"><button id="btnZero" disabled>Set zero to the arm's current pose</button></div>
     <div class="row" id="dirRow" role="group" aria-label="Reverse joint direction"></div>
     <p class="note" id="calNote"></p>
+
+    <h2>ATOM LED matrix</h2>
+    <p class="note" style="margin-top:0">Click or drag across the grid to paint with the chosen colour. Uses the backend address and password above; the arm link doesn't need to be connected.</p>
+    <div class="atom">
+      <div id="atomGrid" class="atomgrid" role="group" aria-label="ATOM LEDs, 5 by 5"></div>
+      <div class="atomside">
+        <input type="color" id="atomColor" value="#00c850" aria-label="Paint colour">
+        <div id="atomPalette" class="palette" role="group" aria-label="Colour presets"></div>
+      </div>
+    </div>
+    <div class="row"><button id="atomFill">Fill all</button><button id="atomClear">All off</button><button id="atomRead">Read from the ATOM</button></div>
+    <div class="slider"><span>Brightness</span><input type="range" id="atomBri" min="1" max="100" value="100"><output id="atomBriv">100%</output></div>
+    <p class="note" id="atomNote"></p>
   </div>
 </aside>
 <div id="hint">Click the floor to drop the target there. Drag the arrows on the target to move it in 3D. Drag empty space to orbit, scroll to zoom. Press Esc to stop.</div>
@@ -365,6 +386,7 @@ function makeLink(l){
   });
   return shade(g);
 }
+const atomDotMats=[];  // one per LED, index row*5+x as on the ATOM; tinted from the LED panel's state
 function makeAtomHead(){ // on the J5 body, behind the J5 axis on the J6 line, LED matrix facing backwards (-X)
   const g=new THREE.Group(),c=V(-0.012,-0.0636,0.4181);
   const head=new THREE.Mesh(new THREE.CylinderGeometry(0.0155,0.0155,0.036,40),shell);
@@ -372,8 +394,10 @@ function makeAtomHead(){ // on the J5 body, behind the J5 axis on the J6 line, L
   const faceX=c.x-0.018;
   const panel=new THREE.Mesh(new THREE.BoxGeometry(0.003,0.021,0.021),new THREE.MeshStandardMaterial({color:0x3b3f44,roughness:0.5}));
   panel.position.set(faceX-0.0015,c.y,c.z);g.add(panel);
-  const dotG=new THREE.BoxGeometry(0.0008,0.0022,0.0022),dotM=new THREE.MeshStandardMaterial({color:0x1d5a33,emissive:0x2bd46a,emissiveIntensity:0.55});
-  for(let i=0;i<5;i++)for(let j=0;j<5;j++){const d=new THREE.Mesh(dotG,dotM);d.position.set(faceX-0.0033,c.y+(i-2)*0.0038,c.z+(j-2)*0.0038);g.add(d);}
+  const dotG=new THREE.BoxGeometry(0.0008,0.0022,0.0022);
+  for(let k=0;k<25;k++){ // seen from behind the arm (looking along +X): x runs toward -Y, rows run downward
+    const m=new THREE.MeshStandardMaterial({color:0x1d5a33,emissive:0x2bd46a,emissiveIntensity:0.55});atomDotMats.push(m);
+    const d=new THREE.Mesh(dotG,m);d.position.set(faceX-0.0033,c.y-(k%5-2)*0.0038,c.z-(Math.floor(k/5)-2)*0.0038);g.add(d);}
   return shade(g);
 }
 
@@ -525,6 +549,83 @@ function setLimp(on){
     homeLock=true;send({type:'torque',on:true});wsNote('Torque is on. The arm holds its pose until you set a new target.');}
 }
 $('#btnLimp').addEventListener('click',()=>setLimp(!limp));
+
+/* ---------- ATOM LED matrix (REST: /api/atom/* on the same backend, X-Arm-Password header) ---------- */
+const atomPx=Array.from({length:25},()=>[0,0,0]);let atomBright=100;
+const atomCells=[];
+function atomNote(t){$('#atomNote').textContent=t;}
+function hexRgb(h){const n=parseInt(h.slice(1),16);return[n>>16&255,n>>8&255,n&255];}
+function atomDraw(k){
+  const [r,g,b]=atomPx[k];atomCells[k].style.background=`rgb(${r},${g},${b})`;
+  const m=atomDotMats[k],on=r+g+b>0;
+  m.color.setRGB(on?r/255*0.4:0.05,on?g/255*0.4:0.05,on?b/255*0.4:0.05);m.emissive.setRGB(r/255,g/255,b/255);
+  m.emissiveIntensity=on?0.3+0.9*atomBright/100:0;
+}
+function apiBase(){ // the REST API lives on the same host as the /ws/arm link
+  try{const u=new URL($('#wsUrl').value.trim());return (u.protocol==='wss:'?'https:':'http:')+'//'+u.host+'/api';}catch(_){return null;}
+}
+async function atomApi(method,path,body){
+  const base=apiBase(),pw=$('#wsPw').value;
+  if(!base)throw new Error('The backend address above isn\'t valid.');
+  if(!pw){$('#wsPw').focus();throw new Error('Enter the arm password above first.');}
+  let r;
+  try{r=await fetch(base+path,{method,headers:Object.assign({'X-Arm-Password':pw},body?{'Content-Type':'application/json'}:{}),body:body?JSON.stringify(body):undefined});}
+  catch(_){throw new Error(`Couldn't reach the backend at ${base}.`);}
+  let j={};try{j=await r.json();}catch(_){}
+  if(r.ok){storePw(pw);return j;}
+  const why={401:'The backend rejected that password.',502:'The ATOM didn\'t answer.',503:'The backend has no arm connected (check the serial port).'}[r.status];
+  const err=new Error(why||(typeof j.detail==='string'?j.detail:`The backend answered ${r.status}.`));
+  err.halt=r.status===401||r.status===429;err.read=method==='GET';throw err;
+}
+let atomChain=Promise.resolve(),atomGen=0;
+function atomQueue(fn){ // one request at a time, in order, so a fast drag can't flood the bus
+  const gen=atomGen;
+  atomChain=atomChain.then(()=>gen===atomGen?fn():null)
+    .then(j=>{if(j)atomNote(j.acked===false?'Sent, but the ATOM didn\'t reply. Its LEDs may still have changed.':'');})
+    .catch(e=>{
+      if(e.halt)atomGen++;   // wrong password or locked out: drop the rest of the queue instead of piling up failures
+      atomNote(e.message+(e.read?'':' The grid may not match the ATOM now; press "Read from the ATOM" once it\'s sorted.'));});
+}
+const atomPending=new Set();
+function atomPaint(k){
+  const c=hexRgb($('#atomColor').value);
+  if(atomPx[k].every((v,i)=>v===c[i]))return;
+  atomPx[k]=c;atomDraw(k);
+  if(atomPending.has(k))return;   // already queued: it sends whatever colour the LED has by then
+  atomPending.add(k);
+  atomQueue(()=>{atomPending.delete(k);const [r,g,b]=atomPx[k];return atomApi('POST','/atom/pixel',{x:k%5,y:Math.floor(k/5),r,g,b});});
+}
+function atomFill(c){
+  for(let k=0;k<25;k++){atomPx[k]=c.slice();atomDraw(k);}
+  atomQueue(()=>atomApi('POST','/atom/color',{r:c[0],g:c[1],b:c[2]}));
+}
+{let painting=false;
+ for(let k=0;k<25;k++){
+   const b=document.createElement('button');b.type='button';b.setAttribute('aria-label',`LED column ${k%5+1}, row ${Math.floor(k/5)+1}`);
+   b.addEventListener('pointerdown',e=>{e.preventDefault();painting=true;atomPaint(k);
+     try{b.releasePointerCapture(e.pointerId);}catch(_){}});   // touch captures the pointer; release it so dragging reaches the other cells
+   b.addEventListener('pointerenter',()=>{if(painting)atomPaint(k);});
+   b.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();atomPaint(k);}});
+   $('#atomGrid').appendChild(b);atomCells.push(b);
+   b.style.background='#000';
+ }
+ addEventListener('pointerup',()=>{painting=false;});addEventListener('pointercancel',()=>{painting=false;});}
+['#ff0000','#ff7a00','#ffd000','#00c850','#00c8c8','#0050ff','#a000ff','#ffffff'].forEach(h=>{
+  const b=document.createElement('button');b.type='button';b.style.background=h;b.setAttribute('aria-label','Paint colour '+h);b.title=h;
+  b.addEventListener('click',()=>{$('#atomColor').value=h;});$('#atomPalette').appendChild(b);});
+$('#atomFill').addEventListener('click',()=>atomFill(hexRgb($('#atomColor').value)));
+$('#atomClear').addEventListener('click',()=>atomFill([0,0,0]));
+$('#atomRead').addEventListener('click',()=>atomQueue(async()=>{
+  const j=await atomApi('GET','/atom/state');
+  if(Array.isArray(j.pixels))j.pixels.slice(0,25).forEach((p,k)=>{atomPx[k]=[p[0]|0,p[1]|0,p[2]|0];});
+  if(typeof j.brightness==='number'){atomBright=Math.max(1,Math.round(j.brightness*100/128));$('#atomBri').value=atomBright;$('#atomBriv').textContent=atomBright+'%';}
+  for(let k=0;k<25;k++)atomDraw(k);
+  atomNote('Read the LEDs back from the ATOM.');
+}));
+{let t=null;
+ $('#atomBri').addEventListener('input',e=>{
+   atomBright=+e.target.value;$('#atomBriv').textContent=atomBright+'%';for(let k=0;k<25;k++)if(atomPx[k].some(v=>v))atomDraw(k);
+   clearTimeout(t);t=setTimeout(()=>atomQueue(()=>atomApi('POST','/atom/brightness',{percent:atomBright})),250);});}
 
 function setStopped(on,fromArm){
   if(on===stopped)return;

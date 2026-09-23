@@ -232,22 +232,21 @@ class _Atom:
 
     @color.setter
     def color(self, rgb: tuple[int, int, int]):
-        r, g, b = rgb
+        self.set_color(*rgb)
+
+    def set_color(self, r: int = 0, g: int = 0, b: int = 0) -> bool:
+        """Set all 25 LEDs to the given colour. Returns True if the ATOM acknowledged it."""
         with self._bus._lock:
-            self._bus._write_raw(_ATOM_ID, _ATOM_ADDR_SET_COLOR, bytes([r, g, b]))
+            return self._bus._write_raw(_ATOM_ID, _ATOM_ADDR_SET_COLOR, bytes([r, g, b])) is not None
 
-    def set_color(self, r: int = 0, g: int = 0, b: int = 0):
-        """Set all 25 LEDs to the given colour."""
-        self.color = (r, g, b)
-
-    def pixel(self, x: int, y: int, r: int = 255, g: int = 0, b: int = 0):
-        """Set a single pixel on the 5×5 matrix (x, y = 0–4)."""
+    def pixel(self, x: int, y: int, r: int = 255, g: int = 0, b: int = 0) -> bool:
+        """Set a single pixel on the 5×5 matrix (x, y = 0–4). Returns True if acknowledged."""
         with self._bus._lock:
-            self._bus._write_raw(_ATOM_ID, _ATOM_ADDR_SET_PIXEL,
-                                 bytes([x, y, r, g, b]))
+            return self._bus._write_raw(_ATOM_ID, _ATOM_ADDR_SET_PIXEL,
+                                        bytes([x, y, r, g, b])) is not None
 
-    def set_brightness(self, percent: int):
-        """Set LED brightness as a percentage (1–100).
+    def set_brightness(self, percent: int) -> bool:
+        """Set LED brightness as a percentage (1–100). Returns True if acknowledged.
 
         Mapped to 0–128 on the hardware (0–50% of the NeoPixel range) to
         prevent ESP32 regulator burnout.
@@ -256,8 +255,8 @@ class _Atom:
         percent = max(1, min(100, percent))
         raw = int(percent * 128 / 100)
         with self._bus._lock:
-            self._bus._write_raw(_ATOM_ID, _ATOM_ADDR_SET_BRIGHTNESS,
-                                 bytes([raw]))
+            return self._bus._write_raw(_ATOM_ID, _ATOM_ADDR_SET_BRIGHTNESS,
+                                        bytes([raw])) is not None
 
     @property
     def brightness(self) -> None:

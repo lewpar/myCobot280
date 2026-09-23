@@ -226,6 +226,11 @@ FF FF 07 <LEN> 03 <ADDR> <DATA> <CHK>
 
 On boot the ATOM runs a rainbow animation on the 5×5 LED matrix until the first command arrives.
 
+The simulator has an **ATOM LED matrix** panel: pick a colour and click or drag across the 5×5 grid,
+fill or clear all LEDs, set the brightness, or read the current LEDs back. It uses the REST endpoints
+(`/api/atom/pixel`, `color`, `brightness`, `state`) with the password from the connection box, so the
+arm link doesn't have to be connected. Brightness is capped at half the NeoPixel range by the firmware.
+
 ## IK simulator and live link
 
 The backend serves a 3D inverse-kinematics simulator at `http://<pi>:8000/sim` and a WebSocket at

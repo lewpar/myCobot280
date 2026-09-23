@@ -85,15 +85,6 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="MyCobot280 API", lifespan=lifespan)
 
-origins = CORS_ORIGINS.split(",") if CORS_ORIGINS != "*" else ["*"]
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 
 @app.middleware("http")
 async def require_password(request: Request, call_next):
@@ -106,6 +97,18 @@ async def require_password(request: Request, call_next):
             await _record_failure(ip)
             return JSONResponse({"detail": "Password required"}, status_code=401)
     return await call_next(request)
+
+
+# Added after the password check so it wraps it: refusals (401/429) still carry CORS headers and a
+# page on another origin sees the real error instead of a network failure.
+origins = CORS_ORIGINS.split(",") if CORS_ORIGINS != "*" else ["*"]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 def _get_arm() -> MyCobot280:
@@ -310,15 +313,14 @@ def servo_ping(servo_id: int):
 @app.post("/api/atom/color")
 def atom_color(req: ColorRequest):
     a = _get_arm()
-    a.atom.set_color(req.r, req.g, req.b)
-    return {"success": True}
+    # acked=False: sent, but the ATOM didn't reply (it may still have changed its LEDs)
+    return {"success": True, "acked": a.atom.set_color(req.r, req.g, req.b)}
 
 
 @app.post("/api/atom/pixel")
 def atom_pixel(req: PixelRequest):
     a = _get_arm()
-    a.atom.pixel(req.x, req.y, req.r, req.g, req.b)
-    return {"success": True}
+    return {"success": True, "acked": a.atom.pixel(req.x, req.y, req.r, req.g, req.b)}
 
 
 @app.post("/api/atom/ping")
@@ -331,8 +333,7 @@ def atom_ping():
 @app.post("/api/atom/brightness")
 def atom_brightness(req: BrightnessRequest):
     a = _get_arm()
-    a.atom.set_brightness(req.percent)
-    return {"success": True, "percent": req.percent}
+    return {"success": True, "acked": a.atom.set_brightness(req.percent), "percent": req.percent}
 
 
 @app.get("/api/atom/state")
