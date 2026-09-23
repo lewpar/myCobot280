@@ -68,8 +68,18 @@ The second one to start exits with a "port is already in use" message.
 ./run.sh              # API on :8000, docs at /docs, simulator at http://<pi>:8000/sim
 ```
 
-`./run.sh backend` no longer uses uvicorn's `--reload` (it restarts the server whenever a file
-changes). Set `MYCOBOT_DEV=1` to get it back while editing code.
+The first run creates `venv/` and installs the backend's requirements (again whenever
+`src/backend/requirements.txt` changes). The script prints the simulator's address for each network
+interface and warns about a missing serial port, missing permissions on it, a missing `.env` or password,
+or something already using the HTTP port. The serial port comes from `--port`, `$MYCOBOT_PORT` or
+`src/backend/.env`, in that order.
+
+```
+./run.sh --port /dev/ttyUSB0      # another serial port
+./run.sh --http-port 8080         # another HTTP port (--host to bind one address)
+./run.sh --dev                    # restart on code changes (uvicorn --reload); not while the arm moves
+./run.sh --help
+```
 
 ### Python API (mycobot280)
 

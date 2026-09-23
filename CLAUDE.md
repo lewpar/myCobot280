@@ -38,7 +38,7 @@ Register map used (STS): 9/11 min/max limit, 31 position correction, 40 torque e
 | `atom_led_matrix/atom_led_matrix.ino` | ATOM firmware (frame parser in `feed_byte`) |
 | `tools/check_servo_units.py` | Times moves to measure real speed/accel register units; `--write` saves them |
 | `tools/diagnostics/` | Old bring-up scripts, not used by anything |
-| `run.sh` | `./run.sh [backend] [--port /dev/ttyX]` starts the backend |
+| `run.sh` | Starts the backend: `./run.sh [--port /dev/ttyX] [--host A] [--http-port N] [--dev]`; sets up `venv/`, pre-flight checks, `exec`s uvicorn |
 
 ## Running
 
@@ -48,7 +48,8 @@ cp src/backend/.env.example src/backend/.env      # set MYCOBOT_PASSWORD
 ./run.sh                                          # API :8000, simulator at http://<pi>:8000/sim
 ```
 
-`MYCOBOT_DEV=1 ./run.sh backend` turns uvicorn `--reload` back on (off by default on purpose).
+`./run.sh --dev` (or `MYCOBOT_DEV=1`) turns uvicorn `--reload` on (off by default on purpose; it excludes `venv/`).
+The serial port comes from `--port`, then `$MYCOBOT_PORT`, then `src/backend/.env`; run.sh never prompts.
 Env vars: `MYCOBOT_PORT`, `MYCOBOT_BAUD`, `MYCOBOT_PASSWORD`, `MYCOBOT_CORS_ORIGINS`.
 
 ## Invariants: don't break these
