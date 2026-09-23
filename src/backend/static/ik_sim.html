@@ -320,21 +320,24 @@ const ledMats=[];
 function shade(o){o.traverse(m=>{if(m.isMesh){m.castShadow=true;m.receiveShadow=true;}});return o;}
 
 /* Visual layout, authored in the base frame at the zero pose. Housing centres sit on each joint's axis line,
-   so the geometry matches the kinematics; brackets are L-shaped polylines between housings. */
+   so the geometry matches the kinematics; brackets are polylines between housings.
+   Placement follows a photo of the real arm (servo_ids.png): J1 is a flat ring on top of the base; J2, J3 and J4
+   sit in one line ~30 mm to -Y of the base axis, and the links zigzag either side of them
+   (link 1 at y=0, link 2 at y=-66 mm, link 3 back at y=0, link 4 out to the J5 axis at y=-63.6 mm). */
 const V=(x,y,z)=>new THREE.Vector3(x,y,z);
 const HOUSINGS=[
-  {c:V(0,0,0.093),       a:V(0,0,1), r:0.033,L:0.040},
-  {c:V(0,0.036,0.1386),  a:V(0,1,0), r:0.030,L:0.040},
-  {c:V(0,-0.032,0.249),  a:V(0,1,0), r:0.027,L:0.036},
-  {c:V(0,0.026,0.345),   a:V(0,1,0), r:0.025,L:0.034},
+  {c:V(0,0,0.085),       a:V(0,0,1), r:0.038,L:0.024},
+  {c:V(0,-0.035,0.1386), a:V(0,1,0), r:0.030,L:0.040},
+  {c:V(0,-0.031,0.249),  a:V(0,1,0), r:0.027,L:0.036},
+  {c:V(0,-0.029,0.345),  a:V(0,1,0), r:0.025,L:0.034},
   {c:V(0,-0.0636,0.378), a:V(0,0,1), r:0.023,L:0.034},
   {c:V(0.026,-0.0636,0.4181),a:V(1,0,0),r:0.021,L:0.036},
 ];
 const BRACKETS=[ // bracket k belongs to link k (moves with joint k), from housing k to housing k+1
-  {w:0.042,pts:[V(0,0,0.11),V(0,0,0.1386),V(0,0.02,0.1386)]},
-  {w:0.040,pts:[V(0,0.036,0.1386),V(0,0.036,0.249),V(0,-0.016,0.249)]},
-  {w:0.036,pts:[V(0,-0.032,0.249),V(0,-0.032,0.345),V(0,0.012,0.345)]},
-  {w:0.032,pts:[V(0,0.026,0.345),V(0,0.026,0.378),V(0,-0.05,0.378)]},
+  {w:0.042,pts:[V(0,0,0.1),V(0,0,0.1386),V(0,-0.035,0.1386)]},
+  {w:0.040,pts:[V(0,-0.035,0.1386),V(0,-0.066,0.1386),V(0,-0.066,0.249),V(0,-0.031,0.249)]},
+  {w:0.036,pts:[V(0,-0.031,0.249),V(0,0,0.249),V(0,0,0.345),V(0,-0.029,0.345)]},
+  {w:0.032,pts:[V(0,-0.029,0.345),V(0,-0.0636,0.345),V(0,-0.0636,0.362)]},
   {w:0.030,pts:[V(0,-0.0636,0.39),V(0,-0.0636,0.4181),V(0.012,-0.0636,0.4181)]},
 ];
 function makeHousing(h){
