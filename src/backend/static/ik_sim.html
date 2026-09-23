@@ -1,0 +1,581 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>280-class six-axis arm · IK simulator</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px);
+  padding-bottom:env(safe-area-inset-bottom,0px);
+  --scene:#d9dee2;--panel:rgba(246,248,249,.93);--panel-edge:#c3cad0;--text:#1d2329;--muted:#5f6a74;
+  --track:#d2d8dd;--amber:#e79a00;--bad:#c8402c;--good:#2f8a55;--btn:#e6eaed;--btn-hover:#dce1e5;--code:#eef1f3;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --scene:#1b2026;--panel:rgba(32,38,45,.93);--panel-edge:#3a434d;--text:#e6eaee;--muted:#98a3ad;
+    --track:#3a434d;--amber:#ffb21f;--bad:#ff6b55;--good:#5fcf8d;--btn:#2c343c;--btn-hover:#36404a;--code:#262d34;
+  }
+}
+:root[data-theme="dark"]{
+  --scene:#1b2026;--panel:rgba(32,38,45,.93);--panel-edge:#3a434d;--text:#e6eaee;--muted:#98a3ad;
+  --track:#3a434d;--amber:#ffb21f;--bad:#ff6b55;--good:#5fcf8d;--btn:#2c343c;--btn-hover:#36404a;--code:#262d34;
+}
+*,*::before,*::after{box-sizing:inherit}
+html{height:100%;scroll-padding-top:env(safe-area-inset-top,0px)}
+body{height:100%;margin:0;background:var(--scene);color:var(--text);
+  font:14px/1.45 "IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;overflow:hidden}
+#stage{position:fixed;inset:0}
+#stage canvas{display:block;touch-action:none}
+#panel{position:fixed;top:calc(12px + env(safe-area-inset-top,0px));right:12px;
+  bottom:calc(12px + env(safe-area-inset-bottom,0px));width:330px;max-width:calc(100% - 24px);
+  background:var(--panel);border:1px solid var(--panel-edge);border-radius:14px;
+  backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+  display:flex;flex-direction:column;overflow:hidden;box-shadow:0 10px 30px rgba(0,0,0,.12)}
+#panel header{display:flex;align-items:center;gap:10px;padding:14px 16px 10px}
+#panel h1{font-size:16px;font-weight:600;margin:0;flex:1;letter-spacing:-.01em}
+#toggle{display:none}
+.scroll{overflow-y:auto;padding:0 16px 16px;flex:1}
+h2{font-size:13px;font-weight:600;margin:18px 0 8px}
+.status{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:8px;background:var(--btn);font-size:13px}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--amber);flex:none}
+.status.ok .dot{background:var(--good)}.status.bad .dot{background:var(--bad)}
+.status .err{margin-left:auto;font-family:"IBM Plex Mono",ui-monospace,monospace;color:var(--muted);font-size:12px;white-space:nowrap}
+.axis{display:grid;grid-template-columns:18px 1fr 64px;align-items:center;gap:8px;margin:6px 0}
+.axis b{font-weight:600;color:var(--muted)}
+.axis output,.slider output{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:12px;text-align:right}
+input[type=range]{width:100%;accent-color:var(--amber);margin:0}
+.row{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+button{font:inherit;font-size:13px;color:var(--text);background:var(--btn);border:1px solid var(--panel-edge);border-radius:8px;padding:6px 10px;cursor:pointer}
+button:hover{background:var(--btn-hover)}
+button[aria-pressed="true"]{background:var(--amber);border-color:var(--amber);color:#1d1400}
+button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
+label.chk{display:flex;align-items:center;gap:8px;margin:5px 0;cursor:pointer}
+label.chk input{accent-color:var(--amber);width:15px;height:15px;flex:none}
+.slider{display:grid;grid-template-columns:1fr 70px;gap:8px;align-items:center;margin:6px 0}
+.slider span{grid-column:1/-1;color:var(--muted);font-size:12px;margin-bottom:-4px}
+.joint{display:grid;grid-template-columns:24px 1fr 60px;gap:8px;align-items:center;margin:7px 0;font-size:12.5px}
+.joint .name{color:var(--muted);font-weight:600}
+.bar{position:relative;height:12px;border-radius:6px;background:var(--track);overflow:hidden}
+.bar .zero{position:absolute;top:0;bottom:0;width:1px;background:var(--muted);opacity:.5}
+.bar .tgt{position:absolute;top:1px;bottom:1px;width:2px;background:var(--text);opacity:.55}
+.bar .real{position:absolute;top:0;bottom:0;width:3px;margin-left:-1.5px;background:var(--good);display:none}
+.bar .pos{position:absolute;top:2px;bottom:2px;width:8px;margin-left:-4px;border-radius:4px;background:var(--amber)}
+.joint .val{font-family:"IBM Plex Mono",ui-monospace,monospace;text-align:right}
+.note{color:var(--muted);font-size:12px;margin:8px 0 0}
+textarea{width:100%;font:12px/1.4 "IBM Plex Mono",ui-monospace,monospace;background:var(--code);color:var(--text);
+  border:1px solid var(--panel-edge);border-radius:8px;padding:8px;resize:none}
+input[type=text]{font:12px "IBM Plex Mono",ui-monospace,monospace;flex:1;min-width:0;background:var(--code);color:var(--text);border:1px solid var(--panel-edge);border-radius:8px;padding:6px 8px}
+#hint{position:fixed;left:12px;bottom:calc(12px + env(safe-area-inset-bottom,0px));max-width:min(440px,calc(100% - 370px));
+  padding:8px 12px;border-radius:10px;background:var(--panel);border:1px solid var(--panel-edge);color:var(--muted);font-size:12.5px}
+#fail{position:fixed;inset:0;display:none;align-items:center;justify-content:center;padding:24px;text-align:center}
+@media (max-width:720px){
+  #panel{top:auto;left:8px;right:8px;width:auto;max-width:none;bottom:calc(8px + env(safe-area-inset-bottom,0px));height:52vh}
+  #panel.collapsed{height:auto}#panel.collapsed .scroll{display:none}
+  #toggle{display:inline-block}
+  #hint{top:calc(8px + env(safe-area-inset-top,0px));bottom:auto;left:8px;right:8px;max-width:none}
+}
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div id="fail">WebGL could not start in this browser, so the 3D arm can't be drawn.</div>
+
+<aside id="panel" aria-label="Arm controls">
+  <header><h1>Six-axis arm, 280 kinematics</h1><button id="toggle" aria-expanded="true">Hide</button></header>
+  <div class="scroll">
+    <div class="status" id="status"><span class="dot"></span><span id="statusText">Moving</span><span class="err" id="errText">–</span></div>
+
+    <h2>Target point in the base frame (mm)</h2>
+    <div class="axis"><b>X</b><input type="range" id="tx" min="-350" max="350" step="1"><output id="oxv"></output></div>
+    <div class="axis"><b>Y</b><input type="range" id="ty" min="-350" max="350" step="1"><output id="oyv"></output></div>
+    <div class="axis"><b>Z</b><input type="range" id="tz" min="0" max="500" step="1"><output id="ozv"></output></div>
+    <div class="row">
+      <button id="btnRandom">Random point</button>
+      <button id="btnDemo" aria-pressed="false">Trace figure-8</button>
+      <button id="btnHome">Zero pose</button>
+    </div>
+
+    <h2>Solver</h2>
+    <label class="chk"><input type="checkbox" id="optDown" checked> Keep the flange facing down</label>
+    <label class="chk"><input type="checkbox" id="optGhost" checked> Show the solved pose ahead of the servos</label>
+    <label class="chk"><input type="checkbox" id="optTrail" checked> Draw the tool path</label>
+    <div class="slider"><span>Tool length past the flange</span><input type="range" id="tool" min="0" max="150" value="0"><output id="toolv"></output></div>
+
+    <h2>Simulated servos</h2>
+    <div class="slider"><span>Max speed</span><input type="range" id="spd" min="15" max="360" value="90"><output id="spdv"></output></div>
+    <div class="slider"><span>Acceleration</span><input type="range" id="acc" min="40" max="1500" value="260"><output id="accv"></output></div>
+    <div id="joints"></div>
+    <p class="note">Amber is the simulated servo, the thin line is the solved angle, green is the real servo's reading, and the faint mark is zero. Bars span the joint limits from the official URDF.</p>
+
+    <h2>Real arm over the Feetech bus</h2>
+    <div class="row"><input type="text" id="wsUrl" value="ws://raspberrypi.local:8000/ws/arm" aria-label="Backend address"><button id="btnWs" aria-pressed="false">Connect</button></div>
+    <label class="chk"><input type="checkbox" id="optSend" checked> Drive the servos with the solved angles</label>
+    <label class="chk"><input type="checkbox" id="optReal" checked> Show the real arm's measured pose</label>
+    <div class="row"><button id="btnLimp" aria-pressed="false" disabled>Hand-guide mode</button></div>
+    <p class="note" id="wsNote">Connects to the /ws/arm endpoint of your FastAPI backend on the Pi. The page sends solved angles plus the speed and acceleration set above; the backend turns them into servo ticks and reads positions back.</p>
+    <h2>Calibration</h2>
+    <p class="note" style="margin-top:0">In hand-guide mode, pose the arm like the sim's zero pose, then set the zero. Bend each joint by hand: if the green pose turns the opposite way, reverse that joint.</p>
+    <div class="row"><button id="btnZero" disabled>Set zero to the arm's current pose</button></div>
+    <div class="row" id="dirRow" role="group" aria-label="Reverse joint direction"></div>
+  </div>
+</aside>
+<div id="hint">Click the floor to drop the target there. Drag the arrows on the target to move it in 3D. Drag empty space to orbit, scroll to zoom.</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/controls/OrbitControls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/controls/TransformControls.js"></script>
+<script>
+(function(){
+if(!window.THREE){const f=document.getElementById('fail');f.style.display='flex';f.textContent='The 3D library failed to load. Check your connection and reload.';return;}
+const DEG=Math.PI/180;
+const $=s=>document.querySelector(s);
+const cssVar=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+/* ---------- Kinematics: joint origins, orientations and limits from Elephant Robotics'
+   mycobot_280_pi URDF (mycobot_ros). Base frame is Z-up, metres. Every joint turns about its local Z. ---------- */
+const JOINTS=[
+  {name:'J1', xyz:[0,0,0.13956],        rpy:[0,0,0],             min:-2.9321,max:2.9321},
+  {name:'J2', xyz:[0,0,-0.001],         rpy:[0,1.5708,-1.5708],  min:-2.4434,max:2.4434},
+  {name:'J3', xyz:[-0.1104,0,0],        rpy:[0,0,0],             min:-2.6179,max:2.6179},
+  {name:'J4', xyz:[-0.096,0,0.06462],   rpy:[0,0,-1.5708],       min:-2.6179,max:2.6179},
+  {name:'J5', xyz:[0,-0.07318,-0.001],  rpy:[1.5708,-1.5708,0],  min:-2.7052,max:2.7925},
+  {name:'J6', xyz:[0,0.0456,0],         rpy:[-1.5708,0,0],       min:-3.14,  max:3.14159},
+];
+const N=JOINTS.length;
+const FIX=JOINTS.map(j=>{const m=new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(j.rpy[0],j.rpy[1],j.rpy[2],'ZYX'));m.setPosition(j.xyz[0],j.xyz[1],j.xyz[2]);return m;});
+const URDF_LIM=JOINTS.map(j=>[j.min,j.max]);
+const LIM=URDF_LIM.map(l=>l.slice());   // narrowed to the servos' own safe range once connected
+let toolLen=0;   // metres along the flange normal (flange local +Z)
+
+function makeFK(){return{pos:FIX.map(()=>new THREE.Vector3()),axis:FIX.map(()=>new THREE.Vector3()),tcp:new THREE.Vector3(),dir:new THREE.Vector3()};}
+const _T=new THREE.Matrix4(),_R=new THREE.Matrix4(),_Z=new THREE.Vector3(0,0,1);
+function fk(q,out){
+  _T.identity();
+  for(let i=0;i<N;i++){
+    _T.multiply(FIX[i]);
+    out.pos[i].setFromMatrixPosition(_T);
+    out.axis[i].copy(_Z).transformDirection(_T);
+    _R.makeRotationZ(q[i]);_T.multiply(_R);
+  }
+  out.dir.copy(_Z).transformDirection(_T);
+  out.tcp.setFromMatrixPosition(_T).addScaledVector(out.dir,toolLen);
+  return out;
+}
+
+/* ---------- IK: task-priority damped least squares (position first, flange direction in the null space) ---------- */
+function solveLinear(A,b,n){
+  for(let c=0;c<n;c++){
+    let p=c;for(let r=c+1;r<n;r++)if(Math.abs(A[r][c])>Math.abs(A[p][c]))p=r;
+    [A[c],A[p]]=[A[p],A[c]];[b[c],b[p]]=[b[p],b[c]];
+    const d=A[c][c]||1e-12;
+    for(let r=c+1;r<n;r++){const f=A[r][c]/d;if(!f)continue;for(let k=c;k<n;k++)A[r][k]-=f*A[c][k];b[r]-=f*b[c];}
+  }
+  const x=new Array(n).fill(0);
+  for(let r=n-1;r>=0;r--){let s=b[r];for(let k=r+1;k<n;k++)s-=A[r][k]*x[k];x[r]=s/(A[r][r]||1e-12);}
+  return x;
+}
+function pinv(J,m,n,lam2){
+  const A=[];for(let r=0;r<m;r++){A.push(new Array(m).fill(0));for(let c=0;c<m;c++){let s=0;for(let k=0;k<n;k++)s+=J[r][k]*J[c][k];A[r][c]=s+(r===c?lam2:0);}}
+  const X=[];for(let r=0;r<m;r++)X.push(new Array(m).fill(0));
+  for(let c=0;c<m;c++){const e=new Array(m).fill(0);e[c]=1;const col=solveLinear(A.map(r=>r.slice()),e,m);for(let r=0;r<m;r++)X[r][c]=col[r];}
+  const P=[];for(let i=0;i<n;i++){P.push(new Array(m).fill(0));for(let c=0;c<m;c++){let s=0;for(let r=0;r<m;r++)s+=J[r][i]*X[r][c];P[i][c]=s;}}
+  return P;
+}
+const ikF=makeFK(),_e=new THREE.Vector3(),_c=new THREE.Vector3(),_eo=new THREE.Vector3(),DOWN=new THREE.Vector3(0,0,-1);
+function ikIterate(q,target,iters,orient){
+  let posErr=0,oriErr=0;
+  for(let it=0;it<iters;it++){
+    fk(q,ikF);
+    _e.subVectors(target,ikF.tcp);posErr=_e.length();
+    if(posErr>0.03)_e.multiplyScalar(0.03/posErr);
+    if(orient){
+      const dot=THREE.MathUtils.clamp(ikF.dir.dot(DOWN),-1,1);oriErr=Math.acos(dot);
+      _eo.crossVectors(ikF.dir,DOWN);
+      if(_eo.lengthSq()<1e-8){_eo.set(1,0,0).cross(ikF.dir);if(_eo.lengthSq()<1e-8)_eo.set(0,1,0);}
+      _eo.normalize().multiplyScalar(Math.min(oriErr,0.3));
+    }
+    if(posErr<1.5e-4&&(!orient||oriErr<2e-3))break;
+    const Jp=[[],[],[]],Jo=[[],[],[]];
+    for(let i=0;i<N;i++){
+      _c.subVectors(ikF.tcp,ikF.pos[i]).crossVectors(ikF.axis[i],_c);
+      Jp[0][i]=_c.x;Jp[1][i]=_c.y;Jp[2][i]=_c.z;
+      Jo[0][i]=ikF.axis[i].x;Jo[1][i]=ikF.axis[i].y;Jo[2][i]=ikF.axis[i].z;
+    }
+    const Pp=pinv(Jp,3,N,0.006*0.006);
+    const ep=[_e.x,_e.y,_e.z];const dq=new Array(N).fill(0);
+    for(let i=0;i<N;i++)for(let r=0;r<3;r++)dq[i]+=Pp[i][r]*ep[r];
+    if(orient){
+      const Nm=[];for(let i=0;i<N;i++){Nm.push(new Array(N).fill(0));for(let k=0;k<N;k++){let s=0;for(let r=0;r<3;r++)s+=Pp[i][r]*Jp[r][k];Nm[i][k]=(i===k?1:0)-s;}}
+      const JoN=[[],[],[]];for(let r=0;r<3;r++)for(let k=0;k<N;k++){let s=0;for(let i=0;i<N;i++)s+=Jo[r][i]*Nm[i][k];JoN[r][k]=s;}
+      const eo=[_eo.x,_eo.y,_eo.z];
+      for(let r=0;r<3;r++){let s=0;for(let i=0;i<N;i++)s+=Jo[r][i]*dq[i];eo[r]-=s;}
+      const Po=pinv(JoN,3,N,0.05*0.05);
+      for(let i=0;i<N;i++){let s=0;for(let r=0;r<3;r++)s+=Po[i][r]*eo[r];dq[i]+=s;}
+    }
+    let mx=0;for(let i=0;i<N;i++)mx=Math.max(mx,Math.abs(dq[i]));
+    const sc=mx>0.1?0.1/mx:1;
+    for(let i=0;i<N;i++)q[i]=THREE.MathUtils.clamp(q[i]+dq[i]*sc,LIM[i][0],LIM[i][1]);
+  }
+  fk(q,ikF);
+  return{pos:ikF.tcp.distanceTo(target),ori:orient?Math.acos(THREE.MathUtils.clamp(ikF.dir.dot(DOWN),-1,1)):0};
+}
+function ikRescue(qCur,target,orient){
+  const yaw=Math.atan2(target.y,target.x);
+  const bends=[[0.5,0.9,0.9],[0.2,1.3,0.9],[0.9,0.4,1.2],[-0.3,1.6,1.0]];
+  let best=null,bestScore=Infinity;
+  for(const y0 of [yaw,yaw+Math.PI/2,yaw-Math.PI/2,yaw+Math.PI])for(const b of bends)for(const sgn of [1,-1]){
+    let y=y0;while(y>Math.PI)y-=2*Math.PI;while(y<-Math.PI)y+=2*Math.PI;
+    const q=[y,sgn*b[0],sgn*b[1],sgn*b[2],0,0];
+    const r=ikIterate(q,target,80,orient);
+    let move=0;for(let i=0;i<N;i++)move+=Math.abs(q[i]-qCur[i]);
+    const score=r.pos*1000+r.ori*20+move*0.5;
+    if(score<bestScore){bestScore=score;best={q,r};}
+  }
+  return best;
+}
+
+/* ---------- Scene (Three is Y-up; the robot root turns the Z-up base frame upright) ---------- */
+let renderer;
+try{renderer=new THREE.WebGLRenderer({antialias:true});}catch(err){$('#fail').style.display='flex';return;}
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+renderer.outputEncoding=THREE.sRGBEncoding;
+$('#stage').appendChild(renderer.domElement);
+const scene=new THREE.Scene();
+const camera=new THREE.PerspectiveCamera(38,1,0.005,20);
+camera.position.set(0.62,0.5,0.7);
+const orbit=new THREE.OrbitControls(camera,renderer.domElement);
+orbit.target.set(0,0.2,0);orbit.enableDamping=true;orbit.minDistance=0.2;orbit.maxDistance=3;orbit.maxPolarAngle=Math.PI*0.495;
+
+scene.add(new THREE.HemisphereLight(0xffffff,0x8a939b,0.75));
+const key=new THREE.DirectionalLight(0xffffff,0.95);key.position.set(0.8,1.4,0.6);key.castShadow=true;
+key.shadow.mapSize.set(2048,2048);Object.assign(key.shadow.camera,{left:-0.6,right:0.6,top:0.6,bottom:-0.6,near:0.2,far:4});
+key.shadow.bias=-0.0003;scene.add(key);
+const rim=new THREE.DirectionalLight(0xbcd4ff,0.35);rim.position.set(-1,0.8,-0.9);scene.add(rim);
+const floor=new THREE.Mesh(new THREE.PlaneGeometry(4,4),new THREE.ShadowMaterial({opacity:0.22}));
+floor.rotation.x=-Math.PI/2;floor.receiveShadow=true;scene.add(floor);
+let grid;
+function buildGrid(){
+  if(grid)scene.remove(grid);
+  const dark=new THREE.Color(cssVar('--scene')||'#d9dee2').getHSL({}).l<0.4;
+  grid=new THREE.GridHelper(2,40,dark?0x46505a:0xa9b2ba,dark?0x2c343c:0xc6cdd3);grid.position.y=0.0004;scene.add(grid);
+}
+const root=new THREE.Group();root.rotation.x=-Math.PI/2;scene.add(root);  // base frame: X,Y on the floor, Z up
+
+const reachRing=new THREE.Mesh(new THREE.RingGeometry(0.278,0.282,128),new THREE.MeshBasicMaterial({color:0xe79a00,transparent:true,opacity:0.5,side:THREE.DoubleSide}));
+reachRing.position.z=0.001;root.add(reachRing);
+// small base-frame axes so the X/Y/Z readout is easy to relate to the arm
+const axesHelper=new THREE.AxesHelper(0.08);axesHelper.position.set(-0.13,-0.13,0.001);root.add(axesHelper);
+
+/* ---------- Materials ---------- */
+const shell=new THREE.MeshStandardMaterial({color:0xf1f2f0,roughness:0.42,metalness:0.05});
+const graphite=new THREE.MeshStandardMaterial({color:0x31353c,roughness:0.55,metalness:0.35});
+const steel=new THREE.MeshStandardMaterial({color:0x9aa3ab,roughness:0.3,metalness:0.85});
+const ledMats=[];
+function shade(o){o.traverse(m=>{if(m.isMesh){m.castShadow=true;m.receiveShadow=true;}});return o;}
+
+/* Visual layout, authored in the base frame at the zero pose. Housing centres sit on each joint's axis line,
+   so the geometry matches the kinematics; brackets are L-shaped polylines between housings. */
+const V=(x,y,z)=>new THREE.Vector3(x,y,z);
+const HOUSINGS=[
+  {c:V(0,0,0.093),       a:V(0,0,1), r:0.033,L:0.040},
+  {c:V(0,0.036,0.1386),  a:V(0,1,0), r:0.030,L:0.040},
+  {c:V(0,-0.032,0.249),  a:V(0,1,0), r:0.027,L:0.036},
+  {c:V(0,0.026,0.345),   a:V(0,1,0), r:0.025,L:0.034},
+  {c:V(0,-0.0636,0.378), a:V(0,0,1), r:0.023,L:0.034},
+  {c:V(0.026,-0.0636,0.4181),a:V(1,0,0),r:0.021,L:0.036},
+];
+const BRACKETS=[ // bracket k belongs to link k (moves with joint k), from housing k to housing k+1
+  {w:0.042,pts:[V(0,0,0.11),V(0,0,0.1386),V(0,0.02,0.1386)]},
+  {w:0.040,pts:[V(0,0.036,0.1386),V(0,0.036,0.249),V(0,-0.016,0.249)]},
+  {w:0.036,pts:[V(0,-0.032,0.249),V(0,-0.032,0.345),V(0,0.012,0.345)]},
+  {w:0.032,pts:[V(0,0.026,0.345),V(0,0.026,0.378),V(0,-0.05,0.378)]},
+  {w:0.030,pts:[V(0,-0.0636,0.39),V(0,-0.0636,0.4181),V(0.012,-0.0636,0.4181)]},
+];
+function makeHousing(h){
+  const g=new THREE.Group();
+  const drum=new THREE.Mesh(new THREE.CylinderGeometry(h.r,h.r,h.L,40),graphite);g.add(drum);
+  const capG=new THREE.CylinderGeometry(h.r*1.05,h.r*1.05,h.L*0.16,40);
+  [1,-1].forEach(s=>{const c=new THREE.Mesh(capG,shell);c.position.y=s*h.L*0.46;g.add(c);});
+  const led=new THREE.MeshStandardMaterial({color:0x2a2a2a,emissive:0xffa000,emissiveIntensity:0.15,roughness:0.4});
+  ledMats.push(led);
+  const ring=new THREE.Mesh(new THREE.TorusGeometry(h.r*1.01,h.r*0.07,10,48),led);ring.rotation.x=Math.PI/2;ring.position.y=h.L*0.3;g.add(ring);
+  const hub=new THREE.Mesh(new THREE.CylinderGeometry(h.r*0.36,h.r*0.36,h.L*1.1,24),steel);g.add(hub);
+  g.quaternion.setFromUnitVectors(V(0,1,0),h.a);g.position.copy(h.c);
+  return shade(g);
+}
+function makeBracket(b){
+  const g=new THREE.Group();
+  for(let k=0;k<b.pts.length-1;k++){
+    const p=b.pts[k],q=b.pts[k+1],d=q.clone().sub(p),len=d.length();if(len<1e-6)continue;
+    d.normalize();
+    const box=new THREE.Mesh(new THREE.BoxGeometry(b.w,len+b.w,b.w*0.86),shell);
+    box.quaternion.setFromUnitVectors(V(0,1,0),d);box.position.copy(p).add(q).multiplyScalar(0.5);g.add(box);
+  }
+  return shade(g);
+}
+
+// base (my own simple pedestal, sized so the J1 axis origin lands at 139.56 mm)
+const base=new THREE.Group();root.add(base);
+const foot=new THREE.Mesh(new THREE.BoxGeometry(0.12,0.12,0.05),graphite);foot.position.z=0.025;base.add(foot);
+const collar=new THREE.Mesh(new THREE.CylinderGeometry(0.04,0.046,0.024,48),shell);collar.rotation.x=Math.PI/2;collar.position.z=0.062;base.add(collar);
+shade(base);
+root.add(makeHousing(HOUSINGS[0]));
+
+// joint chain: fixed origin group -> rotating group; link k visuals are re-expressed in its zero-pose frame
+const rotGroups=[];const zeroInv=[];
+{let parent=root;const T=new THREE.Matrix4();
+ for(let i=0;i<N;i++){
+   const o=new THREE.Group();o.matrixAutoUpdate=false;o.matrix.copy(FIX[i]);parent.add(o);
+   const r=new THREE.Group();o.add(r);rotGroups.push(r);
+   T.multiply(FIX[i]);zeroInv.push(T.clone().invert());parent=r;
+ }}
+function attach(obj,k){obj.applyMatrix4(zeroInv[k]);rotGroups[k].add(obj);}
+for(let k=0;k<N-1;k++){attach(makeBracket(BRACKETS[k]),k);attach(makeHousing(HOUSINGS[k+1]),k);}
+// flange on J6 (in J6's own frame the flange normal is +Z)
+const flangeG=new THREE.Group();rotGroups[N-1].add(flangeG);
+const flange=new THREE.Mesh(new THREE.CylinderGeometry(0.02,0.02,0.005,36),steel);flange.rotation.x=Math.PI/2;flange.position.z=-0.0025;flangeG.add(flange);
+const mark=new THREE.Mesh(new THREE.BoxGeometry(0.004,0.012,0.002),graphite);mark.position.set(0,0.012,0.0005);flangeG.add(mark); // shows J6 rotation
+const toolStub=new THREE.Mesh(new THREE.CylinderGeometry(0.006,0.004,1,20),graphite);toolStub.rotation.x=Math.PI/2;flangeG.add(toolStub);
+shade(flangeG);
+const tcpDot=new THREE.Mesh(new THREE.SphereGeometry(0.004,16,12),new THREE.MeshBasicMaterial({color:0xff5a36}));flangeG.add(tcpDot);
+function applyTool(){toolStub.visible=toolLen>0.002;toolStub.scale.y=Math.max(toolLen,0.001);toolStub.position.z=toolLen/2;tcpDot.position.z=toolLen;}
+
+/* ---------- Target, ghost, trail (all in the base frame) ---------- */
+const target=new THREE.Vector3(0.16,-0.06,0.12);
+const targetMat=new THREE.MeshStandardMaterial({color:0xe79a00,emissive:0xe79a00,emissiveIntensity:0.55,transparent:true,opacity:0.9});
+const targetObj=new THREE.Mesh(new THREE.SphereGeometry(0.009,24,16),targetMat);targetObj.position.copy(target);root.add(targetObj);
+const dropLine=new THREE.Line(new THREE.BufferGeometry().setFromPoints([V(0,0,0),V(0,0,0)]),new THREE.LineDashedMaterial({color:0x888888,dashSize:0.008,gapSize:0.005}));
+root.add(dropLine);
+const floorRing=new THREE.Mesh(new THREE.RingGeometry(0.01,0.013,40),new THREE.MeshBasicMaterial({color:0x888888,side:THREE.DoubleSide}));root.add(floorRing);
+const ghostGeo=new THREE.BufferGeometry();ghostGeo.setAttribute('position',new THREE.BufferAttribute(new Float32Array((N+2)*3),3));
+const ghost=new THREE.Line(ghostGeo,new THREE.LineBasicMaterial({color:0x3b82c4,transparent:true,opacity:0.85,depthTest:false}));
+const ghostDots=new THREE.Points(ghostGeo,new THREE.PointsMaterial({color:0x3b82c4,size:0.008,depthTest:false}));
+ghost.renderOrder=ghostDots.renderOrder=5;ghost.frustumCulled=ghostDots.frustumCulled=false;root.add(ghost);root.add(ghostDots);
+const realGeo=new THREE.BufferGeometry();realGeo.setAttribute('position',new THREE.BufferAttribute(new Float32Array((N+2)*3),3));
+const realLine=new THREE.Line(realGeo,new THREE.LineBasicMaterial({color:0x2f9a5a,transparent:true,opacity:0.9,depthTest:false}));
+const realDots=new THREE.Points(realGeo,new THREE.PointsMaterial({color:0x2f9a5a,size:0.009,depthTest:false}));
+realLine.renderOrder=realDots.renderOrder=6;realLine.frustumCulled=realDots.frustumCulled=false;realLine.visible=realDots.visible=false;root.add(realLine);root.add(realDots);
+const realF=makeFK();
+const TRAIL=600;const trailGeo=new THREE.BufferGeometry();
+trailGeo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(TRAIL*3),3));
+const trail=new THREE.Line(trailGeo,new THREE.LineBasicMaterial({color:0xff5a36,transparent:true,opacity:0.75}));trail.frustumCulled=false;root.add(trail);
+let trailCount=0;const lastTrail=V(1e9,0,0);
+function pushTrail(p){
+  if(p.distanceToSquared(lastTrail)<0.0015*0.0015)return;lastTrail.copy(p);
+  const a=trailGeo.attributes.position.array;
+  if(trailCount<TRAIL)trailCount++;else a.copyWithin(0,3);
+  a.set([p.x,p.y,p.z],(trailCount-1)*3);trailGeo.setDrawRange(0,trailCount);trailGeo.attributes.position.needsUpdate=true;
+}
+function applyTheme(){
+  const c=new THREE.Color(cssVar('--scene')||'#d9dee2');scene.background=c;scene.fog=new THREE.Fog(c,2,5);buildGrid();
+  reachRing.material.color.set(cssVar('--amber')||'#e79a00');
+}
+
+let gizmo=null;
+if(THREE.TransformControls){
+  gizmo=new THREE.TransformControls(camera,renderer.domElement);gizmo.setSize(0.7);gizmo.setSpace('local');
+  gizmo.attach(targetObj);scene.add(gizmo);
+  gizmo.addEventListener('dragging-changed',e=>{orbit.enabled=!e.value;if(e.value){setDemo(false);homeLock=false;}});
+  gizmo.addEventListener('objectChange',()=>{targetObj.position.z=Math.max(0.003,targetObj.position.z);target.copy(targetObj.position);syncUI();});
+}
+
+/* ---------- State & UI ---------- */
+const qIK=new Array(N).fill(0);const servo=FIX.map(()=>({pos:0,vel:0}));
+const servoF=makeFK(),ghostF=makeFK();
+let ikErr={pos:0,ori:0},demo=false,demoT=0,homeLock=false,lastRescue=null,lastRescueKey='',lastRescueT=0;
+const tx=$('#tx'),ty=$('#ty'),tz=$('#tz');
+const mm=v=>Math.round(v*1000);
+function syncUI(){tx.value=mm(target.x);ty.value=mm(target.y);tz.value=mm(target.z);$('#oxv').textContent=mm(target.x);$('#oyv').textContent=mm(target.y);$('#ozv').textContent=mm(target.z);}
+function setTarget(v){target.copy(v);target.z=Math.max(0.003,target.z);targetObj.position.copy(target);syncUI();}
+[tx,ty,tz].forEach(el=>el.addEventListener('input',()=>{setDemo(false);homeLock=false;setTarget(V(tx.value/1000,ty.value/1000,tz.value/1000));}));
+
+const jointUI=[];
+JOINTS.forEach((j,i)=>{
+  const row=document.createElement('div');row.className='joint';
+  row.innerHTML=`<span class="name">${j.name}</span><div class="bar"><div class="zero"></div><div class="tgt"></div><div class="real"></div><div class="pos"></div></div><span class="val">0.0°</span>`;
+  $('#joints').appendChild(row);
+  jointUI.push({real:row.querySelector('.real'),tgt:row.querySelector('.tgt'),pos:row.querySelector('.pos'),val:row.querySelector('.val')});
+  row.querySelector('.zero').style.left=((0-j.min)/(j.max-j.min)*100)+'%';
+});
+const pct=(i,a)=>((a-LIM[i][0])/(LIM[i][1]-LIM[i][0])*100).toFixed(2)+'%';
+const spd=$('#spd'),acc=$('#acc'),toolIn=$('#tool');
+function syncSliders(){$('#spdv').textContent=spd.value+'°/s';$('#accv').textContent=acc.value+'°/s²';$('#toolv').textContent=toolIn.value+' mm';}
+[spd,acc].forEach(el=>el.addEventListener('input',syncSliders));
+toolIn.addEventListener('input',()=>{toolLen=toolIn.value/1000;applyTool();syncSliders();homeLock=false;lastRescueKey='';});
+syncSliders();applyTool();
+
+function setDemo(on){demo=on;$('#btnDemo').setAttribute('aria-pressed',on);}
+$('#btnDemo').addEventListener('click',()=>{homeLock=false;setDemo(!demo);if(demo){demoT=0;$('#optDown').checked=true;
+  const b=ikRescue(qIK,V(0.2,0,0.11),true);if(b)for(let i=0;i<N;i++)qIK[i]=b.q[i];}});
+$('#btnHome').addEventListener('click',()=>{setDemo(false);for(let i=0;i<N;i++)qIK[i]=0;fk(qIK,ikF);setTarget(ikF.tcp.clone());$('#optDown').checked=false;homeLock=true;});
+$('#btnRandom').addEventListener('click',()=>{setDemo(false);homeLock=false;
+  const r=0.12+Math.random()*0.13,a=Math.random()*Math.PI*2,z=0.03+Math.random()*0.2;setTarget(V(Math.cos(a)*r,Math.sin(a)*r,z));});
+$('#optDown').addEventListener('change',()=>{homeLock=false;lastRescueKey='';});
+$('#optTrail').addEventListener('change',e=>{trail.visible=e.target.checked;if(!e.target.checked){trailCount=0;trailGeo.setDrawRange(0,0);}});
+$('#optGhost').addEventListener('change',e=>{ghost.visible=ghostDots.visible=e.target.checked;});
+// served by the backend itself (/sim)? then its own host is the arm link
+if(/^https?:$/.test(location.protocol)&&location.pathname.replace(/\/$/,'').endsWith('/sim'))
+  $('#wsUrl').value=(location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws/arm';
+const panel=$('#panel');
+$('#toggle').addEventListener('click',e=>{const c=panel.classList.toggle('collapsed');e.currentTarget.textContent=c?'Show':'Hide';e.currentTarget.setAttribute('aria-expanded',!c);});
+
+/* ---------- Real arm link (WebSocket to the FastAPI backend's /ws/arm) ----------
+   page -> backend: {type:"goal", angles:[deg x6], speed:deg/s, acc:deg/s^2} and {type:"torque", on:bool}
+   backend -> page: {type:"state", angles:[deg or null x6], torque:bool} */
+let ws=null,wsTimer=null,lastSent='',measured=null,measuredAt=0,armTorque=null,limp=false,calibKey='',resync=false;
+const dirBoxes=JOINTS.map((j,i)=>{const l=document.createElement('label');l.className='chk';l.style.margin='0 6px 0 0';
+  l.innerHTML=`<input type="checkbox" disabled> Reverse ${j.name}`;$('#dirRow').appendChild(l);
+  const box=l.querySelector('input');box.addEventListener('change',()=>send({type:'set_dir',joint:i,dir:box.checked?-1:1}));return box;});
+$('#btnZero').addEventListener('click',()=>{
+  if(!confirm('Make the arm\'s current pose the zero pose for every joint?'))return;send({type:'set_zero'});});
+function adoptMeasured(){ // start the sim from the arm's real pose so the next command doesn't swing it
+  for(let i=0;i<N;i++){qIK[i]=THREE.MathUtils.clamp(measured[i]*DEG,LIM[i][0],LIM[i][1]);servo[i].pos=measured[i]*DEG;servo[i].vel=0;}
+  fk(qIK,ikF);setTarget(ikF.tcp.clone());homeLock=true;setDemo(false);lastSent='';
+}
+const anglesDeg=()=>qIK.map(a=>+(a/DEG).toFixed(2));
+function wsNote(t){$('#wsNote').textContent=t;}
+function send(o){if(ws&&ws.readyState===1)ws.send(JSON.stringify(o));}
+function setLimp(on){
+  limp=on;$('#btnLimp').setAttribute('aria-pressed',on);
+  if(on){setDemo(false);send({type:'torque',on:false});wsNote('Torque is off. Move the arm by hand and the sim follows it.');}
+  else{ // hold where the arm is now: adopt the measured pose as the new goal before torque comes back
+    if(measured&&measured.every(v=>v!==null)){for(let i=0;i<N;i++){qIK[i]=measured[i]*DEG;servo[i].pos=qIK[i];servo[i].vel=0;}fk(qIK,ikF);setTarget(ikF.tcp.clone());}
+    homeLock=true;send({type:'torque',on:true});wsNote('Torque is on. The arm holds its pose until you set a new target.');}
+}
+$('#btnLimp').addEventListener('click',()=>setLimp(!limp));
+function wsStop(msg){
+  if(wsTimer)clearInterval(wsTimer);wsTimer=null;
+  if(ws){const w=ws;ws=null;try{w.close();}catch(_){}}
+  measured=null;limp=false;calibKey='';resync=false;$('#btnLimp').disabled=true;$('#btnZero').disabled=true;dirBoxes.forEach(b=>b.disabled=true);
+  for(let i=0;i<N;i++){LIM[i][0]=URDF_LIM[i][0];LIM[i][1]=URDF_LIM[i][1];}$('#btnLimp').setAttribute('aria-pressed','false');
+  $('#btnWs').textContent='Connect';$('#btnWs').setAttribute('aria-pressed','false');if(msg)wsNote(msg);
+}
+$('#btnWs').addEventListener('click',()=>{
+  if(ws){wsStop('Disconnected from the backend.');return;}
+  let sock;
+  try{sock=new WebSocket($('#wsUrl').value.trim());}catch(err){wsNote('That address is not a valid WebSocket URL. It should look like ws://raspberrypi.local:8000/ws/arm.');return;}
+  ws=sock;$('#btnWs').textContent='Disconnect';$('#btnWs').setAttribute('aria-pressed','true');wsNote('Connecting…');
+  let opened=false;
+  sock.onopen=()=>{opened=true;lastSent='';$('#btnLimp').disabled=false;
+    wsNote('Connected. Waiting for servo readings before sending anything.');
+    wsTimer=setInterval(()=>{
+      if(sock.readyState!==1||limp||resync||!$('#optSend').checked||!measured)return;
+      const msg=JSON.stringify({type:'goal',angles:anglesDeg(),speed:+spd.value,acc:+acc.value});
+      if(msg!==lastSent){sock.send(msg);lastSent=msg;}
+    },100);};
+  sock.onmessage=ev=>{
+    let m;try{m=JSON.parse(ev.data);}catch(_){return;}
+    if(m.type==='error'){wsStop(m.message||'The backend reported an error.');return;}
+    if(m.type!=='state'||!Array.isArray(m.angles))return;
+    const first=!measured;
+    measured=m.angles.slice(0,N).map(v=>typeof v==='number'?v:null);measuredAt=performance.now();armTorque=m.torque;
+    const complete=measured.every(v=>v!==null);
+    if(Array.isArray(m.limits))m.limits.forEach((l,i)=>{if(i<N&&l[1]>l[0]){LIM[i][0]=l[0]*DEG;LIM[i][1]=l[1]*DEG;}});
+    if(Array.isArray(m.dir))m.dir.forEach((d,i)=>{if(dirBoxes[i]){dirBoxes[i].checked=d<0;dirBoxes[i].disabled=false;}});
+    $('#btnZero').disabled=false;
+    // a zero or direction change re-maps every angle, so re-read the pose before sending anything
+    const key=JSON.stringify([m.zero,m.dir]);
+    if(calibKey&&key!==calibKey){resync=true;wsNote('Calibration changed. Re-reading the arm\'s pose.');}
+    calibKey=key;
+    if(resync&&complete){adoptMeasured();resync=false;wsNote('Calibration saved. The sim now matches the arm\'s pose.');return;}
+    if(first){
+      const missing=measured.map((v,i)=>v===null?JOINTS[i].name:null).filter(Boolean);
+      if(!missing.length)adoptMeasured();
+      wsNote(missing.length?`Connected, but ${missing.join(', ')} did not answer. Check the IDs and wiring; nothing is sent until every servo reads back.`
+        :'Connected. The sim now starts from the arm\'s real pose; set a target to move it.');
+    }
+  };
+  sock.onerror=()=>{if(!opened)wsStop('Could not reach the backend. Check it is running and the address is right. A hosted page can\'t open local connections, so open the downloaded file instead.');};
+  sock.onclose=()=>{if(ws===sock)wsStop(opened?'The backend closed the connection.':undefined);};
+});
+// don't send goals until every servo reads back
+setInterval(()=>{if(ws&&measured&&measured.some(v=>v===null))lastSent='';},500);
+
+/* click on the floor */
+const ray=new THREE.Raycaster(),ndc=new THREE.Vector2(),floorPlane=new THREE.Plane(V(0,1,0),0);let down=null;
+renderer.domElement.addEventListener('pointerdown',e=>{down={x:e.clientX,y:e.clientY,onGizmo:gizmo&&gizmo.axis!==null};});
+renderer.domElement.addEventListener('pointerup',e=>{
+  if(!down||down.onGizmo||e.button!==0){down=null;return;}
+  const moved=Math.hypot(e.clientX-down.x,e.clientY-down.y);down=null;if(moved>5)return;
+  const rect=renderer.domElement.getBoundingClientRect();
+  ndc.set((e.clientX-rect.left)/rect.width*2-1,-(e.clientY-rect.top)/rect.height*2+1);ray.setFromCamera(ndc,camera);
+  const hit=new THREE.Vector3();
+  if(ray.ray.intersectPlane(floorPlane,hit)&&hit.length()<1){root.worldToLocal(hit);setDemo(false);homeLock=false;setTarget(V(hit.x,hit.y,target.z));}
+});
+
+function resize(){const w=innerWidth,h=innerHeight;renderer.setSize(w,h);camera.aspect=w/h;camera.updateProjectionMatrix();}
+addEventListener('resize',resize);resize();applyTheme();
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change',applyTheme);
+syncUI();
+{const b=ikRescue(qIK,target,true);if(b)for(let i=0;i<N;i++)qIK[i]=b.q[i];}
+
+const clock=new THREE.Clock();
+function frame(){
+  requestAnimationFrame(frame);
+  const dt=Math.min(clock.getDelta(),0.05);
+  if(demo){demoT+=dt*0.7;setTarget(V(0.2+0.05*Math.sin(2*demoT),0.08*Math.sin(demoT),0.11+0.03*Math.sin(3*demoT)));}
+  const orient=$('#optDown').checked;
+  const haveReal=measured&&measured.every(v=>v!==null)&&performance.now()-measuredAt<1500;
+  if(limp&&haveReal){for(let i=0;i<N;i++)qIK[i]=measured[i]*DEG;fk(qIK,ikF);setTarget(ikF.tcp.clone());ikErr={pos:0,ori:0};}
+  else if(!homeLock){
+    ikErr=ikIterate(qIK,target,14,orient);
+    const stuck=ikErr.pos>0.002||(orient&&ikErr.ori>2*DEG);
+    const k=target.toArray().map(v=>v.toFixed(4)).join()+orient+toolLen;
+    if(stuck&&!demo&&k!==lastRescueKey&&performance.now()-lastRescueT>250){
+      lastRescueKey=k;lastRescueT=performance.now();
+      const b=ikRescue(qIK,target,orient);
+      if(b&&(b.r.pos<ikErr.pos-0.001||(b.r.pos<0.002&&b.r.ori<ikErr.ori-DEG))){for(let i=0;i<N;i++)qIK[i]=b.q[i];ikErr=b.r;}
+    }
+  }else ikErr={pos:0,ori:0};
+
+  const vmax=spd.value*DEG,amax=acc.value*DEG;let moving=false;
+  for(let i=0;i<N;i++){
+    const s=servo[i],err=qIK[i]-s.pos;
+    const vdes=Math.sign(err)*Math.min(vmax,Math.sqrt(2*amax*Math.abs(err))*0.95);
+    s.vel+=THREE.MathUtils.clamp(vdes-s.vel,-amax*dt,amax*dt);
+    let step=s.vel*dt;
+    if(Math.abs(step)>Math.abs(err)&&Math.sign(step)===Math.sign(err)){step=err;s.vel=0;}
+    s.pos=THREE.MathUtils.clamp(s.pos+step,LIM[i][0],LIM[i][1]);
+    if(Math.abs(qIK[i]-s.pos)<3e-4&&Math.abs(s.vel)<0.02){s.pos=qIK[i];s.vel=0;}
+    rotGroups[i].rotation.z=s.pos;
+    ledMats[i].emissiveIntensity=0.12+1.6*Math.abs(s.vel)/vmax;
+    if(Math.abs(s.vel)>0.01||Math.abs(qIK[i]-s.pos)>3e-4)moving=true;
+    const ui=jointUI[i];ui.pos.style.left=pct(i,s.pos);ui.tgt.style.left=pct(i,qIK[i]);ui.val.textContent=(s.pos/DEG).toFixed(1)+'°';
+  }
+  fk(servo.map(s=>s.pos),servoF);
+  if(trail.visible)pushTrail(servoF.tcp);
+  fk(qIK,ghostF);
+  const ga=ghostGeo.attributes.position.array;ga.set([0,0,0.06],0);
+  ghostF.pos.forEach((p,k)=>ga.set([p.x,p.y,p.z],(k+1)*3));ga.set([ghostF.tcp.x,ghostF.tcp.y,ghostF.tcp.z],(N+1)*3);
+  ghostGeo.attributes.position.needsUpdate=true;
+
+  const reachable=ikErr.pos<0.003&&(!orient||ikErr.ori<3*DEG);
+  targetMat.color.set(reachable?cssVar('--amber'):cssVar('--bad'));targetMat.emissive.copy(targetMat.color);
+  targetObj.scale.setScalar(1+0.12*Math.sin(performance.now()*0.004));
+  const lp=dropLine.geometry.attributes.position.array;lp.set([target.x,target.y,target.z,target.x,target.y,0.0005]);
+  dropLine.geometry.attributes.position.needsUpdate=true;dropLine.computeLineDistances();
+  floorRing.position.set(target.x,target.y,0.0008);
+
+  const st=$('#status');
+  if(!reachable){st.className='status bad';$('#statusText').textContent=orient&&ikErr.pos<0.003?'Reachable, but not facing straight down':'Out of reach, holding the closest pose';}
+  else if(moving){st.className='status';$('#statusText').textContent='Servos moving';}
+  else{st.className='status ok';$('#statusText').textContent='At target';}
+  $('#errText').textContent=(servoF.tcp.distanceTo(target)*1000).toFixed(1)+' mm';
+  const showReal=haveReal&&$('#optReal').checked;
+  realLine.visible=realDots.visible=showReal;
+  if(showReal){fk(measured.map(v=>v*DEG),realF);const ra=realGeo.attributes.position.array;ra.set([0,0,0.06],0);
+    realF.pos.forEach((p,k)=>ra.set([p.x,p.y,p.z],(k+1)*3));ra.set([realF.tcp.x,realF.tcp.y,realF.tcp.z],(N+1)*3);realGeo.attributes.position.needsUpdate=true;}
+  for(let i=0;i<N;i++){const r=jointUI[i].real;if(haveReal){r.style.display='block';r.style.left=pct(i,measured[i]*DEG);}else r.style.display='none';}
+  orbit.update();renderer.render(scene,camera);
+}
+frame();
+})();
+</script>
+</body>
+</html>

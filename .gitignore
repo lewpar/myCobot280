@@ -3,3 +3,4 @@ pymycobot
 __pycache__
 .env
 *.log
+ik_calibration.json

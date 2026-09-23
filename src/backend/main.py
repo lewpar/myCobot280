@@ -6,26 +6,33 @@ load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from fastapi import FastAPI, HTTPException
+import asyncio
+import json
+
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
 
 from mycobot280 import MyCobot280
+from ik_link import IKLink
 
 SERIAL_PORT = os.environ.get("MYCOBOT_PORT", "/dev/ttyAMA0")
 SERIAL_BAUD = int(os.environ.get("MYCOBOT_BAUD", "1000000"))
 CORS_ORIGINS = os.environ.get("MYCOBOT_CORS_ORIGINS", "*")
 
 arm: MyCobot280 | None = None
+ik_link: IKLink | None = None
 home_positions: dict[int, int] = {}
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global arm
+    global arm, ik_link
     try:
         arm = MyCobot280(SERIAL_PORT, SERIAL_BAUD)
+        ik_link = IKLink(arm)
     except Exception as e:
         print(f"WARNING: Could not open serial port {SERIAL_PORT}: {e}")
     yield
@@ -118,9 +125,11 @@ def health():
 # ---------------------------------------------------------------------------
 
 @app.get("/api/servos")
-def list_servos():
+def list_servos(rescan: bool = False):
+    # the frontend polls this every second; re-scanning the whole bus each time kept the bus
+    # locked for seconds, so use the cached IDs unless a rescan is asked for
     a = _get_arm()
-    ids = a.scan()
+    ids = a.scan() if rescan or not a.servo_ids else a.servo_ids
     result = []
     for sid in ids:
         s = a.servo(sid)
@@ -276,6 +285,51 @@ def torque_all_servos(req: TorqueRequest):
     for sid in sorted(a.servo_ids):
         a.set_torque(sid, req.enabled)
     return {"success": True, "enabled": req.enabled}
+
+
+# ---------------------------------------------------------------------------
+# IK simulator page, served from here so it can reach /ws/arm on the same host
+# ---------------------------------------------------------------------------
+
+@app.get("/sim")
+def ik_sim_page():
+    return FileResponse(os.path.join(os.path.dirname(__file__), "static", "ik_sim.html"))
+
+
+# ---------------------------------------------------------------------------
+# Live IK link (the simulator page connects here)
+# ---------------------------------------------------------------------------
+
+@app.websocket("/ws/arm")
+async def ws_arm(ws: WebSocket):
+    await ws.accept()
+    if ik_link is None:
+        await ws.send_json({"type": "error", "message": f"Robot not connected on {SERIAL_PORT}"})
+        await ws.close()
+        return
+    ik_link.add_client()
+
+    async def sender():
+        while True:
+            await asyncio.sleep(0.1)
+            state = await asyncio.to_thread(ik_link.state)
+            await ws.send_json(state)
+
+    task = asyncio.create_task(sender())
+    try:
+        while True:
+            raw = await ws.receive_text()
+            try:
+                msg = json.loads(raw)
+            except ValueError:
+                continue
+            if isinstance(msg, dict):
+                ik_link.handle(msg)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        task.cancel()
+        ik_link.remove_client()
 
 
 if __name__ == "__main__":

@@ -73,11 +73,44 @@ def _build_read(servo_id: int, address: int, length: int) -> bytes:
     return bytes([0xFF, 0xFF]) + body + bytes([_checksum(body)])
 
 
-def _parse_status(resp: bytes) -> bytes | None:
-    if len(resp) >= 6 and resp[0] == 0xFF and resp[1] == 0xFF:
-        length = resp[3]
-        return resp[5:5 + (length - 2)]
-    return None
+def _build_sync_write(address: int, per_id: dict[int, bytes]) -> bytes:
+    """SYNC WRITE (0x83) to the broadcast ID: one packet, every listed servo, no reply."""
+    n = len(next(iter(per_id.values())))
+    params = bytes([address, n]) + b"".join(bytes([i]) + d for i, d in per_id.items())
+    body = bytes([0xFE, len(params) + 2, 0x83]) + params
+    return bytes([0xFF, 0xFF]) + body + bytes([_checksum(body)])
+
+
+def _find_status(buf: bytes, servo_id: int, nparams: int | None = None) -> tuple[bytes | None, bool]:
+    """Look for a complete, checksum-valid status packet from ``servo_id`` in ``buf``.
+
+    Returns (params, complete). ``params`` is the data after the error byte.
+    ``nparams=None`` accepts any length. Anything else on the wire (our own TX echo,
+    another device's traffic, line noise) is skipped rather than misread."""
+    i = 0
+    while True:
+        i = buf.find(b"\xff\xff", i)
+        if i < 0 or len(buf) < i + 4:
+            return None, False
+        sid, ln = buf[i + 2], buf[i + 3]
+        if sid == servo_id and ln >= 2 and (nparams is None or ln == nparams + 2):
+            end = i + 4 + ln
+            if len(buf) < end:
+                return None, False           # wait for more bytes
+            body = buf[i + 2:end - 1]
+            if _checksum(body) == buf[end - 1]:
+                return bytes(buf[i + 5:end - 1]), True
+        i += 1
+
+
+def _u16(b: bytes) -> int:
+    return b[0] | (b[1] << 8)
+
+
+def _s16(b: bytes) -> int:
+    """STS words use bit 15 as a sign bit (multi-turn / negative positions)."""
+    v = _u16(b)
+    return -(v & 0x7FFF) if v & 0x8000 else v
 
 
 # ---------------------------------------------------------------------------
@@ -99,14 +132,15 @@ class Servo:
     def position(self) -> int | None:
         """Current position (0–4095)."""
         with self._bus._lock:
-            return self._bus._read_u16(self.id, _ADDR_PRESENT_POSITION)
+            return self._bus._read_s16(self.id, _ADDR_PRESENT_POSITION)
 
     # -- limits --------------------------------------------------------------
 
     @property
     def limits(self) -> tuple[int, int]:
         """Safe min/max position with safety buffer applied."""
-        return self._bus._safe_limits(self.id)
+        with self._bus._lock:
+            return self._bus._safe_limits(self.id)
 
     @property
     def raw_limits(self) -> tuple[int | None, int | None]:
@@ -124,7 +158,7 @@ class Servo:
     def move_rel(self, delta: int, speed: int = 600, accel: int = 20) -> tuple[bool, int | None]:
         """Move relative to current position. Returns (ok, final_position)."""
         with self._bus._lock:
-            cur = self._bus._read_u16(self.id, _ADDR_PRESENT_POSITION)
+            cur = self._bus._read_s16(self.id, _ADDR_PRESENT_POSITION)
             if cur is None:
                 return False, None
         return self._bus._move(self.id, cur + delta, speed, accel)
@@ -138,7 +172,8 @@ class Servo:
     @property
     def torque(self) -> bool:
         """Is torque enabled?"""
-        return self._bus._read_u8(self.id, _ADDR_TORQUE_ENABLE) == 1
+        with self._bus._lock:
+            return self._bus._read_u8(self.id, _ADDR_TORQUE_ENABLE) == 1
 
     @torque.setter
     def torque(self, enable: bool):
@@ -260,50 +295,67 @@ class _Atom:
 # ---------------------------------------------------------------------------
 
 class _Bus:
-    """Thread-safe serial transport for the half-duplex bus."""
+    """Thread-safe serial transport for the half-duplex bus.
 
-    def __init__(self, port: str, baud: int = 1_000_000, timeout: float = 0.2):
+    Every method starting with ``_`` expects the caller to hold ``_lock``."""
+
+    def __init__(self, port: str, baud: int = 1_000_000, timeout: float = 0.02):
         if serial is None:
             raise ImportError("pyserial is required: pip install pyserial")
         self._lock = threading.Lock()
-        self._ser = serial.Serial(port, baud, timeout=timeout)
+        # short read timeout: replies arrive within ~1 ms at 1 Mbaud, so we poll instead of sleeping
+        self._ser = serial.Serial(port, baud, timeout=0.002)
+        self._reply_timeout = timeout
         self._limit_cache: dict[int, tuple[int, int]] = {}
 
     # -- raw I/O -------------------------------------------------------------
 
-    def _read_resp(self, wait: float = 0.05) -> bytes:
-        time.sleep(wait)
-        n = self._ser.in_waiting
-        return self._ser.read(n) if n else b""
-
-    def _write_raw(self, servo_id: int, address: int, data: bytes) -> bytes | None:
-        pkt = _build_write(servo_id, address, data)
+    def _transact(self, pkt: bytes, servo_id: int, nparams: int | None = None,
+                  timeout: float | None = None) -> bytes | None:
+        """Send ``pkt`` and wait for the matching status packet. Returns its params or None."""
         self._ser.reset_input_buffer()
         self._ser.write(pkt)
-        return _parse_status(self._read_resp(0.05))
-
-    def _read_u16(self, servo_id: int, address: int) -> int | None:
-        pkt = _build_read(servo_id, address, 2)
-        self._ser.reset_input_buffer()
-        self._ser.write(pkt)
-        params = _parse_status(self._read_resp(0.05))
-        if params and len(params) >= 2:
-            return params[0] | (params[1] << 8)
+        self._ser.flush()
+        deadline = time.monotonic() + (timeout or self._reply_timeout)
+        buf = b""
+        while time.monotonic() < deadline:
+            chunk = self._ser.read(max(1, self._ser.in_waiting))
+            if not chunk:
+                continue
+            buf += chunk
+            if buf.startswith(pkt):          # adapter echoed our own request back: drop it
+                buf = buf[len(pkt):]
+            params, done = _find_status(buf, servo_id, nparams)
+            if done:
+                return params
         return None
 
-    def _read_u8(self, servo_id: int, address: int) -> int | None:
-        pkt = _build_read(servo_id, address, 1)
-        self._ser.reset_input_buffer()
-        self._ser.write(pkt)
-        params = _parse_status(self._read_resp(0.05))
-        return params[0] if params else None
+    def _write_raw(self, servo_id: int, address: int, data: bytes) -> bytes | None:
+        # the ATOM redraws its LEDs before answering, so give it longer than a servo
+        timeout = 0.06 if servo_id == _ATOM_ID else None
+        return self._transact(_build_write(servo_id, address, data), servo_id, None, timeout)
 
-    def _ping(self, servo_id: int) -> bool:
-        pkt = _build_ping(servo_id)
+    def _read_u16(self, servo_id: int, address: int) -> int | None:
+        p = self._transact(_build_read(servo_id, address, 2), servo_id, 2)
+        return _u16(p) if p is not None else None
+
+    def _read_s16(self, servo_id: int, address: int) -> int | None:
+        p = self._transact(_build_read(servo_id, address, 2), servo_id, 2)
+        return _s16(p) if p is not None else None
+
+    def _read_u8(self, servo_id: int, address: int) -> int | None:
+        p = self._transact(_build_read(servo_id, address, 1), servo_id, 1)
+        return p[0] if p else None
+
+    def _ping(self, servo_id: int, timeout: float | None = None) -> bool:
+        return self._transact(_build_ping(servo_id), servo_id, 0, timeout) is not None
+
+    def _sync_write(self, address: int, per_id: dict[int, bytes]):
+        if not per_id:
+            return
         self._ser.reset_input_buffer()
-        self._ser.write(pkt)
-        resp = self._read_resp()
-        return len(resp) >= 6 and resp[0] == 0xFF and resp[1] == 0xFF
+        self._ser.write(_build_sync_write(address, per_id))
+        self._ser.flush()
 
     # -- limits --------------------------------------------------------------
 
@@ -311,7 +363,10 @@ class _Bus:
         if servo_id not in self._limit_cache:
             lo = self._read_u16(servo_id, _ADDR_MIN_ANGLE_LIMIT)
             hi = self._read_u16(servo_id, _ADDR_MAX_ANGLE_LIMIT)
-            if lo is None or hi is None or (lo == 0 and hi == 0):
+            if lo is None or hi is None:
+                # don't cache a failed read; fall back for this call only
+                return (_RANGE_MIN + _SAFETY_BUFFER, _RANGE_MAX - _SAFETY_BUFFER)
+            if lo == 0 and hi == 0:
                 self._limit_cache[servo_id] = (_RANGE_MIN + _SAFETY_BUFFER,
                                                 _RANGE_MAX - _SAFETY_BUFFER)
             else:
@@ -323,27 +378,32 @@ class _Bus:
         lo, hi = self._safe_limits(servo_id)
         return max(lo, min(hi, target))
 
+    @staticmethod
+    def _motion_block(target: int, speed: int, accel: int) -> bytes:
+        """Registers 41..47 in one go: accel, goal position, goal time (0), goal speed."""
+        return bytes([accel & 0xFF, target & 0xFF, (target >> 8) & 0xFF, 0, 0,
+                      speed & 0xFF, (speed >> 8) & 0xFF])
+
     # -- move ----------------------------------------------------------------
 
     def _move(self, servo_id: int, target: int, speed: int, accel: int):
+        # hold the lock only for each bus transaction, never for the whole move,
+        # so other requests (and the IK stream) keep working while we wait
         with self._lock:
             target = self._clamp(servo_id, target)
             self._write_raw(servo_id, _ADDR_TORQUE_ENABLE, bytes([1]))
-            self._write_raw(servo_id, _ADDR_ACCELERATION,  bytes([accel & 0xFF]))
-            self._write_raw(servo_id, _ADDR_GOAL_SPEED,
-                            bytes([speed & 0xFF, (speed >> 8) & 0xFF]))
-            self._write_raw(servo_id, _ADDR_GOAL_POSITION,
-                            bytes([target & 0xFF, (target >> 8) & 0xFF]))
+            self._write_raw(servo_id, _ADDR_ACCELERATION, self._motion_block(target, speed, accel))
 
-            deadline = time.time() + _MOVE_SETTLE_TIMEOUT
-            pos = None
-            while time.time() < deadline:
-                time.sleep(_MOVE_SETTLE_POLL)
-                p = self._read_u16(servo_id, _ADDR_PRESENT_POSITION)
-                if p is not None:
-                    pos = p
-                    if abs(p - target) <= _MOVE_TOLERANCE:
-                        break
+        deadline = time.time() + _MOVE_SETTLE_TIMEOUT
+        pos = None
+        while time.time() < deadline:
+            time.sleep(_MOVE_SETTLE_POLL)
+            with self._lock:
+                p = self._read_s16(servo_id, _ADDR_PRESENT_POSITION)
+            if p is not None:
+                pos = p
+                if abs(p - target) <= _MOVE_TOLERANCE:
+                    break
 
         ok = pos is not None and abs(pos - target) <= _MOVE_TOLERANCE
         return ok, pos
@@ -377,9 +437,10 @@ class MyCobot280:
         with self._bus._lock:
             ids = []
             for sid in range(1, 51):
-                if self._bus._ping(sid):
+                if sid == _ATOM_ID:
+                    continue                      # the ATOM answers WRITE-pings, not PING
+                if self._bus._ping(sid, timeout=0.006):
                     ids.append(sid)
-                time.sleep(0.015)
             self._servo_ids = ids
             self._bus._limit_cache.clear()
             for sid in ids:
@@ -438,6 +499,34 @@ class MyCobot280:
     def servo_ping(self, servo_id: int) -> bool:
         """Check if a servo responds."""
         return self.servo(servo_id).ping()
+
+    # -- streaming (used by the IK link) --------------------------------------
+
+    def read_positions(self, ids: list[int]) -> list[int | None]:
+        """Present position of each servo (signed ticks), None where a servo didn't answer.
+        Takes the lock per servo so other callers can interleave."""
+        out = []
+        for sid in ids:
+            with self._bus._lock:
+                out.append(self._bus._read_s16(sid, _ADDR_PRESENT_POSITION))
+        return out
+
+    def sync_move(self, targets: dict[int, int], speed: int = 600, accel: int = 20):
+        """Send goal position + speed + accel to several servos in ONE sync-write packet.
+        Non-blocking (doesn't wait for arrival); every target is clamped to the safe limits."""
+        with self._bus._lock:
+            block = {sid: self._bus._motion_block(self._bus._clamp(sid, t), speed, accel)
+                     for sid, t in targets.items()}
+            self._bus._sync_write(_ADDR_ACCELERATION, block)
+
+    def sync_torque(self, ids: list[int], enable: bool):
+        """Torque on/off for several servos in one packet."""
+        with self._bus._lock:
+            self._bus._sync_write(_ADDR_TORQUE_ENABLE, {sid: bytes([1 if enable else 0]) for sid in ids})
+
+    def safe_limits(self, servo_id: int) -> tuple[int, int]:
+        with self._bus._lock:
+            return self._bus._safe_limits(servo_id)
 
     # -- ATOM ----------------------------------------------------------------
 
