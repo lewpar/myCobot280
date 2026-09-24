@@ -151,7 +151,7 @@ label.chk input:checked::before{transform:translateX(14px)}
 label.chk input:disabled{opacity:.45;cursor:not-allowed}
 label.chk:has(input:disabled){color:var(--faint);cursor:not-allowed}
 .field-label{display:block;color:var(--muted);font-size:12px;margin:10px 0 5px}
-input[type=text],input[type=password]{font:12.5px var(--mono);flex:1;min-width:0;width:100%;background:var(--code);color:var(--text);
+input[type=text],input[type=password],input[type=number]{font:12.5px var(--mono);flex:1;min-width:0;width:100%;background:var(--code);color:var(--text);
   border:1px solid var(--border-strong);border-radius:7px;padding:7px 9px}
 .input-row{display:flex;gap:6px}
 .input-row button{flex:none}
@@ -192,8 +192,24 @@ button.rec[aria-pressed="true"] .recdot{background:#fff;border-radius:2px;animat
 .reclist button[aria-selected="true"]{border-color:var(--amber);background:var(--amber-soft)}
 .reclist .n{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
 .reclist .d{flex:none;font:500 11.5px var(--mono);color:var(--muted)}
-.progress{height:4px;border-radius:2px;background:var(--track);margin-top:12px;overflow:hidden}
+.progress{height:4px;border-radius:2px;background:var(--track);margin-top:10px;overflow:hidden}
 .progress div{height:100%;width:0;background:var(--amber)}
+.item{display:flex;gap:4px}
+.item>button:first-child{flex:1;min-width:0}
+.item .x{flex:none;width:30px;padding:0;color:var(--muted)}
+.steps{display:flex;flex-direction:column;gap:4px;margin:8px 0}
+.step{display:grid;grid-template-columns:minmax(0,1fr) 64px 28px 28px 28px;gap:4px;align-items:center;font-size:12.5px}
+.step .n{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.step input{padding:4px 6px}
+.step button{padding:4px 0}
+select{font:12.5px var(--mono);background:var(--code);color:var(--text);border:1px solid var(--border-strong);border-radius:7px;padding:6px 8px;min-width:0;flex:1}
+.playname{font-weight:600;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.playname small{font-weight:400;color:var(--muted);font:500 11.5px var(--mono);margin-left:6px}
+.sub{font-size:11.5px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--faint);margin:14px 0 4px}
+.jog{display:grid;grid-template-columns:30px 1fr 1fr;gap:6px;align-items:center;margin-top:8px}
+.jog b{font-size:12px;color:var(--muted)}
+.jog button{padding:7px 0;touch-action:none;user-select:none}
+.jog[hidden]{display:none}
 
 /* ---------- Narrow screens: inspector becomes a bottom sheet ---------- */
 @media (max-width:760px){
@@ -257,6 +273,8 @@ button.rec[aria-pressed="true"] .recdot{background:#fff;border-radius:2px;animat
       <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="4" y="4" width="4" height="4" rx="1"/><rect x="10" y="4" width="4" height="4" rx="1"/><rect x="16" y="4" width="4" height="4" rx="1"/><rect x="4" y="10" width="4" height="4" rx="1"/><rect x="10" y="10" width="4" height="4" rx="1" opacity=".4"/><rect x="16" y="10" width="4" height="4" rx="1"/><rect x="4" y="16" width="4" height="4" rx="1"/><rect x="10" y="16" width="4" height="4" rx="1"/><rect x="16" y="16" width="4" height="4" rx="1"/></svg>ATOM</button>
     <button class="tab" role="tab" id="tabbtn-record" aria-controls="tab-record" aria-selected="false">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.5" fill="currentColor" stroke="none"/></svg>Record</button>
+    <button class="tab" role="tab" id="tabbtn-play" aria-controls="tab-play" aria-selected="false">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M8 5l11 7-11 7z" fill="currentColor" stroke-linejoin="round"/></svg>Play</button>
     <button id="toggle" class="icon-btn" aria-expanded="true" aria-label="Hide controls" title="Hide controls">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
   </div>
@@ -285,6 +303,20 @@ button.rec[aria-pressed="true"] .recdot{background:#fff;border-radius:2px;animat
       <div class="card-head"><h2>Motion profile</h2><span class="meta">sim &amp; arm</span></div>
       <div class="slider"><span>Max speed</span><input type="range" id="spd" min="15" max="360" value="90"><output id="spdv"></output></div>
       <div class="slider"><span>Acceleration</span><input type="range" id="acc" min="40" max="1500" value="260"><output id="accv"></output></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>Jog</h2><span class="meta">hold to repeat</span></div>
+      <div class="seg" role="group" aria-label="Jog mode"><button id="jogModeXYZ" aria-pressed="true">Tool X/Y/Z</button><button id="jogModeJ" aria-pressed="false">Joints</button></div>
+      <div class="seg" role="group" aria-label="Step size" id="jogSteps" style="margin-top:6px"></div>
+      <div class="jog" id="jogXYZ"></div>
+      <div class="jog" id="jogJ" hidden></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>Saved poses</h2><button id="poseRefresh" title="Reload from the backend">Refresh</button></div>
+      <div class="input-row"><input type="text" id="poseName" maxlength="60" placeholder="Name, e.g. Pick" spellcheck="false"><button id="poseSave" class="primary">Save pose</button></div>
+      <div id="poseList" class="reclist" style="margin-top:8px"></div>
+      <p class="callout" id="poseNote"></p>
+      <p class="note">Saves the arm's current pose (the real arm when connected). Click a pose to move there; the move is collision-checked like any other.</p>
     </div>
   </section>
 
@@ -315,8 +347,9 @@ button.rec[aria-pressed="true"] .recdot{background:#fff;border-radius:2px;animat
       <div class="card-head"><h2>Streaming</h2></div>
       <label class="chk"><input type="checkbox" id="optSend" checked> Drive the servos with the solved angles</label>
       <label class="chk"><input type="checkbox" id="optReal" checked> Show the real arm's measured pose</label>
+      <label class="chk"><input type="checkbox" id="optStall" checked> Stop the arm if a joint stalls</label>
       <div class="row"><button id="btnLimp" class="block" aria-pressed="false" disabled>Hand-guide mode</button></div>
-      <p class="note">Hand-guide turns torque off so you can pose the arm by hand. Hold it first: it drops without torque.</p>
+      <p class="note">Hand-guide turns torque off so you can pose the arm by hand. Hold it first: it drops without torque. The stall check stops the arm when a joint stays well short of its goal without moving, which usually means something is in the way.</p>
     </div>
     <div class="card">
       <div class="card-head"><h2>Calibration</h2></div>
@@ -349,23 +382,65 @@ button.rec[aria-pressed="true"] .recdot{background:#fff;border-radius:2px;animat
       <div class="card-head"><h2>Recorder</h2><span class="meta" id="recMeta">10 samples/s</span></div>
       <button id="recBtn" class="block rec" aria-pressed="false"><span class="recdot"></span><span id="recBtnText">Record</span></button>
       <div class="row"><button id="recLimp" class="block" aria-pressed="false" disabled>Hand-guide mode</button></div>
-      <p class="note">Records the real arm's measured pose while connected (hand-guide it, or drive it from Motion), otherwise the simulated arm. Still time at the start and end is trimmed.</p>
-      <div id="recSave" hidden>
-        <label class="field-label" for="recName">Name this recording</label>
-        <div class="input-row"><input type="text" id="recName" maxlength="60" placeholder="e.g. Wave hello" spellcheck="false"><button id="recSaveBtn" class="primary">Save</button><button id="recDiscard">Discard</button></div>
-        <label class="chk"><input type="checkbox" id="recZero"> Return to the zero pose after playing</label>
-      </div>
-      <p class="callout" id="recNote"></p>
+      <p class="note">Records the real arm's measured pose while connected (hand-guide it, or drive it from Motion), otherwise the simulated arm. LED changes made in the ATOM tab while recording are saved as cues. Still time at the start and end is trimmed.</p>
     </div>
     <div class="card">
-      <div class="card-head"><h2>Saved recordings</h2><button id="recRefresh" title="Reload the list from the backend">Refresh</button></div>
-      <div id="recList" class="reclist" role="listbox" aria-label="Saved recordings"></div>
-      <p class="note" id="recEmpty">Recordings are stored on the backend. Enter the address and password in Robot, then press Refresh.</p>
+      <div class="card-head"><h2>Waypoints</h2><span class="meta" id="wpMeta">0 points</span></div>
+      <p class="note" style="margin-top:0">Pose the arm, add a point, repeat. Makes a smooth recording through the points.</p>
+      <div class="row seg"><button id="wpAdd" class="primary">Add point</button><button id="wpClear">Clear</button></div>
+      <div id="wpList" class="reclist" style="margin-top:8px"></div>
+      <div class="slider"><span>Move speed</span><input type="range" id="wpSpeed" min="5" max="120" value="40"><output id="wpSpeedv"></output></div>
+      <div class="slider"><span>Pause at each point</span><input type="range" id="wpPause" min="0" max="50" value="0"><output id="wpPausev"></output></div>
+      <button id="wpMake" class="block" disabled>Make a recording from the points</button>
+    </div>
+    <div class="card" id="recSave" hidden>
+      <div class="card-head"><h2>Save</h2><span class="meta" id="recSaveMeta"></span></div>
+      <label class="field-label" for="recName">Name</label>
+      <div class="input-row"><input type="text" id="recName" maxlength="60" placeholder="e.g. Wave hello" spellcheck="false"><button id="recSaveBtn" class="primary">Save</button><button id="recDiscard">Discard</button></div>
+      <label class="chk"><input type="checkbox" id="recZero"> Return to the zero pose after playing</label>
+    </div>
+    <p class="callout" id="recNote"></p>
+  </section>
+
+  <section class="tabpanel" id="tab-play" role="tabpanel" aria-labelledby="tabbtn-play" hidden>
+    <div class="card">
+      <div class="card-head"><h2>Playback</h2><span class="meta" id="playWhere">simulation</span></div>
+      <div class="playname" id="playName">Pick a recording or a sequence below</div>
       <div class="progress" aria-hidden="true"><div id="recProg"></div></div>
-      <div class="row seg"><button id="recPlay" class="primary" disabled>Play</button><button id="recDel" disabled>Delete</button></div>
+      <div class="row"><button id="recPlay" class="primary block" disabled>Play</button></div>
+      <label class="chk"><input type="checkbox" id="recTimed" checked> Keep the recorded timing</label>
       <label class="chk"><input type="checkbox" id="recLoop"> Loop</label>
       <div class="slider"><span>Playback speed</span><input type="range" id="recRate" min="25" max="200" step="25" value="100"><output id="recRatev">1×</output></div>
-      <p class="note">Recordings marked → 0 return to the zero pose (arm straight up) when they finish. Playback first moves to the recording's start pose, then follows it using Max speed and Acceleration from Motion (raise them if the arm lags behind). Every pose is collision-checked; Stop or Esc ends playback, and so does moving the target.</p>
+      <p class="callout" id="playNote"></p>
+      <p class="note">Playback moves to the start pose at Max speed from Motion, then follows the recording. With the timing kept, each joint gets the speed it needs (up to 150°/s); otherwise every joint uses Max speed and may lag. The whole path is collision-checked before it starts. When connected it runs on the arm itself, so it keeps going if you close this page. Stop or Esc ends it, and so does moving the target.</p>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>Recordings</h2><span><button id="recImport" title="Load a recording exported from this page">Import</button> <button id="recRefresh" title="Reload the list from the backend">Refresh</button></span></div>
+      <input type="file" id="recFile" accept=".json,application/json" hidden>
+      <div id="recList" class="reclist" role="listbox" aria-label="Saved recordings"></div>
+      <p class="note" id="recEmpty">Recordings are stored on the backend. Enter the address and password in Robot, then press Refresh.</p>
+      <div id="recEdit" hidden>
+        <div class="sub">Selected recording</div>
+        <div class="input-row"><input type="text" id="edName" maxlength="60" spellcheck="false" aria-label="Recording name"><button id="edRename">Rename</button></div>
+        <label class="chk"><input type="checkbox" id="edZero"> Return to the zero pose after playing</label>
+        <div class="slider"><span>Trim start</span><input type="range" id="edT0" min="0" max="100" value="0" step="0.1"><output id="edT0v"></output></div>
+        <div class="slider"><span>Trim end</span><input type="range" id="edT1" min="0" max="100" value="100" step="0.1"><output id="edT1v"></output></div>
+        <div class="row seg"><button id="edTrim" disabled>Apply trim</button><button id="edExport">Export</button><button id="edDel">Delete</button></div>
+        <p class="callout" id="edCheck"></p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>Sequences</h2><button id="seqNew">New</button></div>
+      <div id="seqList" class="reclist" role="listbox" aria-label="Sequences"></div>
+      <p class="note" id="seqEmpty">A sequence plays several recordings in a row, with a pause after each.</p>
+      <div id="seqEdit" hidden>
+        <div class="sub" id="seqEditTitle">New sequence</div>
+        <input type="text" id="seqName" maxlength="60" placeholder="Sequence name" spellcheck="false" aria-label="Sequence name">
+        <div class="steps" id="seqSteps"></div>
+        <div class="input-row"><select id="seqPick" aria-label="Recording to add"></select><button id="seqAdd">Add step</button></div>
+        <div class="row seg"><button id="seqSave" class="primary">Save</button><button id="seqCancel">Cancel</button><button id="seqDel">Delete</button></div>
+      </div>
+      <p class="callout" id="seqNote"></p>
     </div>
   </section>
 
@@ -855,12 +930,13 @@ const atomPending=new Set();
 function atomPaint(k){
   const c=hexRgb($('#atomColor').value);
   if(atomPx[k].every((v,i)=>v===c[i]))return;
-  atomPx[k]=c;atomDraw(k);
+  atomPx[k]=c;atomDraw(k);recEvent('pixel',[k%5,Math.floor(k/5),...c]);
   if(atomPending.has(k))return;   // already queued: it sends whatever colour the LED has by then
   atomPending.add(k);
   atomQueue(()=>{atomPending.delete(k);const [r,g,b]=atomPx[k];return api('POST','/atom/pixel',{x:k%5,y:Math.floor(k/5),r,g,b});});
 }
 function atomFill(c){
+  recEvent('color',c.slice());
   for(let k=0;k<25;k++){atomPx[k]=c.slice();atomDraw(k);}
   atomQueue(()=>api('POST','/atom/color',{r:c[0],g:c[1],b:c[2]}));
 }
@@ -890,157 +966,458 @@ $('#atomRead').addEventListener('click',()=>atomQueue(async()=>{
 {let t=null;
  $('#atomBri').addEventListener('input',e=>{
    atomBright=+e.target.value;$('#atomBriv').textContent=atomBright+'%';for(let k=0;k<25;k++)if(atomPx[k].some(v=>v))atomDraw(k);
-   clearTimeout(t);t=setTimeout(()=>atomQueue(()=>api('POST','/atom/brightness',{percent:atomBright})),250);});}
+   clearTimeout(t);t=setTimeout(()=>{recEvent('brightness',[atomBright]);atomQueue(()=>api('POST','/atom/brightness',{percent:atomBright}));},250);});}
 
-/* ---------- Recorder: sample the arm's pose into a timeline, store it on the backend (/api/recordings),
-   play it back by feeding qIK, so it takes the same collision-checked path to qCmd and the servos as any other goal ---------- */
-const REC_DT=100,REC_MAX=36000;   // ms between samples; the backend's frame cap (an hour)
-let rec=null;     // {t0, last, frames:[[t s, deg x6]]} while recording
-let take=null;    // the finished recording, until it is saved or discarded
-let recItems=[],recSel=null,recCache={};
-let play=null;    // {frames, phase:'approach'|'run', t, i, arrived, loaded}
-function recNote(t){$('#recNote').textContent=t;}
+/* ---------- Library and playback: recordings, waypoints, sequences, saved poses (REST /api/*) ----------
+   Recording samples the pose at 10 Hz (the real arm when it reads back, otherwise the sim) plus LED cues
+   from the ATOM panel. Playback runs on the backend when the arm is connected (/api/playback; the page
+   just follows the measured pose). Offline, Player (a copy of player.py) runs here on the simulated
+   servos and feeds qIK, so the usual collision check -> qCmd path applies. */
+const REC_DT=100,REC_MAX=36000;
+let rec=null,take=null;                    // rec: while recording; take: {frames, events} waiting to be saved
+let recItems=[],seqItems=[],recCache={},sel=null,selSteps=null,selCheck=null;
+let play=null,simSpeeds=null;              // local (simulated) playback
+let remotePlay=null,remotePending=false,remoteStopSent=false,playEndN=null,armFault=null;
+const recNote=t=>{$('#recNote').textContent=t;};
+const playNote=t=>{$('#playNote').textContent=t;};
 const haveRealNow=()=>!!(measured&&measured.every(v=>v!==null)&&performance.now()-measuredAt<1500);
+const linkLive=()=>!!(ws&&ws.readyState===1&&haveRealNow());
 function recPose(){return haveRealNow()?measured.slice():servo.map(s=>s.pos/DEG);}
+const r2=v=>+v.toFixed(2);
 const fmtDur=s=>s>=60?`${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,'0')}`:s.toFixed(1)+' s';
+const clampJ=(j,deg)=>THREE.MathUtils.clamp(deg*DEG,LIM[j][0],LIM[j][1]);
+const busyPlaying=()=>!!(play||remotePlay||remotePending);
+function item(name,meta,selected,onClick,onDelete){ // a list row: [ name ........ meta ][x]
+  const b=document.createElement('button');b.type='button';b.title=name;
+  if(selected!==null){b.setAttribute('role','option');b.setAttribute('aria-selected',selected);}
+  const n=document.createElement('span');n.className='n';n.textContent=name;
+  const d=document.createElement('span');d.className='d';d.textContent=meta;b.append(n,d);
+  b.addEventListener('click',onClick);
+  if(!onDelete)return b;
+  const w=document.createElement('div');w.className='item';
+  const x=document.createElement('button');x.type='button';x.className='x';x.textContent='×';x.title='Remove '+name;x.setAttribute('aria-label','Remove '+name);
+  x.addEventListener('click',onDelete);w.append(b,x);return w;
+}
+const tcpText=a=>{fk(a.map(v=>v*DEG),pathF);return `${mm(pathF.tcp.x)}, ${mm(pathF.tcp.y)}, ${mm(pathF.tcp.z)} mm`;};
+
+/* the selected recording's tool path, drawn in the 3D view while the Play tab is open */
+const PATH_MAX=3000,pathGeo=new THREE.BufferGeometry();
+pathGeo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(PATH_MAX*3),3));
+const pathLine=new THREE.Line(pathGeo,new THREE.LineBasicMaterial({color:0x8b5cf6,transparent:true,opacity:0.9,depthTest:false}));
+pathLine.renderOrder=4;pathLine.frustumCulled=false;pathLine.visible=false;root.add(pathLine);
+const pathF=makeFK();let pathWanted=false;
+function pathShow(list,range){
+  pathWanted=!!list;if(!list)return;
+  const fr=list.flatMap(f=>range?f.filter(r=>r[0]>=range[0]-1e-6&&r[0]<=range[1]+1e-6):f);
+  const stride=Math.max(1,Math.ceil(fr.length/(PATH_MAX-1))),a=pathGeo.attributes.position.array;let n=0;
+  fr.forEach((f,k)=>{if(k%stride&&k!==fr.length-1)return;fk(f.slice(1).map(v=>v*DEG),pathF);a.set([pathF.tcp.x,pathF.tcp.y,pathF.tcp.z],n*3);n++;});
+  pathGeo.setDrawRange(0,n);pathGeo.attributes.position.needsUpdate=true;
+}
+/* same pre-check as player.check_frames / check_steps on the backend */
+function checkFrames(frames){
+  let last=null;
+  for(let k=0;k<frames.length;k++){
+    const q=frames[k].slice(1);
+    if(last&&k<frames.length-1&&Math.max(...q.map((v,j)=>Math.abs(v-last[j])))<1)continue;
+    const why=checkPose(q.map(v=>v*DEG));if(why)return [frames[k][0],why];last=q;
+  }
+  return null;
+}
+function checkSteps(steps){
+  for(let n=0;n<steps.length;n++){const s=steps[n],where=`"${s.name}"`+(steps.length>1?` (step ${n+1})`:'');
+    const bad=checkFrames(s.frames);if(bad)return `${where} at ${bad[0].toFixed(1)} s: ${bad[1]}`;
+    if(s.return_zero){const why=checkPose(new Array(N).fill(0));if(why)return `${where}: the zero pose is blocked (${why})`;}}
+  return null;
+}
+
+/* ---- Player: a copy of src/backend/player.py (keep the two in step) ---- */
+const PB={GOAL_DT:0.1,LEAD:0.15,ARRIVE:2,GRACE:3,MIN_DPS:3};
+function poseAt(fr,t,hint){
+  let i=hint>=0&&hint<fr.length-1&&fr[hint][0]<=t?hint:0;
+  while(i<fr.length-2&&fr[i+1][0]<=t)i++;
+  const a=fr[i],b=fr[i+1],u=b[0]<=a[0]?1:THREE.MathUtils.clamp((t-a[0])/(b[0]-a[0]),0,1);
+  return [a.slice(1).map((v,j)=>v+(b[j+1]-v)*u),i];
+}
+class Player{
+  constructor(name,steps,now,o){Object.assign(this,{name,steps,rate:o.rate,loop:o.loop,timed:o.timed,speed:o.speed});this.step=0;this.enter('approach',now);}
+  enter(ph,now){this.phase=ph;this.since=now;this.t=0;this.hint=0;this.nextEv=0;this.arrivedBy=null;this.lastGoal=-1e9;}
+  get cur(){return this.steps[this.step];}
+  status(){const s=this.cur;return{name:this.name,recording:s.name,step:this.step,steps:this.steps.length,phase:this.phase,t:this.t,duration:s.frames[s.frames.length-1][0]};}
+  travel(cur,goal,now,act){
+    if(this.arrivedBy===null)this.arrivedBy=now+Math.max(0,...goal.map((g,j)=>Math.abs(g-cur[j])))/Math.max(this.speed,1)+PB.GRACE;
+    if(now-this.lastGoal>=PB.GOAL_DT){act.goal=goal;act.speeds=goal.map(()=>this.speed);this.lastGoal=now;}
+    return goal.every((g,j)=>Math.abs(g-cur[j])<=PB.ARRIVE)||now>this.arrivedBy;
+  }
+  afterStep(now,act){if((this.cur.pause||0)>0&&(this.step+1<this.steps.length||this.loop))this.enter('pause',now);else this.nextStep(now,act);}
+  nextStep(now,act){if(this.step+1<this.steps.length)this.step++;else if(this.loop)this.step=0;else{act.done=true;return;}this.enter('approach',now);}
+  tick(now,cur){
+    const act={goal:null,speeds:null,events:[],done:false},s=this.cur,fr=s.frames,end=fr[fr.length-1][0];
+    if(this.phase==='approach'){if(this.travel(cur,fr[0].slice(1),now,act))this.enter('run',now);return act;}
+    if(this.phase==='run'){
+      this.t=Math.min(end,(now-this.since)*this.rate);
+      const ev=s.events||[];while(this.nextEv<ev.length&&ev[this.nextEv][0]<=this.t)act.events.push(ev[this.nextEv++]);
+      if(now-this.lastGoal>=PB.GOAL_DT||this.t>=end){
+        const ahead=Math.min(end,this.t+(this.timed?PB.LEAD*this.rate:0));let goal;[goal,this.hint]=poseAt(fr,ahead,this.hint);
+        const q=poseAt(fr,this.t,this.hint)[0];
+        act.goal=goal;act.speeds=this.timed?goal.map((g,j)=>Math.max(PB.MIN_DPS,1.1*Math.abs(g-q[j])/PB.LEAD,Math.abs(g-cur[j])/PB.LEAD)):goal.map(()=>this.speed);
+        this.lastGoal=now;
+      }
+      if(this.t>=end){this.enter('finish',now);this.t=end;this.lastGoal=now;}
+      return act;
+    }
+    if(this.phase==='finish'){this.t=end;if(this.travel(cur,fr[fr.length-1].slice(1),now,act)){if(s.return_zero)this.enter('zero',now);else this.afterStep(now,act);}return act;}
+    if(this.phase==='zero'){if(this.travel(cur,new Array(N).fill(0),now,act))this.afterStep(now,act);return act;}
+    if(this.phase==='pause'){this.t=now-this.since;if(this.t>=(s.pause||0))this.nextStep(now,act);return act;}
+    act.done=true;return act;
+  }
+}
+
+/* ---- recorder ---- */
+function recEvent(kind,args){if(rec)rec.events.push([+((performance.now()-rec.t0)/1000).toFixed(3),kind,args]);}
 function recSample(now){
   if(now-rec.last<REC_DT)return;
-  rec.last=now;rec.frames.push([+((now-rec.t0)/1000).toFixed(3),...recPose().map(v=>+v.toFixed(2))]);
+  rec.last=now;rec.frames.push([+((now-rec.t0)/1000).toFixed(3),...recPose().map(r2)]);
   $('#recMeta').textContent=`${fmtDur((now-rec.t0)/1000)} · ${rec.src}`;
   if(rec.frames.length>=REC_MAX)recStop();
 }
-function recTrim(f){ // drop the still time before the first and after the last movement
+function recTrim(f,ev){ // drop the still time before the first and after the last movement; cues move with the frames
   const moved=(a,b)=>a.some((v,j)=>j>0&&Math.abs(v-b[j])>0.5);
   let s=0,e=f.length-1;
   while(s<e&&!moved(f[s+1],f[0]))s++;
   while(e>s&&!moved(f[e-1],f[f.length-1]))e--;
-  const out=f.slice(s,e+1),t0=out.length?out[0][0]:0;
-  return out.map(r=>[+(r[0]-t0).toFixed(3),...r.slice(1)]);
+  const t0=f[s][0],t1=f[e][0];
+  return{frames:f.slice(s,e+1).map(r=>[+(r[0]-t0).toFixed(3),...r.slice(1)]),
+    events:ev.map(x=>[+(THREE.MathUtils.clamp(x[0],t0,t1)-t0).toFixed(3),x[1],x[2]])};
+}
+function recUI(){
+  const b=$('#recBtn');b.setAttribute('aria-pressed',!!rec);$('#recBtnText').textContent=rec?'Stop recording':'Record';b.disabled=busyPlaying();
+  $('#wpMake').disabled=wps.length<2||!!rec;
 }
 function recStart(){
-  if(play)return;
+  if(busyPlaying())return;
   take=null;$('#recSave').hidden=true;
   const now=performance.now();
-  rec={t0:now,last:-1e9,frames:[],src:haveRealNow()?'real arm':'simulation'};recSample(now);
+  rec={t0:now,last:-1e9,frames:[],events:[],src:haveRealNow()?'real arm':'simulation'};recSample(now);
   recNote(rec.src==='real arm'?'Recording the real arm. Move it, then press Stop recording.':'Not connected, so this records the simulated arm. Move the target, then press Stop recording.');
   recUI();
 }
 function recStop(){
-  const f=recTrim(rec.frames);rec=null;$('#recMeta').textContent='10 samples/s';
-  if(f.length<2){recNote('Nothing moved, so there is nothing to save.');recUI();return;}
-  take=f;$('#recSave').hidden=false;$('#recName').value='';$('#recName').focus();
-  recNote(`Recorded ${fmtDur(f[f.length-1][0])} (${f.length} samples). Give it a name and save it.`);
-  recUI();
+  const r=rec;rec=null;$('#recMeta').textContent='10 samples/s';
+  const t=recTrim(r.frames,r.events);
+  if(t.frames.length<2){recNote('Nothing moved, so there is nothing to save.');recUI();return;}
+  offerSave(t.frames,t.events,`Recorded ${fmtDur(t.frames[t.frames.length-1][0])} (${t.frames.length} samples). Give it a name and save it.`);
+}
+function offerSave(frames,events,msg){
+  take={frames,events};$('#recSave').hidden=false;$('#recName').value='';$('#recName').focus();
+  $('#recSaveMeta').textContent=fmtDur(frames[frames.length-1][0])+(events.length?` · ${events.length} LED cue${events.length>1?'s':''}`:'');
+  recNote(msg);recUI();
 }
 async function recSave(){
   const name=$('#recName').value.trim();
   if(!name){recNote('Type a name for the recording first.');$('#recName').focus();return;}
   $('#recSaveBtn').disabled=true;
   try{
-    const r=await api('POST','/recordings',{name,frames:take,return_zero:$('#recZero').checked});
-    recCache[r.id]=take;take=null;$('#recSave').hidden=true;recNote(`Saved "${r.name}".`);
-    await recRefresh(r.id);
+    const r=await api('POST','/recordings',{name,frames:take.frames,events:take.events,return_zero:$('#recZero').checked});
+    take=null;$('#recSave').hidden=true;recNote(`Saved "${r.name}". Find it in the Play tab.`);
+    await libRefresh();selectItem({kind:'rec',id:r.id});
   }catch(e){recNote(e.message+' The recording is kept here; try saving again.');}
   finally{$('#recSaveBtn').disabled=false;}
-}
-async function recRefresh(select){
-  try{recItems=await api('GET','/recordings');}
-  catch(e){recNote(e.message);return;}
-  if(select!==undefined)recSel=select;
-  if(!recItems.some(r=>r.id===recSel))recSel=null;
-  recRender();
-}
-function recRender(){
-  const box=$('#recList');box.textContent='';
-  recItems.forEach(r=>{
-    const b=document.createElement('button');b.type='button';b.setAttribute('role','option');b.setAttribute('aria-selected',r.id===recSel);
-    const n=document.createElement('span');n.className='n';n.textContent=r.name;
-    const d=document.createElement('span');d.className='d';
-    d.textContent=`${r.return_zero?'→ 0 · ':''}${fmtDur(r.duration)} · ${new Date(r.created*1000).toLocaleDateString(undefined,{day:'numeric',month:'short'})}`;
-    b.append(n,d);b.title=r.name+(r.return_zero?' (returns to the zero pose)':'');
-    b.addEventListener('click',()=>{if(play)return;recSel=r.id;recRender();});
-    b.addEventListener('dblclick',()=>{if(!play){recSel=r.id;recRender();playStart();}});
-    box.appendChild(b);
-  });
-  $('#recEmpty').textContent=recItems.length?'':'No recordings saved yet.';
-  recUI();
-}
-function recUI(){
-  const b=$('#recBtn');b.setAttribute('aria-pressed',!!rec);$('#recBtnText').textContent=rec?'Stop recording':'Record';b.disabled=!!play;
-  $('#recPlay').textContent=play?'Stop playback':'Play';$('#recPlay').disabled=!play&&(!recSel||!!rec);
-  $('#recDel').disabled=!recSel||!!play||!!rec;
-  if(!play)$('#recProg').style.width='0';
-}
-async function playStart(){
-  if(play||rec||!recSel)return;
-  if(stopped){recNote('The arm is stopped. Press Resume first.');return;}
-  let f=recCache[recSel];
-  if(!f){
-    try{f=(await api('GET','/recordings/'+recSel)).frames;recCache[recSel]=f;}
-    catch(e){recNote(e.message);return;}
-  }
-  if(!Array.isArray(f)||f.length<2){recNote('That recording is empty.');return;}
-  if(play||rec||stopped)return;   // something changed while it loaded
-  if(limp)setLimp(false);
-  setDemo(false);homeLock=true;
-  const item=recItems.find(x=>x.id===recSel);
-  play={frames:f,phase:'approach',t:0,i:0,arrived:0,zero:!!(item&&item.return_zero)};
-  recNote('Moving to the start pose…');recUI();
-}
-function endPlay(msg){
-  if(!play)return;
-  play=null;
-  for(let i=0;i<N;i++)qIK[i]=qCmd[i];   // hold the last pose that was actually sent
-  fk(qIK,ikF);setTarget(ikF.tcp.clone());homeLock=true;
-  if(msg)recNote(msg);recUI();
-}
-function playPose(t){ // linear interpolation between samples, into qIK
-  const f=play.frames;
-  if(t<f[play.i][0])play.i=0;
-  while(play.i<f.length-2&&f[play.i+1][0]<=t)play.i++;
-  const a=f[play.i],b=f[play.i+1],u=b[0]>a[0]?THREE.MathUtils.clamp((t-a[0])/(b[0]-a[0]),0,1):1;
-  for(let j=0;j<N;j++)qIK[j]=THREE.MathUtils.clamp((a[j+1]+(b[j+1]-a[j+1])*u)*DEG,LIM[j][0],LIM[j][1]);
-}
-function playStep(dt){
-  if(!homeLock){endPlay('Playback stopped: the target was moved.');return;}
-  const f=play.frames,end=f[f.length-1][0];
-  const arrived=()=>servo.every((s,j)=>Math.abs(s.pos-qIK[j])<0.5*DEG);
-  if(play.phase==='zero'){
-    for(let j=0;j<N;j++)qIK[j]=THREE.MathUtils.clamp(0,LIM[j][0],LIM[j][1]);
-    if(arrived())play.done=true;
-  }else if(play.phase==='approach'){
-    playPose(0);
-    const simThere=arrived();
-    const realThere=!haveRealNow()||measured.every((v,j)=>Math.abs(v*DEG-qIK[j])<2*DEG);
-    if(simThere&&!play.arrived)play.arrived=performance.now();
-    // the real arm may settle a little off the goal: don't wait for it forever
-    if(simThere&&(realThere||performance.now()-play.arrived>3000)){play.phase='run';play.t=0;play.i=0;recNote('Playing.');}
-  }else{
-    play.t+=dt*$('#recRate').value/100;
-    if(play.t>=end){
-      playPose(end);
-      if($('#recLoop').checked){play.phase='approach';play.arrived=0;play.t=0;}
-      else if(play.zero){play.phase='zero';recNote('Returning to the zero pose…');}
-      else play.done=true;
-    }else playPose(play.t);
-    $('#recProg').style.width=(Math.min(1,play.t/Math.max(end,1e-3))*100).toFixed(1)+'%';
-  }
-  fk(qIK,ikF);setTarget(ikF.tcp.clone());
 }
 $('#recBtn').addEventListener('click',()=>rec?recStop():recStart());
 $('#recLimp').addEventListener('click',()=>setLimp(!limp));
 $('#recSaveBtn').addEventListener('click',recSave);
 $('#recName').addEventListener('keydown',e=>{if(e.key==='Enter')recSave();});
 $('#recDiscard').addEventListener('click',()=>{take=null;$('#recSave').hidden=true;recNote('Discarded.');});
-$('#recRefresh').addEventListener('click',()=>recRefresh());
-$('#recPlay').addEventListener('click',()=>play?endPlay('Playback stopped.'):playStart());
-$('#recDel').addEventListener('click',async()=>{
-  const r=recItems.find(x=>x.id===recSel);if(!r||!confirm(`Delete the recording "${r.name}"?`))return;
-  try{await api('DELETE','/recordings/'+r.id);delete recCache[r.id];recNote(`Deleted "${r.name}".`);await recRefresh();}
-  catch(e){recNote(e.message);}
+
+/* ---- waypoints: a smooth (minimum-jerk) move between poses you add one at a time ---- */
+const wps=[];
+function wpRender(){
+  const box=$('#wpList');box.textContent='';
+  wps.forEach((q,k)=>box.appendChild(item(`Point ${k+1}`,tcpText(q),null,()=>goPose(q,$('#recNote')),()=>{wps.splice(k,1);wpRender();})));
+  $('#wpMeta').textContent=`${wps.length} point${wps.length===1?'':'s'}`;recUI();
+}
+function wpFrames(){
+  const v=+$('#wpSpeed').value,pause=$('#wpPause').value/10,out=[[0,...wps[0]]];let t=0;
+  for(let i=1;i<wps.length;i++){
+    const a=wps[i-1],b=wps[i],dur=Math.max(0.3,1.875*Math.max(...a.map((x,j)=>Math.abs(b[j]-x)))/v),n=Math.max(2,Math.ceil(dur*10));
+    for(let k=1;k<=n;k++){const u=k/n,m=u*u*u*(10-15*u+6*u*u);out.push([+(t+dur*u).toFixed(3),...a.map((x,j)=>r2(x+(b[j]-x)*m))]);}
+    t+=dur;
+    if(pause>0&&i<wps.length-1){t+=pause;out.push([+t.toFixed(3),...b]);}
+  }
+  return out;
+}
+function wpSliders(){$('#wpSpeedv').textContent=$('#wpSpeed').value+'°/s';$('#wpPausev').textContent=($('#wpPause').value/10).toFixed(1)+' s';}
+$('#wpSpeed').addEventListener('input',wpSliders);$('#wpPause').addEventListener('input',wpSliders);wpSliders();
+$('#wpAdd').addEventListener('click',()=>{wps.push(recPose().map(r2));wpRender();recNote(`Added point ${wps.length}${haveRealNow()?' from the real arm':' from the simulation'}.`);});
+$('#wpClear').addEventListener('click',()=>{if(wps.length&&confirm('Clear every waypoint?')){wps.length=0;wpRender();}});
+$('#wpMake').addEventListener('click',()=>{
+  const f=wpFrames(),bad=checkFrames(f);
+  if(bad){recNote(`That path isn't clear at ${bad[0].toFixed(1)} s: ${bad[1]}. Move or remove a point.`);return;}
+  offerSave(f,[],`Made a ${fmtDur(f[f.length-1][0])} recording through ${wps.length} points. Give it a name and save it.`);
 });
+wpRender();
+
+/* ---- library: recordings and sequences ---- */
+async function loadRec(id){if(!recCache[id])recCache[id]=await api('GET','/recordings/'+id);return recCache[id];}
+async function libRefresh(){
+  try{[recItems,seqItems]=await Promise.all([api('GET','/recordings'),api('GET','/sequences')]);}
+  catch(e){playNote(e.message);return false;}
+  if(sel&&!(sel.kind==='rec'?recItems:seqItems).some(x=>x.id===sel.id))selectItem(null);
+  libRender();return true;
+}
+function libRender(){
+  const date=c=>new Date(c*1000).toLocaleDateString(undefined,{day:'numeric',month:'short'});
+  const rl=$('#recList');rl.textContent='';
+  recItems.forEach(r=>{
+    const b=item(r.name,`${r.return_zero?'→ 0 · ':''}${r.events?'LED · ':''}${fmtDur(r.duration)} · ${date(r.created)}`,
+      !!sel&&sel.kind==='rec'&&sel.id===r.id,()=>{if(!busyPlaying())selectItem({kind:'rec',id:r.id});});
+    b.addEventListener('dblclick',()=>{if(!busyPlaying()&&selSteps&&sel.id===r.id)playStart();});rl.appendChild(b);});
+  $('#recEmpty').textContent=recItems.length?'':'No recordings saved yet. Make one in the Record tab.';
+  const sl=$('#seqList');sl.textContent='';
+  seqItems.forEach(q=>sl.appendChild(item(q.name,`${q.steps.length} step${q.steps.length>1?'s':''}`,
+    !!sel&&sel.kind==='seq'&&sel.id===q.id,()=>{if(!busyPlaying())selectItem({kind:'seq',id:q.id});})));
+  $('#seqEmpty').textContent=seqItems.length?'':'A sequence plays several recordings in a row, with a pause after each.';
+  const pick=$('#seqPick'),keep=pick.value;pick.textContent='';
+  recItems.forEach(r=>{const o=document.createElement('option');o.value=r.id;o.textContent=r.name;pick.appendChild(o);});
+  if(recItems.some(r=>r.id===keep))pick.value=keep;
+  if(seqDraft)seqRenderSteps();
+  playUI();
+}
+async function selectItem(s){
+  sel=s;selSteps=null;selCheck=null;pathShow(null);$('#recEdit').hidden=true;libRender();
+  if(!s)return;
+  try{
+    if(s.kind==='rec'){
+      const r=await loadRec(s.id);if(sel!==s)return;
+      selSteps=[{...r,pause:0}];editShow(r);
+    }else{
+      const q=seqItems.find(x=>x.id===s.id),steps=[];
+      for(const st of q.steps){const r=await loadRec(st.recording);steps.push({...r,pause:st.pause});}
+      if(sel!==s)return;
+      selSteps=steps;selCheck=checkSteps(steps);pathShow(steps.map(x=>x.frames));seqOpen(q);
+      playNote(selCheck?`This sequence would collide: ${selCheck}.`:'');
+    }
+  }catch(e){playNote(e.message);}
+  playUI();
+}
+function editShow(r){
+  const dur=r.frames[r.frames.length-1][0];
+  $('#recEdit').hidden=false;$('#edName').value=r.name;$('#edZero').checked=!!r.return_zero;
+  for(const [id,v] of [['#edT0',0],['#edT1',dur]]){const el=$(id);el.max=dur;el.value=v;}
+  editTrimUI();
+}
+function editTrimUI(){
+  const r=recCache[sel.id],dur=r.frames[r.frames.length-1][0];
+  let t0=+$('#edT0').value,t1=+$('#edT1').value;
+  if(t1-t0<0.2){if(document.activeElement===$('#edT0'))t0=Math.max(0,t1-0.2);else t1=Math.min(dur,t0+0.2);$('#edT0').value=t0;$('#edT1').value=t1;}
+  $('#edT0v').textContent=t0.toFixed(1)+' s';$('#edT1v').textContent=t1.toFixed(1)+' s';
+  const trimmed=t0>0.05||t1<dur-0.05;$('#edTrim').disabled=!trimmed;
+  const frames=r.frames.filter(f=>f[0]>=t0-1e-6&&f[0]<=t1+1e-6);
+  selCheck=checkSteps([{name:r.name,frames:frames.length>1?frames:r.frames,return_zero:$('#edZero').checked}]);
+  pathShow([r.frames],[t0,t1]);
+  $('#edCheck').textContent=selCheck?`Collision: ${selCheck}. It can't be played like this.`
+    :`Path clear${trimmed?' (trimmed part)':''}. ${r.frames.length} samples${(r.events||[]).length?`, ${r.events.length} LED cues`:''}.`;
+  $('#edCheck').className='callout'+(selCheck?' warn':'');
+  playUI();
+}
+['#edT0','#edT1'].forEach(id=>$(id).addEventListener('input',editTrimUI));
+async function editApply(body,msg){
+  const id=sel.id;
+  try{await api('PATCH','/recordings/'+id,body);delete recCache[id];playNote(msg);await libRefresh();await selectItem({kind:'rec',id});}
+  catch(e){playNote(e.message);}
+}
+$('#edRename').addEventListener('click',()=>{const n=$('#edName').value.trim();if(n)editApply({name:n},`Renamed to "${n}".`);});
+$('#edName').addEventListener('keydown',e=>{if(e.key==='Enter')$('#edRename').click();});
+$('#edZero').addEventListener('change',e=>editApply({return_zero:e.target.checked},e.target.checked?'It will return to the zero pose after playing.':'It will stay at its last pose after playing.'));
+$('#edTrim').addEventListener('click',()=>{const a=+$('#edT0').value,b=+$('#edT1').value;
+  if(confirm(`Keep only ${a.toFixed(1)} s to ${b.toFixed(1)} s of this recording? The rest is deleted.`))editApply({trim:[a,b]},'Trimmed.');});
+$('#edExport').addEventListener('click',()=>{
+  const r=recCache[sel.id],blob=new Blob([JSON.stringify({format:'mycobot280-recording',version:1,name:r.name,return_zero:!!r.return_zero,frames:r.frames,events:r.events||[]})],{type:'application/json'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=r.name.replace(/[^\w.-]+/g,'_')+'.json';document.body.appendChild(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+});
+$('#edDel').addEventListener('click',async()=>{
+  const r=recItems.find(x=>x.id===sel.id);if(!r||!confirm(`Delete the recording "${r.name}"?`))return;
+  try{await api('DELETE','/recordings/'+r.id);delete recCache[r.id];playNote(`Deleted "${r.name}".`);selectItem(null);await libRefresh();}
+  catch(e){playNote(e.message);}
+});
+$('#recImport').addEventListener('click',()=>$('#recFile').click());
+$('#recFile').addEventListener('change',async e=>{
+  const f=e.target.files[0];e.target.value='';if(!f)return;
+  try{
+    let j;try{j=JSON.parse(await f.text());}catch(_){throw new Error('That file isn\'t JSON.');}
+    if(!j||!Array.isArray(j.frames))throw new Error('That file isn\'t a recording exported from this page.');
+    const name=String(j.name||f.name.replace(/\.json$/i,'')).slice(0,60)||'Imported';
+    const r=await api('POST','/recordings',{name,frames:j.frames,events:Array.isArray(j.events)?j.events:[],return_zero:!!j.return_zero});
+    playNote(`Imported "${r.name}".`);await libRefresh();selectItem({kind:'rec',id:r.id});
+  }catch(err){playNote('Import failed: '+err.message);}
+});
+$('#recRefresh').addEventListener('click',()=>libRefresh());
+
+/* ---- sequence editor ---- */
+let seqDraft=null;   // {id|null, name, steps:[{recording, pause}]}
+function seqOpen(q){
+  seqDraft=q?{id:q.id,name:q.name,steps:q.steps.map(s=>({...s}))}:{id:null,name:'',steps:[]};
+  $('#seqEdit').hidden=false;$('#seqEditTitle').textContent=q?'Edit sequence':'New sequence';$('#seqName').value=seqDraft.name;
+  $('#seqDel').hidden=!q;seqRenderSteps();
+}
+function seqRenderSteps(){
+  const box=$('#seqSteps');box.textContent='';
+  seqDraft.steps.forEach((st,k)=>{
+    const r=recItems.find(x=>x.id===st.recording),row=document.createElement('div');row.className='step';
+    const n=document.createElement('span');n.className='n';n.textContent=`${k+1}. ${r?r.name:'(deleted recording)'}`;
+    const p=document.createElement('input');p.type='number';p.min=0;p.max=600;p.step=0.5;p.value=st.pause;p.title='Pause after this step (s)';p.setAttribute('aria-label',`Pause after step ${k+1}, seconds`);
+    p.addEventListener('input',()=>{st.pause=Math.max(0,Math.min(600,+p.value||0));});
+    const btn=(t,label,fn,dis)=>{const b=document.createElement('button');b.type='button';b.textContent=t;b.title=label;b.setAttribute('aria-label',label);b.disabled=!!dis;b.addEventListener('click',fn);return b;};
+    const swap=d=>{const s=seqDraft.steps;[s[k],s[k+d]]=[s[k+d],s[k]];seqRenderSteps();};
+    row.append(n,p,btn('↑','Move up',()=>swap(-1),k===0),btn('↓','Move down',()=>swap(1),k===seqDraft.steps.length-1),
+      btn('×','Remove step',()=>{seqDraft.steps.splice(k,1);seqRenderSteps();}));
+    box.appendChild(row);
+  });
+  if(!seqDraft.steps.length){const e=document.createElement('p');e.className='note';e.style.margin='0';e.textContent='No steps yet. Pick a recording below and add it; the number is the pause after it, in seconds.';box.appendChild(e);}
+}
+$('#seqNew').addEventListener('click',()=>{seqOpen(null);$('#seqName').focus();});
+$('#seqAdd').addEventListener('click',()=>{const id=$('#seqPick').value;if(!seqDraft||!id)return;seqDraft.steps.push({recording:id,pause:0});seqRenderSteps();});
+$('#seqCancel').addEventListener('click',()=>{seqDraft=null;$('#seqEdit').hidden=true;});
+$('#seqSave').addEventListener('click',async()=>{
+  seqDraft.name=$('#seqName').value.trim();
+  if(!seqDraft.name){$('#seqNote').textContent='Give the sequence a name.';return;}
+  if(!seqDraft.steps.length){$('#seqNote').textContent='Add at least one step.';return;}
+  try{
+    const body={name:seqDraft.name,steps:seqDraft.steps};
+    const q=seqDraft.id?await api('PUT','/sequences/'+seqDraft.id,body):await api('POST','/sequences',body);
+    $('#seqNote').textContent=`Saved "${q.name}".`;await libRefresh();selectItem({kind:'seq',id:q.id});
+  }catch(e){$('#seqNote').textContent=e.message;}
+});
+$('#seqDel').addEventListener('click',async()=>{
+  if(!seqDraft||!seqDraft.id||!confirm(`Delete the sequence "${seqDraft.name}"? Its recordings are kept.`))return;
+  try{await api('DELETE','/sequences/'+seqDraft.id);$('#seqNote').textContent='Deleted.';seqDraft=null;$('#seqEdit').hidden=true;selectItem(null);await libRefresh();}
+  catch(e){$('#seqNote').textContent=e.message;}
+});
+
+/* ---- playback ---- */
+function selName(){const l=sel&&(sel.kind==='rec'?recItems:seqItems).find(x=>x.id===sel.id);return l?l.name:'';}
+function playUI(){
+  const busy=busyPlaying(),st=remotePlay||(play&&play.status());
+  $('#recPlay').textContent=busy?'Stop playback':'Play';
+  $('#recPlay').disabled=!busy&&(!selSteps||!!rec||!!selCheck);
+  $('#playWhere').textContent=linkLive()?'on the arm':'simulation';
+  const nm=$('#playName');
+  if(st){nm.textContent=st.name;const sm=document.createElement('small');
+    sm.textContent=`${st.steps>1?`${st.step+1}/${st.steps} · `:''}${{approach:'moving to start',run:'playing',finish:'finishing',zero:'returning to zero',pause:'pause'}[st.phase]||st.phase}`;nm.appendChild(sm);}
+  else nm.textContent=remotePending?'Starting…':(selName()||'Pick a recording or a sequence below');
+  $('#recProg').style.width=st&&st.phase!=='approach'?(Math.min(1,st.t/Math.max(st.duration,1e-3))*100).toFixed(1)+'%':'0';
+  recUI();
+}
+async function playStart(){
+  if(busyPlaying()||rec||!selSteps||selCheck)return;
+  if(stopped){playNote('The arm is stopped. Press Resume first.');return;}
+  const o={rate:$('#recRate').value/100,loop:$('#recLoop').checked,timed:$('#recTimed').checked,speed:Math.min(150,+spd.value),acc:+acc.value};
+  if(limp)setLimp(false);
+  if(linkLive()){
+    remotePending=true;remoteStopSent=false;playUI();
+    setTimeout(()=>{if(remotePending&&!remotePlay){remotePending=false;playUI();}},3000);
+    try{await api('POST','/playback',{...(sel.kind==='rec'?{recording:sel.id}:{sequence:sel.id}),...o});playNote('Playing on the arm. It keeps going if you close this page.');}
+    catch(e){remotePending=false;playNote(e.message);playUI();}
+    return;
+  }
+  setDemo(false);homeLock=true;
+  play=new Player(selName(),selSteps,performance.now()/1000,o);
+  playNote('Playing in the simulation (the arm isn\'t connected).');playUI();
+}
+function playStop(){
+  if(remotePlay||remotePending)api('POST','/playback/stop').catch(e=>playNote(e.message));
+  else if(play)endPlay('Playback stopped.');
+}
+function endPlay(msg){
+  if(!play)return;
+  play=null;simSpeeds=null;
+  for(let i=0;i<N;i++)qIK[i]=qCmd[i];   // hold the last pose that was actually sent
+  fk(qIK,ikF);setTarget(ikF.tcp.clone());homeLock=true;
+  if(msg)playNote(msg);playUI();
+}
+function ledApply([,kind,a]){ // an LED cue during simulated playback: shown on the panel and the 3D ATOM only
+  if(kind==='color')for(let k=0;k<25;k++)atomPx[k]=a.slice();
+  else if(kind==='pixel')atomPx[a[1]*5+a[0]]=a.slice(2);
+  else{atomBright=a[0];$('#atomBri').value=a[0];$('#atomBriv').textContent=a[0]+'%';}
+  for(let k=0;k<25;k++)atomDraw(k);
+}
+function playStep(){
+  if(!homeLock){endPlay('Playback stopped: the target was moved.');return;}
+  const act=play.tick(performance.now()/1000,servo.map(s=>s.pos/DEG));
+  act.events.forEach(ledApply);
+  if(act.goal){for(let j=0;j<N;j++)qIK[j]=clampJ(j,act.goal[j]);simSpeeds=act.speeds;fk(qIK,ikF);setTarget(ikF.tcp.clone());}
+  if(act.done)play.done=true;
+  playUI();
+}
+$('#recPlay').addEventListener('click',()=>busyPlaying()?playStop():playStart());
 $('#recRate').addEventListener('input',e=>{$('#recRatev').textContent=(e.target.value/100)+'×';});
-$('#tabbtn-record').addEventListener('click',()=>{if(!recItems.length&&$('#wsPw').value)recRefresh();});
+
+/* ---- saved poses and going to a pose ---- */
+let poseItems=[];
+const poseNote=t=>{$('#poseNote').textContent=t;};
+function goPose(a,noteEl){
+  const say=t=>{(noteEl||$('#poseNote')).textContent=t;};
+  if(stopped){say('The arm is stopped. Press Resume first.');return;}
+  if(remotePlay||remotePending){say('A recording is playing. Stop it first.');return;}
+  if(play)endPlay('Playback stopped.');
+  if(limp)setLimp(false);
+  setDemo(false);for(let j=0;j<N;j++)qIK[j]=clampJ(j,a[j]);fk(qIK,ikF);setTarget(ikF.tcp.clone());homeLock=true;
+  const why=checkPose(qIK);say(why?`Can't go there: ${why}.`:'');
+}
+async function poseRefresh(){try{poseItems=await api('GET','/poses');}catch(e){poseNote(e.message);return;}poseRender();}
+function poseRender(){
+  const box=$('#poseList');box.textContent='';
+  poseItems.forEach(p=>box.appendChild(item(p.name,tcpText(p.angles),null,()=>goPose(p.angles),async()=>{
+    if(!confirm(`Delete the pose "${p.name}"?`))return;
+    try{await api('DELETE','/poses/'+p.id);await poseRefresh();}catch(e){poseNote(e.message);}})));
+  if(!poseItems.length){const e=document.createElement('p');e.className='note';e.style.margin='0';e.textContent='No saved poses yet.';box.appendChild(e);}
+}
+$('#poseSave').addEventListener('click',async()=>{
+  const name=$('#poseName').value.trim();if(!name){poseNote('Type a name for the pose first.');$('#poseName').focus();return;}
+  try{await api('POST','/poses',{name,angles:recPose().map(r2)});$('#poseName').value='';poseNote(`Saved "${name}".`);await poseRefresh();}
+  catch(e){poseNote(e.message);}
+});
+$('#poseName').addEventListener('keydown',e=>{if(e.key==='Enter')$('#poseSave').click();});
+$('#poseRefresh').addEventListener('click',poseRefresh);
+
+/* ---- jog: nudge the target (tool X/Y/Z in mm) or one joint (degrees); hold a button to repeat ---- */
+let jogMode='xyz',jogStep=5;
+const JOG_STEPS={xyz:[1,5,10,25],joint:[1,5,10,20]};
+function jog(axis,dir){
+  if(stopped||limp||remotePlay||remotePending)return;
+  setDemo(false);if(play)endPlay('Playback stopped: jogged.');
+  if(jogMode==='xyz'){homeLock=false;const v=target.clone();v.setComponent(axis,v.getComponent(axis)+dir*jogStep/1000);setTarget(v);}
+  else{qIK[axis]=clampJ(axis,qIK[axis]/DEG+dir*jogStep);fk(qIK,ikF);setTarget(ikF.tcp.clone());homeLock=true;}
+}
+function holdRepeat(b,fn){
+  let t1=null,t2=null;const stop=()=>{clearTimeout(t1);clearInterval(t2);};
+  b.addEventListener('pointerdown',e=>{e.preventDefault();stop();fn();t1=setTimeout(()=>{t2=setInterval(fn,120);},400);});
+  ['pointerup','pointerleave','pointercancel'].forEach(ev=>b.addEventListener(ev,stop));
+  b.addEventListener('click',e=>{if(e.detail===0)fn();});   // keyboard
+}
+function jogBuild(){
+  [['#jogXYZ',['X','Y','Z']],['#jogJ',JOINTS.map(j=>j.name)]].forEach(([id,names])=>{
+    const box=$(id);names.forEach((n,axis)=>{const l=document.createElement('b');l.textContent=n;box.appendChild(l);
+      [-1,1].forEach(d=>{const b=document.createElement('button');b.type='button';b.textContent=d<0?'−':'+';b.setAttribute('aria-label',`${n} ${d<0?'minus':'plus'}`);holdRepeat(b,()=>jog(axis,d));box.appendChild(b);});});
+  });
+}
+function jogRender(){
+  $('#jogModeXYZ').setAttribute('aria-pressed',jogMode==='xyz');$('#jogModeJ').setAttribute('aria-pressed',jogMode==='joint');
+  $('#jogXYZ').hidden=jogMode!=='xyz';$('#jogJ').hidden=jogMode!=='joint';
+  const box=$('#jogSteps');box.textContent='';
+  if(!JOG_STEPS[jogMode].includes(jogStep))jogStep=5;
+  JOG_STEPS[jogMode].forEach(v=>{const b=document.createElement('button');b.type='button';b.textContent=v+(jogMode==='xyz'?' mm':'°');
+    b.setAttribute('aria-pressed',v===jogStep);b.addEventListener('click',()=>{jogStep=v;jogRender();});box.appendChild(b);});
+}
+$('#jogModeXYZ').addEventListener('click',()=>{jogMode='xyz';jogRender();});
+$('#jogModeJ').addEventListener('click',()=>{jogMode='joint';jogRender();});
+jogBuild();jogRender();
+
+$('#optStall').addEventListener('change',e=>send({type:'set_stall_guard',on:e.target.checked}));
+function libAutoload(){if($('#wsPw').value){libRefresh();poseRefresh();}}
+$('#tabbtn-play').addEventListener('click',()=>{if(!recItems.length&&!seqItems.length&&$('#wsPw').value)libRefresh();});
+$('#tabbtn-motion').addEventListener('click',()=>{if(!poseItems.length&&$('#wsPw').value)poseRefresh();});
 
 function setStopped(on,fromArm){
   if(on===stopped)return;
@@ -1064,7 +1441,7 @@ toolIn.addEventListener('input',()=>{clearTimeout(toolTimer);toolTimer=setTimeou
 function wsStop(msg){
   if(wsTimer)clearInterval(wsTimer);wsTimer=null;
   if(ws){const w=ws;ws=null;try{w.close();}catch(_){}}
-  measured=null;limp=false;calibKey='';resync=false;remoteBlocked=null;$('#calNote').textContent='';$('#btnLimp').disabled=true;$('#btnZero').disabled=true;dirBoxes.forEach(b=>b.disabled=true);
+  measured=null;limp=false;calibKey='';resync=false;remoteBlocked=null;remotePlay=null;remotePending=false;playEndN=null;armFault=null;playUI();$('#calNote').textContent='';$('#btnLimp').disabled=true;$('#btnZero').disabled=true;dirBoxes.forEach(b=>b.disabled=true);
   for(let i=0;i<N;i++){LIM[i][0]=URDF_LIM[i][0];LIM[i][1]=URDF_LIM[i][1];}$('#btnLimp').setAttribute('aria-pressed','false');
   $('#recLimp').disabled=true;$('#recLimp').setAttribute('aria-pressed','false');
   $('#btnWs').textContent='Connect';$('#btnWs').setAttribute('aria-pressed','false');if(msg)wsNote(msg);
@@ -1080,9 +1457,9 @@ $('#btnWs').addEventListener('click',()=>{
   let toolSynced=false;
   sock.onopen=()=>{opened=true;lastSent='';$('#btnLimp').disabled=false;$('#recLimp').disabled=false;
     sock.send(JSON.stringify({type:'auth',password:pw}));storePw(pw);
-    wsNote('Connected. Waiting for servo readings before sending anything.');
+    wsNote('Connected. Waiting for servo readings before sending anything.');libAutoload();
     wsTimer=setInterval(()=>{
-      if(sock.readyState!==1||limp||resync||stopped||!$('#optSend').checked||!measured)return;
+      if(sock.readyState!==1||limp||resync||stopped||remotePlay||remotePending||!$('#optSend').checked||!measured)return;
       const msg=JSON.stringify({type:'goal',angles:anglesDeg(),speed:+spd.value,acc:+acc.value});
       if(msg!==lastSent){sock.send(msg);lastSent=msg;}
     },100);};
@@ -1097,6 +1474,15 @@ $('#btnWs').addEventListener('click',()=>{
     if(Array.isArray(m.dir))m.dir.forEach((d,i)=>{if(dirBoxes[i]){dirBoxes[i].checked=d<0;dirBoxes[i].disabled=false;}});
     $('#btnZero').disabled=false;
     remoteBlocked=m.blocked||null;
+    armFault=m.fault||null;
+    if(typeof m.stall_guard==='boolean')$('#optStall').checked=m.stall_guard;
+    if('playback' in m){ // playback running on the backend: the page follows the arm and sends nothing
+      const was=remotePlay;remotePlay=m.playback||null;
+      if(remotePlay){remotePending=false;if(!was){homeLock=true;setDemo(false);remoteStopSent=false;if(play)endPlay();}}
+      if(m.play_end){if(playEndN!==null&&m.play_end.n!==playEndN){remotePending=false;if(m.play_end.message)playNote(m.play_end.message);}playEndN=m.play_end.n;}
+      if(was&&!remotePlay&&complete)adoptMeasured();
+      playUI();
+    }
     if(typeof m.stopped==='boolean'&&m.stopped!==stopped)setStopped(m.stopped,true);
     if(!toolSynced&&typeof m.tool_mm==='number'){toolSynced=true;toolIn.value=m.tool_mm;toolLen=m.tool_mm/1000;applyTool();syncSliders();}
     // warn when calibration is missing or a zero leaves a joint short of its travel
@@ -1149,8 +1535,10 @@ function frame(){
   if(demo){demoT+=dt*0.7;setTarget(V(0.23+0.04*Math.sin(2*demoT),0.08*Math.sin(demoT),0.11+0.03*Math.sin(3*demoT)));}
   const orient=$('#optDown').checked;
   const haveReal=measured&&measured.every(v=>v!==null)&&performance.now()-measuredAt<1500;
-  if(play)playStep(dt);
-  if(limp&&haveReal){for(let i=0;i<N;i++)qIK[i]=qCmd[i]=measured[i]*DEG;fk(qIK,ikF);setTarget(ikF.tcp.clone());ikErr={pos:0,ori:0};}
+  if(play)playStep();
+  if(remotePlay&&!homeLock&&!remoteStopSent){remoteStopSent=true;playStop();playNote('Stopping playback: the target was moved.');}
+  const following=haveReal&&(limp||!!remotePlay);   // the sim mirrors the real arm
+  if(following){for(let i=0;i<N;i++)qIK[i]=qCmd[i]=measured[i]*DEG;fk(qIK,ikF);setTarget(ikF.tcp.clone());ikErr={pos:0,ori:0};}
   else if(!homeLock){
     ikErr=ikIterate(qIK,target,14,orient);
     const stuck=ikErr.pos>0.002||(orient&&ikErr.ori>2*DEG)||!!checkPose(qIK);
@@ -1163,7 +1551,7 @@ function frame(){
   }else ikErr={pos:0,ori:0};
   // only collision-free poses (and paths) reach the servos
   blocked=null;
-  if(!stopped&&!(limp&&haveReal)){
+  if(!stopped&&!following){
     const cur=servo.map(s=>s.pos);
     blocked=checkPose(qIK)||checkPath(cur,qIK);
     if(!blocked)for(let i=0;i<N;i++)qCmd[i]=qIK[i];
@@ -1173,8 +1561,8 @@ function frame(){
 
   const vmax=spd.value*DEG,amax=acc.value*DEG;let moving=false;
   for(let i=0;i<N;i++){
-    const s=servo[i],err=qCmd[i]-s.pos;
-    const vdes=Math.sign(err)*Math.min(vmax,Math.sqrt(2*amax*Math.abs(err))*0.95);
+    const s=servo[i],err=qCmd[i]-s.pos,vj=simSpeeds?simSpeeds[i]*DEG:vmax;
+    const vdes=Math.sign(err)*Math.min(vj,Math.sqrt(2*amax*Math.abs(err))*0.95);
     s.vel+=THREE.MathUtils.clamp(vdes-s.vel,-amax*dt,amax*dt);
     let step=s.vel*dt;
     if(Math.abs(step)>Math.abs(err)&&Math.sign(step)===Math.sign(err)){step=err;s.vel=0;}
@@ -1201,7 +1589,7 @@ function frame(){
   floorRing.position.set(target.x,target.y,0.0008);
 
   const st=$('#status');
-  if(stopped){st.className='status bad';$('#statusText').textContent='Stopped. Press Resume to move again';}
+  if(stopped){st.className='status bad';$('#statusText').textContent=armFault?'Stopped: '+armFault:'Stopped. Press Resume to move again';}
   else if(blocked||remoteBlocked){st.className='status bad';const why=blocked||remoteBlocked;
     $('#statusText').textContent=`Blocked: ${why}${blocked?'':' (checked by the arm)'}`;}
   else if(!reachable){st.className='status bad';$('#statusText').textContent=orient&&ikErr.pos<0.003?'Reachable, but not facing straight down':'Out of reach, holding the closest pose';}
@@ -1210,6 +1598,7 @@ function frame(){
   $('#errText').textContent=(servoF.tcp.distanceTo(target)*1000).toFixed(1)+' mm';
   updateLinkChip();
   if(rec)recSample(performance.now());
+  pathLine.visible=pathWanted&&!$('#tab-play').hidden;
   const showReal=haveReal&&$('#optReal').checked;
   realLine.visible=realDots.visible=showReal;
   if(showReal){fk(measured.map(v=>v*DEG),realF);const ra=realGeo.attributes.position.array;ra.set([0,0,0.06],0);
