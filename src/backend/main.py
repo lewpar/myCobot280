@@ -17,10 +17,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 import arm_model as model
-import recordings
+import library
+import player
 from mycobot280 import MyCobot280, SPEED_MIN, SPEED_MAX, ACCEL_MIN, ACCEL_MAX
 from ik_link import IKLink
 
@@ -75,14 +78,18 @@ link: IKLink | None = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global arm, link
+    arm = link = None
     try:
         arm = MyCobot280(SERIAL_PORT, SERIAL_BAUD)
         link = IKLink(arm)
     except Exception as e:
         print(f"WARNING: Could not open serial port {SERIAL_PORT}: {e}")
     yield
+    if link:
+        link.shutdown()
     if arm:
         arm.close()
+    arm = link = None
 
 
 app = FastAPI(title="MyCobot280 API", lifespan=lifespan)
@@ -120,15 +127,18 @@ def _get_arm() -> MyCobot280:
 
 
 def _guard_motion(new_ticks: dict[int, int]):
-    """Refuse a move while stopped or if it would collide. ``new_ticks`` maps servo id -> target."""
+    """Refuse a move while stopped, during playback, or if it would collide. ``new_ticks`` maps servo id -> target."""
     if link.stopped:
         raise HTTPException(423, "The arm is stopped. Resume it before moving.")
+    if link.player is not None:
+        raise HTTPException(409, "A recording is playing. Stop the playback first.")
     targets = [new_ticks.get(sid) for sid in model.JOINT_IDS]
     if any(sid not in model.JOINT_IDS for sid in new_ticks):
         return   # not an arm joint: nothing to check
     why = link.check_ticks(targets)
     if why:
         raise HTTPException(409, f"Move refused: {why}.")
+    link.forget_goal()   # the IK loop's last goal no longer applies (stall check)
 
 
 def _aborted():
@@ -183,14 +193,38 @@ class BrightnessRequest(BaseModel):
     percent: int = Field(ge=1, le=100)
 
 
-MAX_FRAMES = 36000   # an hour at the page's 10 samples a second
-
-
 class RecordingRequest(BaseModel):
     name: str = Field(min_length=1, max_length=60)
-    frames: list[list[float]] = Field(min_length=2, max_length=MAX_FRAMES,
+    frames: list[list[float]] = Field(min_length=2, max_length=library.MAX_FRAMES,
                                       description="[t seconds, j1..j6 degrees] per sample")
     return_zero: bool = Field(False, description="playback ends by moving to the zero pose")
+    events: list[Any] = Field([], description="LED cues: [t, 'color'|'pixel'|'brightness', [ints]]")
+
+
+class RecordingEdit(BaseModel):
+    name: str | None = Field(None, min_length=1, max_length=60)
+    return_zero: bool | None = None
+    trim: list[float] | None = Field(None, min_length=2, max_length=2, description="[start, end] seconds to keep")
+
+
+class SequenceRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+    steps: list[Any] = Field(description="[{recording: id, pause: seconds}]")
+
+
+class PoseRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+    angles: list[float] = Field(min_length=6, max_length=6)
+
+
+class PlaybackRequest(BaseModel):
+    recording: str | None = None
+    sequence: str | None = None
+    rate: float = Field(1.0, ge=0.25, le=4)
+    loop: bool = False
+    timed: bool = Field(True, description="keep the recorded timing (per-joint speeds)")
+    speed: float = Field(60, ge=1, le=150, description="deg/s for approach moves (and every move if not timed)")
+    acc: float = Field(200, ge=1, le=2000, description="deg/s²")
 
 
 # ---------------------------------------------------------------------------
@@ -302,6 +336,8 @@ def servo_move_rel(servo_id: int, req: MoveRelRequest):
 @app.post("/api/servo/{servo_id}/torque")
 def servo_torque(servo_id: int, req: TorqueRequest):
     a = _get_arm()
+    link.stop_playback("Playback stopped: torque changed.")
+    link.forget_goal()
     a.set_torque(servo_id, req.enabled)
     return {"success": True, "id": servo_id, "torque_enabled": req.enabled}
 
@@ -358,50 +394,162 @@ def atom_get_state():
 
 
 # ---------------------------------------------------------------------------
-# Recordings (stored only; the page plays them back over /ws/arm, through the usual guards)
+# Library: recordings, sequences, saved poses (library.py) and playback (player.py)
 # ---------------------------------------------------------------------------
+
+def _invalid(fn, *a):
+    try:
+        return fn(*a)
+    except library.Invalid as e:
+        raise HTTPException(422, str(e))
+
+
+def _get(store, rid, what):
+    try:
+        return store.get(rid)
+    except (KeyError, ValueError, OSError):
+        raise HTTPException(404, f"No such {what}")
+
 
 @app.get("/api/recordings")
 def list_recordings():
-    return recordings.list_all()
+    return library.RECORDINGS.list()
 
 
 @app.get("/api/recordings/{rid}")
 def get_recording(rid: str):
-    try:
-        return recordings.load(rid)
-    except (KeyError, OSError, ValueError):
-        raise HTTPException(404, "No such recording")
+    return _get(library.RECORDINGS, rid, "recording")
 
 
 @app.post("/api/recordings")
 def save_recording(req: RecordingRequest):
-    name = req.name.strip()
-    if not name:
-        raise HTTPException(422, "The recording needs a name.")
-    lims = model.URDF_LIMITS_DEG
-    t0, last = req.frames[0][0] if req.frames[0] else 0, None
-    frames = []
-    for f in req.frames:
-        if len(f) != 7 or not all(math.isfinite(v) for v in f):
-            raise HTTPException(422, "Each frame must be [t, six joint angles], all finite numbers.")
-        t = f[0] - t0
-        if last is not None and t < last:
-            raise HTTPException(422, "Frame times must not go backwards.")
-        if any(not lims[j][0] - 1 <= a <= lims[j][1] + 1 for j, a in enumerate(f[1:])):
-            raise HTTPException(422, "A frame has a joint angle outside the arm's limits.")
-        last = t
-        frames.append([round(t, 3)] + [round(a, 2) for a in f[1:]])
-    return recordings.save(name, frames, req.return_zero)
+    name = _invalid(library.clean_name, req.name)
+    t0 = req.frames[0][0] if req.frames and req.frames[0] else 0.0
+    frames = _invalid(library.clean_frames, req.frames)
+    events = _invalid(library.clean_events, req.events, t0)
+    return library.RECORDINGS.create({"name": name, "return_zero": req.return_zero,
+                                      "frames": frames, "events": events})
+
+
+@app.patch("/api/recordings/{rid}")
+def edit_recording(rid: str, req: RecordingEdit):
+    """Rename, change return-to-zero, or trim to [start, end] seconds."""
+    _get(library.RECORDINGS, rid, "recording")
+    name = _invalid(library.clean_name, req.name) if req.name is not None else None
+
+    def change(rec):
+        if name is not None:
+            rec["name"] = name
+        if req.return_zero is not None:
+            rec["return_zero"] = req.return_zero
+        if req.trim is not None:
+            library.trim(rec, *req.trim)
+    try:
+        return library.RECORDINGS.update(rid, change)
+    except library.Invalid as e:
+        raise HTTPException(422, str(e))
 
 
 @app.delete("/api/recordings/{rid}")
 def delete_recording(rid: str):
-    try:
-        recordings.delete(rid)
-    except (KeyError, OSError):
-        raise HTTPException(404, "No such recording")
+    _get(library.RECORDINGS, rid, "recording")
+    users = [s["name"] for s in library.SEQUENCES.list() if any(st["recording"] == rid for st in s["steps"])]
+    if users:
+        raise HTTPException(409, f"Used by the sequence{'s' if len(users) > 1 else ''} "
+                                 f"{', '.join(repr(u) for u in users)}. Remove it there first.")
+    library.RECORDINGS.delete(rid)
     return {"success": True}
+
+
+@app.get("/api/sequences")
+def list_sequences():
+    return library.SEQUENCES.list()
+
+
+@app.get("/api/sequences/{sid}")
+def get_sequence(sid: str):
+    return _get(library.SEQUENCES, sid, "sequence")
+
+
+@app.post("/api/sequences")
+def save_sequence(req: SequenceRequest):
+    return library.SEQUENCES.create({"name": _invalid(library.clean_name, req.name),
+                                     "steps": _invalid(library.clean_steps, req.steps)})
+
+
+@app.put("/api/sequences/{sid}")
+def update_sequence(sid: str, req: SequenceRequest):
+    _get(library.SEQUENCES, sid, "sequence")
+    name, steps = _invalid(library.clean_name, req.name), _invalid(library.clean_steps, req.steps)
+    return library.SEQUENCES.update(sid, lambda s: s.update(name=name, steps=steps))
+
+
+@app.delete("/api/sequences/{sid}")
+def delete_sequence(sid: str):
+    _get(library.SEQUENCES, sid, "sequence")
+    library.SEQUENCES.delete(sid)
+    return {"success": True}
+
+
+@app.get("/api/poses")
+def list_poses():
+    return library.POSES.list()
+
+
+@app.post("/api/poses")
+def save_pose(req: PoseRequest):
+    return library.POSES.create({"name": _invalid(library.clean_name, req.name),
+                                 "angles": _invalid(library.clean_angles, req.angles)})
+
+
+@app.delete("/api/poses/{pid}")
+def delete_pose(pid: str):
+    _get(library.POSES, pid, "pose")
+    library.POSES.delete(pid)
+    return {"success": True}
+
+
+@app.post("/api/playback")
+def start_playback(req: PlaybackRequest):
+    """Play a recording or a sequence on the arm. The whole path is collision-checked first (409),
+    then every goal goes through the IK link's usual checks. Runs with no page connected."""
+    _get_arm()
+    if (req.recording is None) == (req.sequence is None):
+        raise HTTPException(422, "Give either a recording or a sequence.")
+    if link.stopped:
+        raise HTTPException(423, "The arm is stopped. Resume it before playing.")
+    if req.recording is not None:
+        r = _get(library.RECORDINGS, req.recording, "recording")
+        name, steps = r["name"], [{**r, "pause": 0}]
+    else:
+        seq = _get(library.SEQUENCES, req.sequence, "sequence")
+        name, steps = seq["name"], []
+        for st in seq["steps"]:
+            r = _get(library.RECORDINGS, st["recording"], "recording (a step of this sequence was deleted)")
+            steps.append({**r, "pause": st["pause"]})
+    why = player.check_steps(steps, link.tool_m)
+    if why:
+        raise HTTPException(409, f"Playback refused: {why}.")
+    pb = player.Playback(name, steps, time.monotonic(), rate=req.rate, loop=req.loop, timed=req.timed,
+                         speed=req.speed, acc=req.acc)
+    try:
+        link.start_playback(pb)
+    except RuntimeError:
+        raise HTTPException(423, "The arm is stopped. Resume it before playing.")
+    return {"success": True, "playback": pb.status()}
+
+
+@app.post("/api/playback/stop")
+def stop_playback():
+    _get_arm()
+    link.stop_playback()
+    return {"success": True}
+
+
+@app.get("/api/playback")
+def playback_state():
+    return {"playback": link.playback_status() if link else None,
+            "last": dict(link.play_end) if link else None}
 
 
 # ---------------------------------------------------------------------------
@@ -451,6 +599,8 @@ def center_all_servos():
 @app.post("/api/servos/torque_all")
 def torque_all_servos(req: TorqueRequest):
     a = _get_arm()
+    link.stop_playback("Playback stopped: torque changed.")
+    link.forget_goal()
     a.sync_torque(sorted(a.servo_ids), req.enabled)
     return {"success": True, "enabled": req.enabled}
 

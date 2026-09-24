@@ -530,11 +530,13 @@ class MyCobot280:
                 out.append(self._bus._read_s16(sid, _ADDR_PRESENT_POSITION))
         return out
 
-    def sync_move(self, targets: dict[int, int], speed: int = 600, accel: int = 20):
+    def sync_move(self, targets: dict[int, int], speed: int | dict[int, int] = 600, accel: int = 20):
         """Send goal position + speed + accel to several servos in ONE sync-write packet.
-        Non-blocking (doesn't wait for arrival); every target is clamped to the safe limits."""
+        ``speed`` is one value for all, or {id: speed}. Non-blocking (doesn't wait for arrival);
+        every target is clamped to the safe limits."""
         with self._bus._lock:
-            block = {sid: self._bus._motion_block(self._bus._clamp(sid, t), speed, accel)
+            block = {sid: self._bus._motion_block(self._bus._clamp(sid, t),
+                                                  speed[sid] if isinstance(speed, dict) else speed, accel)
                      for sid, t in targets.items()}
             self._bus._sync_write(_ADDR_ACCELERATION, block)
 
