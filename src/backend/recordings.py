@@ -1,7 +1,7 @@
 """Saved arm recordings: named joint-angle timelines captured by the simulator page.
 
 One JSON file per recording in ``recordings/`` at the repo root (per-machine, gitignored):
-    {"id": "3f9a0c1b2d4e", "name": "Wave", "created": 1727140000.0,
+    {"id": "3f9a0c1b2d4e", "name": "Wave", "created": 1727140000.0, "return_zero": false,
      "frames": [[t_seconds, j1, j2, j3, j4, j5, j6], ...]}     angles in degrees, URDF convention
 
 The page records and plays back; playback streams goals over /ws/arm, so every pose still goes
@@ -30,6 +30,7 @@ def _path(rid):
 def _summary(rec):
     frames = rec["frames"]
     return {"id": rec["id"], "name": rec["name"], "created": rec["created"],
+            "return_zero": bool(rec.get("return_zero")),
             "duration": round(frames[-1][0] - frames[0][0], 2) if frames else 0, "frames": len(frames)}
 
 
@@ -51,8 +52,10 @@ def load(rid):
         return json.load(f)
 
 
-def save(name, frames):
-    rec = {"id": secrets.token_hex(6), "name": name, "created": time.time(), "frames": frames}
+def save(name, frames, return_zero=False):
+    """``return_zero``: playback ends by moving the arm to the zero pose."""
+    rec = {"id": secrets.token_hex(6), "name": name, "created": time.time(), "return_zero": return_zero,
+           "frames": frames}
     with _lock:
         os.makedirs(DIR, exist_ok=True)
         tmp = _path(rec["id"]) + ".tmp"

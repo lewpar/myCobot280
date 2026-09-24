@@ -353,6 +353,7 @@ button.rec[aria-pressed="true"] .recdot{background:#fff;border-radius:2px;animat
       <div id="recSave" hidden>
         <label class="field-label" for="recName">Name this recording</label>
         <div class="input-row"><input type="text" id="recName" maxlength="60" placeholder="e.g. Wave hello" spellcheck="false"><button id="recSaveBtn" class="primary">Save</button><button id="recDiscard">Discard</button></div>
+        <label class="chk"><input type="checkbox" id="recZero"> Return to the zero pose after playing</label>
       </div>
       <p class="callout" id="recNote"></p>
     </div>
@@ -364,7 +365,7 @@ button.rec[aria-pressed="true"] .recdot{background:#fff;border-radius:2px;animat
       <div class="row seg"><button id="recPlay" class="primary" disabled>Play</button><button id="recDel" disabled>Delete</button></div>
       <label class="chk"><input type="checkbox" id="recLoop"> Loop</label>
       <div class="slider"><span>Playback speed</span><input type="range" id="recRate" min="25" max="200" step="25" value="100"><output id="recRatev">1×</output></div>
-      <p class="note">Playback first moves to the recording's start pose, then follows it using Max speed and Acceleration from Motion (raise them if the arm lags behind). Every pose is collision-checked; Stop or Esc ends playback, and so does moving the target.</p>
+      <p class="note">Recordings marked → 0 return to the zero pose (arm straight up) when they finish. Playback first moves to the recording's start pose, then follows it using Max speed and Acceleration from Motion (raise them if the arm lags behind). Every pose is collision-checked; Stop or Esc ends playback, and so does moving the target.</p>
     </div>
   </section>
 
@@ -936,7 +937,7 @@ async function recSave(){
   if(!name){recNote('Type a name for the recording first.');$('#recName').focus();return;}
   $('#recSaveBtn').disabled=true;
   try{
-    const r=await api('POST','/recordings',{name,frames:take});
+    const r=await api('POST','/recordings',{name,frames:take,return_zero:$('#recZero').checked});
     recCache[r.id]=take;take=null;$('#recSave').hidden=true;recNote(`Saved "${r.name}".`);
     await recRefresh(r.id);
   }catch(e){recNote(e.message+' The recording is kept here; try saving again.');}
@@ -955,8 +956,8 @@ function recRender(){
     const b=document.createElement('button');b.type='button';b.setAttribute('role','option');b.setAttribute('aria-selected',r.id===recSel);
     const n=document.createElement('span');n.className='n';n.textContent=r.name;
     const d=document.createElement('span');d.className='d';
-    d.textContent=`${fmtDur(r.duration)} · ${new Date(r.created*1000).toLocaleDateString(undefined,{day:'numeric',month:'short'})}`;
-    b.append(n,d);b.title=r.name;
+    d.textContent=`${r.return_zero?'→ 0 · ':''}${fmtDur(r.duration)} · ${new Date(r.created*1000).toLocaleDateString(undefined,{day:'numeric',month:'short'})}`;
+    b.append(n,d);b.title=r.name+(r.return_zero?' (returns to the zero pose)':'');
     b.addEventListener('click',()=>{if(play)return;recSel=r.id;recRender();});
     b.addEventListener('dblclick',()=>{if(!play){recSel=r.id;recRender();playStart();}});
     box.appendChild(b);
@@ -982,7 +983,8 @@ async function playStart(){
   if(play||rec||stopped)return;   // something changed while it loaded
   if(limp)setLimp(false);
   setDemo(false);homeLock=true;
-  play={frames:f,phase:'approach',t:0,i:0,arrived:0};
+  const item=recItems.find(x=>x.id===recSel);
+  play={frames:f,phase:'approach',t:0,i:0,arrived:0,zero:!!(item&&item.return_zero)};
   recNote('Moving to the start pose…');recUI();
 }
 function endPlay(msg){
@@ -1002,9 +1004,13 @@ function playPose(t){ // linear interpolation between samples, into qIK
 function playStep(dt){
   if(!homeLock){endPlay('Playback stopped: the target was moved.');return;}
   const f=play.frames,end=f[f.length-1][0];
-  if(play.phase==='approach'){
+  const arrived=()=>servo.every((s,j)=>Math.abs(s.pos-qIK[j])<0.5*DEG);
+  if(play.phase==='zero'){
+    for(let j=0;j<N;j++)qIK[j]=THREE.MathUtils.clamp(0,LIM[j][0],LIM[j][1]);
+    if(arrived())play.done=true;
+  }else if(play.phase==='approach'){
     playPose(0);
-    const simThere=servo.every((s,j)=>Math.abs(s.pos-qIK[j])<0.5*DEG);
+    const simThere=arrived();
     const realThere=!haveRealNow()||measured.every((v,j)=>Math.abs(v*DEG-qIK[j])<2*DEG);
     if(simThere&&!play.arrived)play.arrived=performance.now();
     // the real arm may settle a little off the goal: don't wait for it forever
@@ -1014,11 +1020,12 @@ function playStep(dt){
     if(play.t>=end){
       playPose(end);
       if($('#recLoop').checked){play.phase='approach';play.arrived=0;play.t=0;}
-      else{fk(qIK,ikF);setTarget(ikF.tcp.clone());play.done=true;}
+      else if(play.zero){play.phase='zero';recNote('Returning to the zero pose…');}
+      else play.done=true;
     }else playPose(play.t);
     $('#recProg').style.width=(Math.min(1,play.t/Math.max(end,1e-3))*100).toFixed(1)+'%';
   }
-  if(!play.done){fk(qIK,ikF);setTarget(ikF.tcp.clone());}
+  fk(qIK,ikF);setTarget(ikF.tcp.clone());
 }
 $('#recBtn').addEventListener('click',()=>rec?recStop():recStart());
 $('#recLimp').addEventListener('click',()=>setLimp(!limp));

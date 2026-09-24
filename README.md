@@ -262,7 +262,8 @@ joint has lost.
 
 The **Record** tab captures a motion and plays it back. Press **Record**, move the arm (turn on
 **Hand-guide mode** from the same tab to move it by hand, or drive it from Motion), then press
-**Stop recording**, name it and **Save**. While connected it records the arm's measured pose
+**Stop recording**, name it and **Save**. Tick **Return to the zero pose after playing** to have
+playback end by moving the arm straight up to the zero pose (marked → 0 in the list). While connected it records the arm's measured pose
 10 times a second; offline it records the simulated arm. Still time at either end is trimmed.
 
 Pick a saved recording and press **Play** (or double-click it). The arm first moves to the recording's

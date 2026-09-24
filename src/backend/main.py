@@ -190,6 +190,7 @@ class RecordingRequest(BaseModel):
     name: str = Field(min_length=1, max_length=60)
     frames: list[list[float]] = Field(min_length=2, max_length=MAX_FRAMES,
                                       description="[t seconds, j1..j6 degrees] per sample")
+    return_zero: bool = Field(False, description="playback ends by moving to the zero pose")
 
 
 # ---------------------------------------------------------------------------
@@ -391,7 +392,7 @@ def save_recording(req: RecordingRequest):
             raise HTTPException(422, "A frame has a joint angle outside the arm's limits.")
         last = t
         frames.append([round(t, 3)] + [round(a, 2) for a in f[1:]])
-    return recordings.save(name, frames)
+    return recordings.save(name, frames, req.return_zero)
 
 
 @app.delete("/api/recordings/{rid}")

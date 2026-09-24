@@ -113,7 +113,8 @@ It's deliberately conservative and approximate; it is not a substitute for watch
   frames, trims still ends, saves via `/api/recordings`. Playback sets `homeLock` and writes interpolated
   frames into **qIK** each frame (after an approach to frame 0), so the normal collision check → qCmd → WS
   goal path applies. It ends on Stop, hand-guide, a blocked pose, a calibration resync, or when
-  `homeLock` is cleared (the user moved the target).
+  `homeLock` is cleared (the user moved the target). Recordings saved with `return_zero` get a final `zero` phase
+  (qIK = 0, clamped to limits) after the last frame, unless looping.
 - The page auto-fills `ws://<host>/ws/arm` when served from `/sim`. It stores the password in
   sessionStorage (localStorage only if "remember" is ticked).
 - A copy was also published as a claude.ai artifact; **the repo file is the source of truth**.
@@ -128,7 +129,7 @@ tool_mm, limits[6][lo,hi]}`, or `error {code: auth|locked|no_arm, message}`.
 **REST** (all under `/api`, all need the header): `auth`, `health`, `safety`, `stop`, `resume`,
 `servos[?rescan=true]`, `servos/status`, `servos/home` (GET/POST), `servos/center_all`,
 `servos/torque_all`, `servo/{id}` and `/move`, `/move_rel`, `/center`, `/torque`, `/ping`,
-`atom/{color,pixel,brightness,ping,state}`, `recordings` (GET list / POST `{name, frames}`),
+`atom/{color,pixel,brightness,ping,state}`, `recordings` (GET list / POST `{name, frames, return_zero}`),
 `recordings/{id}` (GET/DELETE). Refusals: 409 collision, 423 stopped, 422 bad values.
 ATOM writes return `acked` (false = no reply; the flashed firmware may predate the reply-on-write parser).
 
