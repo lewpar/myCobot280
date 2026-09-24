@@ -15,11 +15,12 @@ Messages from the page (after the auth message, which main.py handles):
     {"type": "stop"} / {"type": "resume"}
     {"type": "set_zero"}                       current pose becomes the kinematic zero
     {"type": "set_dir", "joint": 0-5, "dir": 1|-1}
-    {"type": "set_tool", "mm": 0-150}
+    {"type": "set_tool", "attachment": "none"|"vacuum"|"custom", "mm": 0-150, "d_mm": 1-60}
+                                               (mm/d_mm only matter for "custom")
     {"type": "set_stall_guard", "on": true|false}
 Message to the page:
     {"type": "state", "angles": [deg|null x6], "torque": bool, "stopped": bool, "blocked": str|null,
-     "calibrated": bool, "zero": [...], "dir": [...], "tool_mm": n, "limits": [[lo, hi] deg x6],
+     "calibrated": bool, "zero": [...], "dir": [...], "tool_mm": n, "tool_d_mm": n, "attachment": id, "limits": [[lo, hi] deg x6],
      "fault": str|null, "stall_guard": bool, "playback": {...}|null, "play_end": {"n", "message"}}
 Goals from the page are ignored while a playback runs.
 """
@@ -70,6 +71,10 @@ class IKLink:
     @property
     def tool_m(self):
         return self.calib["tool_mm"] / 1000
+
+    @property
+    def tool_r(self):
+        return self.calib["tool_d_mm"] / 2000
 
     def check_ticks(self, new_ticks):
         """Collision check for a raw-tick move from the current pose. None if clear."""
@@ -231,9 +236,15 @@ class IKLink:
                     self._calib_changed = time.monotonic()
                     model.save_calibration(self.calib)
             elif t == "set_tool":
-                mm = msg.get("mm")
-                if isinstance(mm, (int, float)) and 0 <= mm <= 150:
-                    self.calib["tool_mm"] = float(mm)
+                att = msg.get("attachment", self.calib["attachment"])
+                spec = model.ATTACHMENTS.get(att)
+                mm, d = msg.get("mm", self.calib["tool_mm"]), msg.get("d_mm", self.calib["tool_d_mm"])
+                if spec and spec["length_mm"] is not None:     # a known attachment: its own size
+                    mm, d = spec["length_mm"], spec["diameter_mm"] or model.TOOL_R_DEFAULT * 2000
+                ok = lambda v, lo, hi: isinstance(v, (int, float)) and not isinstance(v, bool) and lo <= v <= hi
+                if spec and ok(mm, 0, 150) and ok(d, 1, 60):
+                    self.calib.update(attachment=att, tool_mm=float(mm), tool_d_mm=float(d))
+                    self._pending_goal = None
                     model.save_calibration(self.calib)
             elif t == "set_stall_guard":
                 self.stall_guard = bool(msg.get("on"))
@@ -255,6 +266,8 @@ class IKLink:
             "zero": list(c["zero"]),
             "dir": list(c["dir"]),
             "tool_mm": c["tool_mm"],
+            "tool_d_mm": c["tool_d_mm"],
+            "attachment": c["attachment"],
             "limits": self.limits_deg(),
             "fault": fault,
             "stall_guard": guard,
@@ -295,7 +308,7 @@ class IKLink:
         """Collision-check the move from the current pose and send it. Returns the reason if refused."""
         angles, dps, dps2 = goal
         current = model.pose_from_ticks(self.calib, self.ticks)
-        why = model.check_path(current, angles, self.tool_m)
+        why = model.check_path(current, angles, self.tool_m, tool_r=self.tool_r)
         with self._lock:
             self.blocked = why
         if why:

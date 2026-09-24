@@ -188,6 +188,19 @@ const input = (s, v) => { $(s).value = v; $(s).dispatchEvent(new w.Event('input'
   await sleep(800);
   check(Math.abs(parseFloat(w.document.querySelector('.joint .val').textContent) - (j1 + 5)) < 0.6, 'jog J1 +5°');
 
+  // 10b. attachments: pick the vacuum tool; the target becomes its tip and the list shows it chosen
+  click('#tabbtn-attach');
+  const att = name => [...$('#attList').children].find(b => b.textContent.startsWith(name));
+  check($('#attList').children.length === 3, 'three attachments listed');
+  click(att('Vacuum suction'));
+  check(att('Vacuum suction').getAttribute('aria-checked') === 'true' && /80 mm/.test(txt('#attMeta')), 'vacuum selected', txt('#attMeta'));
+  check($('#attCustom').hidden, 'custom sliders hidden for a known attachment');
+  $('#optEnvelope').checked = true; $('#optEnvelope').dispatchEvent(new w.Event('change'));
+  click(att('Custom'));
+  input('#tool', 40); input('#toolD', 30);
+  check(!$('#attCustom').hidden && /40 × ⌀30/.test(txt('#attList')), 'custom size', txt('#attList'));
+  click(att('Vacuum suction'));
+
   // 11. connected: playback runs on the backend and the page sends no goals meanwhile
   click('#btnWs');
   await until(() => txt('#linkText').includes('live'));
@@ -204,6 +217,12 @@ const input = (s, v) => { $(s).value = v; $(s).dispatchEvent(new w.Event('input'
   await until(() => txt('#playNote') === 'Playback finished.', 5000);
   check(txt('#playNote') === 'Playback finished.', 'backend playback end reported', txt('#playNote'));
   check(!wsSent.some(m => m.type === 'goal'), 'no goals streamed during backend playback', JSON.stringify(wsSent.slice(0, 3)));
+
+  // 11b. the backend's saved attachment wins on connect; picking one tells the backend
+  click('#tabbtn-attach');
+  click([...$('#attList').children].find(b => b.textContent.startsWith('Vacuum suction')));
+  await until(() => wsSent.some(m => m.type === 'set_tool'), 2000);
+  check(wsSent.some(m => m.type === 'set_tool' && m.attachment === 'vacuum'), 'set_tool sent', JSON.stringify(wsSent.filter(m => m.type === 'set_tool')));
 
   // 12. stall guard toggle and fault display
   $('#optStall').checked = false; $('#optStall').dispatchEvent(new w.Event('change'));

@@ -100,8 +100,8 @@ button.stop[aria-pressed="true"]{background:var(--good);border-color:var(--good)
 /* ---------- Inspector ---------- */
 .inspector{grid-area:side;display:flex;flex-direction:column;min-height:0;background:var(--surface);border-left:1px solid var(--border)}
 .tabs{display:flex;align-items:stretch;gap:2px;padding:0 8px;border-bottom:1px solid var(--border);flex:none}
-.tab{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;padding:10px 4px 9px;border:0;border-bottom:2px solid transparent;
-  background:transparent;color:var(--muted);font:inherit;font-size:12px;font-weight:500;cursor:pointer;margin-bottom:-1px}
+.tab{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;align-items:center;gap:3px;padding:10px 2px 9px;border:0;border-bottom:2px solid transparent;
+  background:transparent;color:var(--muted);font:inherit;font-size:11.5px;font-weight:500;cursor:pointer;margin-bottom:-1px;white-space:nowrap}
 .tab svg{opacity:.85}
 .tab:hover{color:var(--text)}
 .tab[aria-selected="true"]{color:var(--text);border-bottom-color:var(--amber)}
@@ -221,7 +221,7 @@ select{font:12.5px var(--mono);background:var(--code);color:var(--text);border:1
   .inspector{border-left:0;border-top:1px solid var(--border);height:48vh}
   .inspector.collapsed{height:auto}.inspector.collapsed .scroll{display:none}
   #toggle{display:grid}
-  .tab{font-size:11px}
+  .tab{font-size:10.5px}
 }
 </style>
 </head>
@@ -271,6 +271,8 @@ select{font:12.5px var(--mono);background:var(--code);color:var(--text);border:1
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 7V3M15 7V3M7 7h10v4a5 5 0 0 1-10 0zM12 16v5"/></svg>Robot</button>
     <button class="tab" role="tab" id="tabbtn-atom" aria-controls="tab-atom" aria-selected="false">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="4" y="4" width="4" height="4" rx="1"/><rect x="10" y="4" width="4" height="4" rx="1"/><rect x="16" y="4" width="4" height="4" rx="1"/><rect x="4" y="10" width="4" height="4" rx="1"/><rect x="10" y="10" width="4" height="4" rx="1" opacity=".4"/><rect x="16" y="10" width="4" height="4" rx="1"/><rect x="4" y="16" width="4" height="4" rx="1"/><rect x="10" y="16" width="4" height="4" rx="1"/><rect x="16" y="16" width="4" height="4" rx="1"/></svg>ATOM</button>
+    <button class="tab" role="tab" id="tabbtn-attach" aria-controls="tab-attach" aria-selected="false">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M7 3h10M9 3v4h6V3M10 7v9h4V7M9 16h6l-1 3h-4z" stroke-linejoin="round"/></svg>Attachments</button>
     <button class="tab" role="tab" id="tabbtn-record" aria-controls="tab-record" aria-selected="false">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.5" fill="currentColor" stroke="none"/></svg>Record</button>
     <button class="tab" role="tab" id="tabbtn-play" aria-controls="tab-play" aria-selected="false">
@@ -297,7 +299,6 @@ select{font:12.5px var(--mono);background:var(--code);color:var(--text);border:1
       <label class="chk"><input type="checkbox" id="optDown" checked> Keep the flange facing down</label>
       <label class="chk"><input type="checkbox" id="optGhost" checked> Show the solved pose ahead of the servos</label>
       <label class="chk"><input type="checkbox" id="optTrail" checked> Draw the tool path</label>
-      <div class="slider"><span>Tool length past the flange</span><input type="range" id="tool" min="0" max="150" value="0"><output id="toolv"></output></div>
     </div>
     <div class="card">
       <div class="card-head"><h2>Motion profile</h2><span class="meta">sim &amp; arm</span></div>
@@ -374,6 +375,23 @@ select{font:12.5px var(--mono);background:var(--code);color:var(--text);border:1
       <div class="slider"><span>Brightness</span><input type="range" id="atomBri" min="1" max="100" value="100"><output id="atomBriv">100%</output></div>
       <p class="callout" id="atomNote"></p>
       <p class="note">Click or drag across the grid to paint. Uses the address and password from Robot; the arm link doesn't need to be connected.</p>
+    </div>
+  </section>
+
+  <section class="tabpanel" id="tab-attach" role="tabpanel" aria-labelledby="tabbtn-attach" hidden>
+    <div class="card">
+      <div class="card-head"><h2>Attachment</h2><span class="meta" id="attMeta"></span></div>
+      <div id="attList" class="reclist" role="radiogroup" aria-label="Attachment on the flange"></div>
+      <div id="attCustom" hidden>
+        <div class="slider"><span>Length past the flange</span><input type="range" id="tool" min="0" max="150" value="0"><output id="toolv"></output></div>
+        <div class="slider"><span>Diameter</span><input type="range" id="toolD" min="5" max="60" value="20"><output id="toolDv"></output></div>
+      </div>
+      <p class="callout" id="attNote"></p>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>Collision</h2></div>
+      <label class="chk"><input type="checkbox" id="optEnvelope"> Show the collision envelope</label>
+      <p class="note">The attachment is checked as a cylinder of its size along the flange axis: against the table (only its tip may come close), the base and shoulder, and the upper arm and forearm, so the wrist can't fold it back into the arm. Solving, the Motion target and playback all use it, and so does the backend once connected. The target becomes the attachment's tip.</p>
     </div>
   </section>
 
@@ -472,7 +490,15 @@ const N=JOINTS.length;
 const FIX=JOINTS.map(j=>{const m=new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(j.rpy[0],j.rpy[1],j.rpy[2],'ZYX'));m.setPosition(j.xyz[0],j.xyz[1],j.xyz[2]);return m;});
 const URDF_LIM=JOINTS.map(j=>[j.min,j.max]);
 const LIM=URDF_LIM.map(l=>l.slice());   // narrowed to the servos' own safe range once connected
-let toolLen=0;   // metres along the flange normal (flange local +Z)
+let toolLen=0;   // attachment length in metres, along the flange normal (flange local +Z); the TCP is its tip
+let toolR=0.01;  // attachment radius in metres (collision model)
+/* Attachments: keep in sync with ATTACHMENTS in arm_model.py. Sizes in mm; custom takes the sliders. */
+const ATTACHMENTS={
+  none:{name:'No attachment',length:0,diameter:0,note:'Bare flange. The target is the flange centre.'},
+  vacuum:{name:'Vacuum suction',length:80,diameter:25,note:'25 mm tube, 80 mm from the flange to the suction cup. The target is the cup; keep "flange facing down" on to pick things up.'},
+  custom:{name:'Custom',length:null,diameter:null,note:'A straight tool along the flange axis. Set its length and diameter.'},
+};
+let attachment='none';
 
 function makeFK(){return{pos:FIX.map(()=>new THREE.Vector3()),axis:FIX.map(()=>new THREE.Vector3()),tcp:new THREE.Vector3(),dir:new THREE.Vector3()};}
 const _T=new THREE.Matrix4(),_R=new THREE.Matrix4(),_Z=new THREE.Vector3(0,0,1);
@@ -562,7 +588,8 @@ function ikRescue(qCur,target,orient){
 }
 
 /* ---------- Collision model: keep in sync with arm_model.py (metres) ---------- */
-const COLLISION={FLOOR_MARGIN:0.005,TCP_MIN_Z:0.003,BASE_R:0.075,BASE_TOP:0.12,COLUMN_R:0.05,COLUMN_TOP:0.19,WRIST_TO_UPPER_ARM:0.05};
+const COLLISION={FLOOR_MARGIN:0.005,TCP_MIN_Z:0.003,BASE_R:0.075,BASE_TOP:0.12,COLUMN_R:0.05,COLUMN_TOP:0.19,WRIST_TO_UPPER_ARM:0.05,
+  TOOL_STEP:0.015,UPPER_ARM_R:0.03,FOREARM_R:0.028};
 const colF=makeFK(),_fl=new THREE.Vector3(),_sd=new THREE.Vector3(),_sd2=new THREE.Vector3();
 function segDist(p,a,b){
   _sd.subVectors(b,a);const L=_sd.lengthSq();
@@ -575,7 +602,12 @@ function checkPose(q){ // q in radians; null if clear, otherwise a reason
   _fl.copy(colF.tcp).addScaledVector(colF.dir,-toolLen);
   const body=[['the elbow (J3)',j[2],0.03,0.03,false],['the forearm',j[2].clone().lerp(j[3],0.5),0.028,0.028,false],
     ['J4',j[3],0.026,0.026,false],['the wrist (J5)',j[4],0.024,0.024,true],['J6',j[5],0.022,0.022,true],['the flange',_fl,0,0.02,true]];
-  if(toolLen>0.002)body.push(['the tool',_fl.clone().lerp(colF.tcp,0.5),0,0.01,true]);
+  // the attachment: a cylinder along the flange normal, sampled every TOOL_STEP; its lowest point is its full
+  // radius when level and nothing when vertical
+  const tool=[],tf=toolR*Math.sqrt(Math.max(0,1-colF.dir.z*colF.dir.z));
+  if(toolLen>0.002){const n=Math.max(2,Math.ceil(toolLen/C.TOOL_STEP));
+    for(let i=1;i<=n;i++)tool.push(_fl.clone().lerp(colF.tcp,i/n));
+    tool.slice(0,-1).forEach(p=>body.push(['the attachment',p,tf,toolR,true]));}
   for(const [name,p,rf,rs,wrist] of body){
     if(p.z-rf<C.FLOOR_MARGIN)return `${name} would hit the table`;
     const rad=Math.hypot(p.x,p.y);
@@ -583,6 +615,11 @@ function checkPose(q){ // q in radians; null if clear, otherwise a reason
     if(wrist&&rad<C.COLUMN_R+rs&&p.z-rs<C.COLUMN_TOP)return `${name} would hit the shoulder`;
     if(wrist&&segDist(p,j[1],j[2])<C.WRIST_TO_UPPER_ARM)return `${name} would hit the upper arm`;
   }
+  for(const p of tool){ // the attachment folding back into the arm's own links
+    if(segDist(p,j[1],j[2])<C.UPPER_ARM_R+toolR)return 'the attachment would hit the upper arm';
+    if(segDist(p,j[2],j[3])<C.FOREARM_R+toolR)return 'the attachment would hit the forearm';
+  }
+  if(tool.length&&colF.tcp.z-tf<C.TCP_MIN_Z)return 'the attachment\'s tip would go below the table';
   if(colF.tcp.z<C.TCP_MIN_Z)return 'the tool tip would go below the table';
   return null;
 }
@@ -732,10 +769,32 @@ const holeG=new THREE.CylinderGeometry(0.0024,0.0024,0.0003,20);
 for(const hx of [-0.008,0,0.008])for(const hy of [-0.008,0,0.008]){
   const h=new THREE.Mesh(holeG,holeMat);h.rotation.x=Math.PI/2;h.position.set(hx,hy,0.0001);flangeG.add(h);}
 const mark=new THREE.Mesh(new THREE.BoxGeometry(0.003,0.004,0.001),holeMat);mark.position.set(0,0.0155,0.0003);flangeG.add(mark); // shows J6 rotation
-const toolStub=new THREE.Mesh(new THREE.CylinderGeometry(0.006,0.004,1,20),graphite);toolStub.rotation.x=Math.PI/2;flangeG.add(toolStub);
+const toolStub=new THREE.Mesh(new THREE.CylinderGeometry(1,1,1,24),graphite);toolStub.rotation.x=Math.PI/2;flangeG.add(toolStub);  // custom tool
+// vacuum suction attachment, built along +Z from the flange face: mount plate, 25 mm body, hose barb, suction cup
+const vacuumG=new THREE.Group();flangeG.add(vacuumG);
+{const rubber=new THREE.MeshStandardMaterial({color:0x202226,roughness:0.85});
+ const body=new THREE.MeshStandardMaterial({color:0x5b6470,roughness:0.35,metalness:0.55});
+ const add=(geo,mat,z,rot=true)=>{const m=new THREE.Mesh(geo,mat);if(rot)m.rotation.x=Math.PI/2;m.position.z=z;vacuumG.add(m);return m;};
+ add(new THREE.CylinderGeometry(0.0165,0.0165,0.004,40),graphite,0.002);             // mount plate on the peg holes
+ add(new THREE.CylinderGeometry(0.0125,0.0125,0.058,40),body,0.004+0.029);           // body, 25 mm
+ add(new THREE.CylinderGeometry(0.0132,0.0132,0.003,40),graphite,0.02);              // knurled collar
+ add(new THREE.CylinderGeometry(0.0085,0.006,0.006,32),body,0.065);                  // neck
+ const barb=add(new THREE.CylinderGeometry(0.003,0.003,0.014,16),graphite,0.03,false);barb.rotation.z=Math.PI/2;barb.position.x=0.018;  // hose barb
+ add(new THREE.CylinderGeometry(0.0125,0.0065,0.012,40,1,true),rubber,0.074);        // suction cup, open at the tip
+ const lip=add(new THREE.TorusGeometry(0.0122,0.0009,8,40),rubber,0.0795,false);}
+// translucent envelope the collision check uses for the attachment
+const envelope=new THREE.Mesh(new THREE.CylinderGeometry(1,1,1,32,1,true),new THREE.MeshBasicMaterial({color:0x8b5cf6,transparent:true,opacity:0.18,depthWrite:false,side:THREE.DoubleSide}));
+envelope.rotation.x=Math.PI/2;envelope.visible=false;flangeG.add(envelope);
 shade(flangeG);
 const tcpDot=new THREE.Mesh(new THREE.SphereGeometry(0.004,16,12),new THREE.MeshBasicMaterial({color:0xff5a36}));flangeG.add(tcpDot);
-function applyTool(){toolStub.visible=toolLen>0.002;toolStub.scale.y=Math.max(toolLen,0.001);toolStub.position.z=toolLen/2;tcpDot.position.z=toolLen;}
+function applyTool(){
+  const custom=attachment==='custom'&&toolLen>0.002;
+  toolStub.visible=custom;toolStub.scale.set(toolR,Math.max(toolLen,0.001),toolR);toolStub.position.z=toolLen/2;
+  vacuumG.visible=attachment==='vacuum';
+  envelope.scale.set(toolR,Math.max(toolLen,0.001),toolR);envelope.position.z=toolLen/2;
+  envelope.visible=toolLen>0.002&&$('#optEnvelope').checked;
+  tcpDot.position.z=toolLen;
+}
 
 /* ---------- Target, ghost, trail (all in the base frame) ---------- */
 const target=new THREE.Vector3(0.16,-0.06,0.12);
@@ -800,10 +859,33 @@ JOINTS.forEach((j,i)=>{
 });
 const pct=(i,a)=>((a-LIM[i][0])/(LIM[i][1]-LIM[i][0])*100).toFixed(2)+'%';
 const spd=$('#spd'),acc=$('#acc'),toolIn=$('#tool');
-function syncSliders(){$('#spdv').textContent=spd.value+'°/s';$('#accv').textContent=acc.value+'°/s²';$('#toolv').textContent=toolIn.value+' mm';}
+const toolDIn=$('#toolD');
+function syncSliders(){$('#spdv').textContent=spd.value+'°/s';$('#accv').textContent=acc.value+'°/s²';$('#toolv').textContent=toolIn.value+' mm';$('#toolDv').textContent=toolDIn.value+' mm';}
 [spd,acc].forEach(el=>el.addEventListener('input',syncSliders));
-toolIn.addEventListener('input',()=>{toolLen=toolIn.value/1000;applyTool();syncSliders();homeLock=false;lastRescueKey='';});
-syncSliders();applyTool();
+/* attachments tab */
+function attRender(){
+  const box=$('#attList');box.textContent='';
+  Object.entries(ATTACHMENTS).forEach(([id,a])=>{
+    const size=a.length===null?`${toolIn.value} × ⌀${toolDIn.value} mm`:a.length?`${a.length} × ⌀${a.diameter} mm`:'';
+    const b=item(a.name,size,null,()=>setAttachment(id,true));b.setAttribute('role','radio');b.setAttribute('aria-checked',id===attachment);
+    b.setAttribute('aria-selected',id===attachment);box.appendChild(b);});
+  $('#attCustom').hidden=attachment!=='custom';
+  $('#attNote').textContent=ATTACHMENTS[attachment].note;
+  $('#attMeta').textContent=toolLen>0.002?`tip ${Math.round(toolLen*1000)} mm past the flange`:'flange';
+}
+let toolTimer=null;
+function setAttachment(id,user,len,dia){ // user: picked here (tell the backend); else adopted from it
+  const a=ATTACHMENTS[id]||ATTACHMENTS.none;attachment=ATTACHMENTS[id]?id:'none';
+  if(len!==undefined){toolIn.value=len;toolDIn.value=Math.max(5,Math.min(60,dia||20));}
+  toolLen=(a.length===null?+toolIn.value:a.length)/1000;
+  toolR=(a.length===null?+toolDIn.value:(a.diameter||20))/2000;
+  applyTool();syncSliders();attRender();homeLock=false;lastRescueKey='';
+  uiSet('mycobot-attachment',JSON.stringify({id:attachment,len:+toolIn.value,dia:+toolDIn.value}));
+  if(user){clearTimeout(toolTimer);toolTimer=setTimeout(()=>send({type:'set_tool',attachment,mm:+toolIn.value,d_mm:+toolDIn.value}),300);}
+}
+[toolIn,toolDIn].forEach(el=>el.addEventListener('input',()=>setAttachment('custom',true)));
+$('#optEnvelope').addEventListener('change',applyTool);
+syncSliders();
 
 function setDemo(on){demo=on;$('#btnDemo').setAttribute('aria-pressed',on);}
 $('#btnDemo').addEventListener('click',()=>{homeLock=false;setDemo(!demo);if(demo){demoT=0;$('#optDown').checked=true;
@@ -825,6 +907,8 @@ $('#toggle').addEventListener('click',e=>{const c=panel.classList.toggle('collap
 /* ---------- App chrome: inspector tabs, theme, camera views, connection chip ---------- */
 const uiGet=k=>{try{return localStorage.getItem(k);}catch(_){return null;}};
 const uiSet=(k,v)=>{try{v==null?localStorage.removeItem(k):localStorage.setItem(k,v);}catch(_){}};
+{let a=null;try{a=JSON.parse(uiGet('mycobot-attachment'));}catch(_){}   // last attachment used on this device (the backend's wins once connected)
+ if(a&&ATTACHMENTS[a.id])setAttachment(a.id,false,a.len,a.dia);else setAttachment('none',false);}
 const tabs=[...document.querySelectorAll('.tab')];
 function showTab(name,focus){
   tabs.forEach(t=>{const on=t.id==='tabbtn-'+name;t.setAttribute('aria-selected',on);t.tabIndex=on?0:-1;
@@ -1436,8 +1520,6 @@ const PW_KEY='mycobot-password';
 try{const saved=sessionStorage.getItem(PW_KEY)||localStorage.getItem(PW_KEY);if(saved){$('#wsPw').value=saved;$('#optRemember').checked=!!localStorage.getItem(PW_KEY);}}catch(_){}
 function storePw(pw){try{sessionStorage.setItem(PW_KEY,pw);if($('#optRemember').checked)localStorage.setItem(PW_KEY,pw);else localStorage.removeItem(PW_KEY);}catch(_){}}
 function forgetPw(){try{sessionStorage.removeItem(PW_KEY);localStorage.removeItem(PW_KEY);}catch(_){}$('#wsPw').value='';}
-let toolTimer=null;
-toolIn.addEventListener('input',()=>{clearTimeout(toolTimer);toolTimer=setTimeout(()=>send({type:'set_tool',mm:+toolIn.value}),300);});
 function wsStop(msg){
   if(wsTimer)clearInterval(wsTimer);wsTimer=null;
   if(ws){const w=ws;ws=null;try{w.close();}catch(_){}}
@@ -1484,7 +1566,9 @@ $('#btnWs').addEventListener('click',()=>{
       playUI();
     }
     if(typeof m.stopped==='boolean'&&m.stopped!==stopped)setStopped(m.stopped,true);
-    if(!toolSynced&&typeof m.tool_mm==='number'){toolSynced=true;toolIn.value=m.tool_mm;toolLen=m.tool_mm/1000;applyTool();syncSliders();}
+    if(!toolSynced&&typeof m.tool_mm==='number'){ // the backend's saved attachment wins: it's what its collision check uses
+      toolSynced=true;const was=attachment;setAttachment(m.attachment||'custom',false,m.tool_mm,m.tool_d_mm);
+      if(was!==attachment)wsNote(`The arm is set up with: ${ATTACHMENTS[attachment].name}. Change it in Attachments if that's wrong.`);}
     // warn when calibration is missing or a zero leaves a joint short of its travel
     const notes=[];
     if(m.calibrated===false)notes.push('Not calibrated yet, so the angles use default zeros and the arm-side collision check is only approximate.');
@@ -1542,7 +1626,7 @@ function frame(){
   else if(!homeLock){
     ikErr=ikIterate(qIK,target,14,orient);
     const stuck=ikErr.pos>0.002||(orient&&ikErr.ori>2*DEG)||!!checkPose(qIK);
-    const k=target.toArray().map(v=>v.toFixed(4)).join()+orient+toolLen;
+    const k=target.toArray().map(v=>v.toFixed(4)).join()+orient+toolLen+toolR;
     if(stuck&&!demo&&k!==lastRescueKey&&performance.now()-lastRescueT>250){
       lastRescueKey=k;lastRescueT=performance.now();
       const b=ikRescue(qIK,target,orient);

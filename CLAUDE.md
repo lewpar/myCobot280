@@ -69,8 +69,9 @@ Env vars: `MYCOBOT_PORT`, `MYCOBOT_BAUD`, `MYCOBOT_PASSWORD`, `MYCOBOT_CORS_ORIG
 4. **Three things exist twice** and must stay identical, enforced by `tests/test_page.py`:
    the kinematics and collision model (`arm_model.py`: `URDF_JOINTS`, `URDF_LIMITS_DEG`, the collision
    constants, `check_pose` ↔ `ik_sim.html`: `JOINTS`, `COLLISION`, `checkPose`), the player
-   (`player.py` `Playback` ↔ `ik_sim.html` `Player`, used for offline playback) and the recording
-   pre-check (`check_frames`/`check_steps` ↔ `checkFrames`/`checkSteps`). Change both, run the tests.
+   (`player.py` `Playback` ↔ `ik_sim.html` `Player`, used for offline playback), the recording
+   pre-check (`check_frames`/`check_steps` ↔ `checkFrames`/`checkSteps`) and the attachment list
+   (`arm_model.ATTACHMENTS` ↔ `ATTACHMENTS`). Change both, run the tests.
 5. **Speed 0 and acceleration 0 mean "unlimited" on STS servos.** Never send them. Valid: speed 1–4000,
    accel 1–254 (`SPEED_*`, `ACCEL_*` in `mycobot280.py`). The API rejects out-of-range values (422).
 6. **Password on everything.** REST: header `X-Arm-Password`. `/ws/arm`: first message
@@ -89,8 +90,8 @@ Env vars: `MYCOBOT_PORT`, `MYCOBOT_BAUD`, `MYCOBOT_PASSWORD`, `MYCOBOT_CORS_ORIG
 
 - Base frame: metres, Z up, origin at the base. Joint angles in degrees in the URDF convention
   (from Elephant's `mycobot_280_pi` URDF). Zero pose: arm straight up, flange facing +X.
-- `ik_calibration.json`: `zero` (tick per joint at the URDF zero), `dir` (±1), `tool_mm`,
-  `speed_unit`, `acc_unit`, `calibrated`. Created by the sim's "Set zero" / "Reverse" controls.
+- `ik_calibration.json`: `zero` (tick per joint at the URDF zero), `dir` (±1), `tool_mm`, `tool_d_mm`,
+  `attachment` (`none`/`vacuum`/`custom`), `speed_unit`, `acc_unit`, `calibrated`. Created by the sim's "Set zero" / "Reverse" controls.
   Until it exists, zeros are seeded from `center_positions.json` and `calibrated` is false.
 - ticks = zero + dir × deg × 4096/360 (`arm_model.deg_to_ticks` / `ticks_to_deg`).
 - `center_positions.json`: raw-tick "home" per servo (`/api/servos/home`, `/api/servos/center_all`).
@@ -101,6 +102,11 @@ Env vars: `MYCOBOT_PORT`, `MYCOBOT_BAUD`, `MYCOBOT_PASSWORD`, `MYCOBOT_CORS_ORIG
 Sphere-ish points on J3, forearm midpoint, J4, J5, J6, flange (+ tool midpoint) checked against:
 the table (`FLOOR_MARGIN` 5 mm, tool tip `TCP_MIN_Z` 3 mm), the base cylinder (r 75 mm, top 120 mm),
 the shoulder column for wrist points (r 50 mm, top 190 mm), and wrist-to-upper-arm distance ≥ 50 mm.
+The **attachment** is a cylinder (`tool_mm` long, `tool_d_mm` wide) along the flange normal, sampled every
+15 mm (`TOOL_STEP`). Its points count as wrist points with the tube's radius, plus: against the table only
+its lowest cross-section point counts (full radius when level, 0 when vertical, so a downward tip may
+touch down to `TCP_MIN_Z`), and they must clear the upper arm (J2–J3, `UPPER_ARM_R` + r) and forearm
+(J3–J4, `FOREARM_R` + r). Everything that checks collisions passes both `tool_m` and `tool_r`.
 `check_path` samples 16 poses along a **straight joint-space** path (an approximation of what the
 servos do). If the start pose already collides, only the target is checked so you can move out.
 It's deliberately conservative and approximate; it is not a substitute for watching the arm.
@@ -108,7 +114,7 @@ It's deliberately conservative and approximate; it is not a substitute for watch
 ## Simulator page internals (`ik_sim.html`)
 
 - Layout: top bar (link chip, theme toggle, Stop), 3D viewport (camera presets, legend), tabbed inspector
-  (Motion / Joints / Robot / ATOM / Record / Play) and a status bar. The script finds everything by element id, so keep the
+  (Motion / Joints / Robot / ATOM / Attachments / Record / Play) and a status bar. Tabs size to their labels. The script finds everything by element id, so keep the
   ids when moving markup around. The canvas sizes to `#stage` (ResizeObserver), not the window.
 - IK: damped least squares on the geometric Jacobian, **task priority** (position first, "flange
   facing down" in the null space), step scaled uniformly, joint limits clamped, and `ikRescue`
@@ -128,6 +134,9 @@ It's deliberately conservative and approximate; it is not a substitute for watch
   moving the target sends `/api/playback/stop`. **Offline**: `Player` ticks in the frame loop, writes goals
   into **qIK** (so collision check → qCmd applies) and per-joint speeds into `simSpeeds` for the sim servos.
   Local playback ends on Stop, hand-guide, a blocked pose, a resync, or when `homeLock` is cleared.
+- Attachments tab: picks `attachment` (`setAttachment`), which sets `toolLen`/`toolR` (the TCP moves to the
+  tip, and `checkPose` uses both) and shows its 3D model on the flange (`vacuumG`, or `toolStub` for custom;
+  `envelope` draws the collision cylinder). Sent as `set_tool`; on connect the backend's saved attachment wins.
 - Motion tab also has Jog (tool X/Y/Z moves the target; joint jog moves qIK with `homeLock`) and saved poses
   (`goPose`). Robot tab has the stall-guard toggle; a `fault` from the backend shows in the status bar.
 - The page auto-fills `ws://<host>/ws/arm` when served from `/sim`. It stores the password in
@@ -138,9 +147,10 @@ It's deliberately conservative and approximate; it is not a substitute for watch
 
 **`/ws/arm` messages.** Page → backend: `auth`, `goal {angles[6] deg, speed deg/s, acc deg/s²}`,
 `torque {on}`, `stop`, `resume`, `set_zero`, `set_dir {joint 0-5, dir ±1}`, `set_tool {mm 0-150}`,
-`set_stall_guard {on}`. Goals are ignored while a playback runs.
+`set_stall_guard {on}`, `set_tool {attachment, mm, d_mm}` (a known attachment keeps its own size).
+Goals are ignored while a playback runs.
 Backend → page (~10 Hz): `state {angles[6]|null, torque, stopped, blocked, calibrated, zero, dir,
-tool_mm, limits[6][lo,hi], fault, stall_guard, playback{name, recording, step, steps, phase, t, duration,
+tool_mm, tool_d_mm, attachment, limits[6][lo,hi], fault, stall_guard, playback{name, recording, step, steps, phase, t, duration,
 loop, rate, timed}|null, play_end{n, message}}`, or `error {code: auth|locked|no_arm, message}`.
 
 **REST** (all under `/api`, all need the header): `auth`, `health`, `safety`, `stop`, `resume`,
@@ -164,7 +174,8 @@ and `tests/js` npm packages on first run). `./run_tests.sh -k playback -x` passe
   SYNC WRITE, trapezoidal motion from the speed/accel registers, asserts speed/accel are never 0), the
   ATOM on ID 7, optional TX echo, and hooks (`servos[id].pos` to move a limp joint, `servos[id].stop_at`
   for an obstruction). `conftest.py` injects it and points every data file at a temp dir.
-- `test_motion_api.py`, `test_ws.py` (auth, goals, stop/resume handshake, torque-on hold, stall guard),
+- `test_attachments.py` (tool collision rules, choosing one over WS, playback refused with the tool on),
+  `test_motion_api.py`, `test_ws.py` (auth, goals, stop/resume handshake, torque-on hold, stall guard),
   `test_library.py`, `test_player.py` (timing with a simulated clock), `test_playback.py` (on the fake arm).
 - `test_page.py` runs node: `checkPose` vs `check_pose` on 10,000 poses (0 mismatches), `Player` vs
   `Playback` goal-for-goal, and `tests/js/smoke.js` (jsdom, fake WebGL/WebSocket/backend) through record,
@@ -184,7 +195,8 @@ and `tests/js` npm packages on first run). `./run_tests.sh -k playback -x` passe
 
 - Speed/accel register units (run `tools/check_servo_units.py --write`).
 - URDF link lengths vs this arm (measure flange position at a few targets; see README).
-- The collision margins against the real housings.
+- The collision margins against the real housings, and the vacuum attachment's size and mounting
+  (assumed centred on the flange axis, 25 × 80 mm from the flange face to the cup).
 - The ATOM firmware change (parser rewrite) has only been host-tested, not flashed.
 - Playback with per-joint speeds (timed mode), and the stall guard thresholds (`STALL_DEG` 6°, `STALL_S`
   1 s in `ik_link.py`) against real load: gravity sag must stay under 6° or it will false-trip.

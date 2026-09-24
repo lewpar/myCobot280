@@ -26,18 +26,28 @@ def node(script, data=None, timeout=60):
     return r.stdout
 
 
-@pytest.mark.parametrize("tool_mm", [0, 80])
-def test_collision_model_matches(tool_mm):
+@pytest.mark.parametrize("tool_mm,tool_d_mm", [(0, 20), (80, 25), (150, 60)])
+def test_collision_model_matches(tool_mm, tool_d_mm):
     rnd = random.Random(280 + tool_mm)
     poses = [[round(rnd.uniform(lo - 3, hi + 3), 2) for lo, hi in model.URDF_LIMITS_DEG] for _ in range(3000)]
     # plus poses near the table and the base, where the checks are close calls
     poses += [[rnd.uniform(-180, 180), rnd.uniform(40, 140), rnd.uniform(-150, 150), rnd.uniform(-150, 150),
                rnd.uniform(-150, 150), 0] for _ in range(2000)]
-    js = json.loads(node("parity.js", {"poses": poses, "tool_mm": tool_mm}))["blocked"]
-    py = [model.check_pose(q, tool_mm / 1000) is not None for q in poses]
+    js = json.loads(node("parity.js", {"poses": poses, "tool_mm": tool_mm, "tool_d_mm": tool_d_mm}))["blocked"]
+    py = [model.check_pose(q, tool_mm / 1000, tool_d_mm / 2000) is not None for q in poses]
     bad = [q for q, a, b in zip(poses, js, py) if a != b]
     assert not bad, f"{len(bad)} mismatches, e.g. {bad[:3]}"
     assert 0.1 < sum(py) / len(py) < 0.9        # the sample actually exercises both outcomes
+
+
+def test_attachments_match():
+    """The page's attachment list matches arm_model.ATTACHMENTS (ids and sizes)."""
+    js = json.loads(subprocess.run(
+        ["node", "-e", "const {pureBlocks}=require('./page');process.stdout.write(JSON.stringify(pureBlocks().ATTACHMENTS))"],
+        cwd=JS, capture_output=True, text=True, check=True).stdout)
+    assert set(js) == set(model.ATTACHMENTS)
+    for k, a in model.ATTACHMENTS.items():
+        assert (js[k]["length"], js[k]["diameter"]) == (a["length_mm"], a["diameter_mm"]), k
 
 
 def run_py(steps, opts, arm, dt):

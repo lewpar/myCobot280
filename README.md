@@ -255,11 +255,21 @@ positions back (~10 Hz).
 2. Still in **Robot**, turn on **Hand-guide mode**, pose the arm like the sim's zero pose (arm straight up), press
    **Set zero to the arm's current pose**.
 3. Bend each joint by hand. If the green (measured) pose turns the other way, tick **Reverse** for it.
-4. Set **Tool length** if something is mounted on the flange; the collision check includes it.
+4. If something is mounted on the flange, pick it in the **Attachments** tab (see below).
 
 Calibration is saved to `ik_calibration.json` (zeros seeded from `center_positions.json` until
 then). If a zero sits far from the middle of a servo's travel, the page says how much range that
 joint has lost.
+
+### Attachments
+
+The **Attachments** tab says what's on the flange: nothing, the **vacuum suction** tool (25 mm × 80 mm to
+the cup), or a **custom** straight tool with its own length and diameter. The choice is drawn on the 3D
+arm, moves the target to the attachment's tip (so IK places the suction cup, not the flange), and is
+saved on the backend, whose collision check uses it too. The attachment is checked as a cylinder:
+against the table (only a downward-pointing tip may touch down), the base and shoulder, and the upper
+arm and forearm, so the wrist can't fold it back into the arm. **Show the collision envelope** draws that
+cylinder. Keep **Keep the flange facing down** on in Motion when picking things up.
 
 ### Recording, playback and the library
 

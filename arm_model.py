@@ -41,8 +41,22 @@ TCP_MIN_Z = 0.003        # the tool tip itself may come this close to the table
 BASE_R, BASE_TOP = 0.075, 0.12      # pedestal + J1 housing, checked against J3 and beyond
 COLUMN_R, COLUMN_TOP = 0.05, 0.19   # shoulder column, checked against the wrist
 WRIST_TO_UPPER_ARM = 0.05           # minimum distance from the wrist to the J2-J3 link
+# The attachment on the flange is a cylinder along the flange normal, sampled every TOOL_STEP.
+# Its points are checked like the wrist, plus against the arm's own links (it can fold back into them).
+TOOL_STEP = 0.015
+UPPER_ARM_R = 0.03       # J2-J3 link radius + margin, for attachment points
+FOREARM_R = 0.028        # J3-J4 link radius + margin
+TOOL_R_DEFAULT = 0.01    # radius assumed when only a length is known (a 20 mm custom tool)
+
+# Attachments the page offers (keep in sync with ATTACHMENTS in ik_sim.html): length and diameter in mm.
+ATTACHMENTS = {
+    "none": {"name": "No attachment", "length_mm": 0, "diameter_mm": 0},
+    "vacuum": {"name": "Vacuum suction", "length_mm": 80, "diameter_mm": 25},
+    "custom": {"name": "Custom", "length_mm": None, "diameter_mm": None},
+}
 
 DEFAULT_CALIB = {"zero": [2048] * 6, "dir": [1] * 6, "tool_mm": 0.0,
+                 "tool_d_mm": TOOL_R_DEFAULT * 2000, "attachment": "custom",
                  "speed_unit": 1.0,    # servo speed register: steps/s per unit (STS: 1)
                  "acc_unit": 100.0}    # servo acceleration register: steps/s^2 per unit (STS: 100)
 
@@ -102,8 +116,9 @@ def _seg_dist(p, a, b):
     return math.dist(p, c)
 
 
-def check_pose(q_deg, tool_m=0.0):
-    """None if the pose is clear, otherwise a short reason."""
+def check_pose(q_deg, tool_m=0.0, tool_r=TOOL_R_DEFAULT):
+    """None if the pose is clear, otherwise a short reason. The attachment is ``tool_m`` long with
+    radius ``tool_r`` (metres)."""
     for j, (q, (lo, hi)) in enumerate(zip(q_deg, URDF_LIMITS_DEG)):
         if not lo - 0.5 <= q <= hi + 0.5:
             return f"J{j + 1} would pass its {lo}..{hi} degree limit"
@@ -118,8 +133,13 @@ def check_pose(q_deg, tool_m=0.0):
         ("J6", j[5], 0.022, 0.022, True),
         ("the flange", k["flange"], 0.0, 0.02, True),
     ]
+    tool = []
     if tool_m > 0.002:
-        body.append(("the tool", _mid(k["flange"], k["tcp"]), 0.0, 0.01, True))
+        # lowest point of the cylinder's cross-section: its full radius when level, nothing when vertical
+        r_floor = tool_r * math.sqrt(max(0.0, 1 - k["normal"][2] ** 2))
+        n = max(2, math.ceil(tool_m / TOOL_STEP))
+        tool = [_mid(k["flange"], k["tcp"], i / n) for i in range(1, n + 1)]
+        body += [("the attachment", p, r_floor, tool_r, True) for p in tool[:-1]]
     for name, p, r_floor, r_side, wrist in body:
         if p[2] - r_floor < FLOOR_MARGIN:
             return f"{name} would hit the table"
@@ -130,18 +150,25 @@ def check_pose(q_deg, tool_m=0.0):
             return f"{name} would hit the shoulder"
         if wrist and _seg_dist(p, j[1], j[2]) < WRIST_TO_UPPER_ARM:
             return f"{name} would hit the upper arm"
+    for p in tool:   # the attachment folding back into the arm's own links
+        if _seg_dist(p, j[1], j[2]) < UPPER_ARM_R + tool_r:
+            return "the attachment would hit the upper arm"
+        if _seg_dist(p, j[2], j[3]) < FOREARM_R + tool_r:
+            return "the attachment would hit the forearm"
+    if tool and k["tcp"][2] - r_floor < TCP_MIN_Z:
+        return "the attachment's tip would go below the table"
     if k["tcp"][2] < TCP_MIN_Z:
         return "the tool tip would go below the table"
     return None
 
 
-def check_path(q_from, q_to, tool_m=0.0, steps=16):
+def check_path(q_from, q_to, tool_m=0.0, steps=16, tool_r=TOOL_R_DEFAULT):
     """Check poses along a straight joint-space move (an approximation of what the servos do)."""
-    if any(v is None for v in q_from) or check_pose(q_from, tool_m):
-        return check_pose(q_to, tool_m)   # already in contact (or unknown): allow moving to any clear pose
+    if any(v is None for v in q_from) or check_pose(q_from, tool_m, tool_r):
+        return check_pose(q_to, tool_m, tool_r)   # already in contact (or unknown): allow moving to any clear pose
     for s in range(1, steps + 1):
         f = s / steps
-        why = check_pose([a + (b - a) * f for a, b in zip(q_from, q_to)], tool_m)
+        why = check_pose([a + (b - a) * f for a, b in zip(q_from, q_to)], tool_m, tool_r)
         if why:
             return why + (" on the way there" if s < steps else "")
     return None
@@ -179,16 +206,19 @@ def load_calibration():
             c["calibrated"] = bool(saved.get("calibrated", True))
         if isinstance(saved.get("dir"), list) and len(saved["dir"]) == 6:
             c["dir"] = [1 if int(v) >= 0 else -1 for v in saved["dir"]]
-        for key in ("tool_mm", "speed_unit", "acc_unit"):
+        for key in ("tool_mm", "tool_d_mm", "speed_unit", "acc_unit"):
             if isinstance(saved.get(key), (int, float)) and saved[key] >= 0:
                 c[key] = float(saved[key])
+        if saved.get("attachment") in ATTACHMENTS:
+            c["attachment"] = saved["attachment"]
     except (OSError, ValueError, TypeError):
         pass
     return c
 
 
 def save_calibration(c):
-    data = {k: c[k] for k in ("zero", "dir", "tool_mm", "speed_unit", "acc_unit", "calibrated")}
+    data = {k: c[k] for k in ("zero", "dir", "tool_mm", "tool_d_mm", "attachment", "speed_unit", "acc_unit",
+                              "calibrated")}
     with _file_lock:
         tmp = CALIB_FILE + ".tmp"
         with open(tmp, "w") as f:
@@ -218,4 +248,4 @@ def check_tick_move(c, current_ticks, new_ticks):
         return "not every servo answered, so the move can't be checked"
     q0 = pose_from_ticks(c, current_ticks)
     q1 = pose_from_ticks(c, [n if n is not None else t for n, t in zip(new_ticks, current_ticks)])
-    return check_path(q0, q1, c["tool_mm"] / 1000)
+    return check_path(q0, q1, c["tool_mm"] / 1000, tool_r=c["tool_d_mm"] / 2000)

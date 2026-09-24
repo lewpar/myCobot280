@@ -12,7 +12,8 @@ function pureBlocks() {
   const pl = script.slice(script.indexOf('/* ---- Player:'), script.indexOf('/* ---- recorder ---- */'));
   return new Function('THREE',
     'const DEG=Math.PI/180;\n' + kin + pl +
-    '\nreturn {JOINTS, N, DEG, fk, makeFK, checkPose, checkPath, Player, poseAt, PB, setTool: v => { toolLen = v; }};'
+    '\nreturn {JOINTS, N, DEG, LIM, fk, makeFK, checkPose, checkPath, ikIterate, ikRescue, Player, poseAt, PB, ATTACHMENTS,' +
+    ' setTool: (len, r) => { toolLen = len; toolR = r; }};'
   )(THREE);
 }
 
