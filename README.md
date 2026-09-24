@@ -258,6 +258,21 @@ Calibration is saved to `ik_calibration.json` (zeros seeded from `center_positio
 then). If a zero sits far from the middle of a servo's travel, the page says how much range that
 joint has lost.
 
+### Recording and playback
+
+The **Record** tab captures a motion and plays it back. Press **Record**, move the arm (turn on
+**Hand-guide mode** from the same tab to move it by hand, or drive it from Motion), then press
+**Stop recording**, name it and **Save**. While connected it records the arm's measured pose
+10 times a second; offline it records the simulated arm. Still time at either end is trimmed.
+
+Pick a saved recording and press **Play** (or double-click it). The arm first moves to the recording's
+start pose, then follows it at the chosen playback speed, optionally looping. Playback feeds the same
+path as the IK target, so every pose is collision-checked on the page and the backend and the Max speed
+and Acceleration from Motion apply. Stop/Esc, hand-guide mode, or moving the target ends it.
+
+Recordings are stored on the backend as JSON in `recordings/` (gitignored) through
+`GET/POST /api/recordings`, `GET/DELETE /api/recordings/{id}`.
+
 Home positions (`GET`/`POST /api/servos/home`, `POST /api/servos/center_all`) are stored in
 `center_positions.json`. Home All moves every joint together after a collision check.
 

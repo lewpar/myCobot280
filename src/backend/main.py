@@ -1,6 +1,7 @@
 import asyncio
 import hmac
 import json
+import math
 import os
 import secrets
 import sys
@@ -19,6 +20,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 import arm_model as model
+import recordings
 from mycobot280 import MyCobot280, SPEED_MIN, SPEED_MAX, ACCEL_MIN, ACCEL_MAX
 from ik_link import IKLink
 
@@ -179,6 +181,15 @@ class PixelRequest(BaseModel):
 
 class BrightnessRequest(BaseModel):
     percent: int = Field(ge=1, le=100)
+
+
+MAX_FRAMES = 36000   # an hour at the page's 10 samples a second
+
+
+class RecordingRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+    frames: list[list[float]] = Field(min_length=2, max_length=MAX_FRAMES,
+                                      description="[t seconds, j1..j6 degrees] per sample")
 
 
 # ---------------------------------------------------------------------------
@@ -343,6 +354,53 @@ def atom_get_state():
     if state is None:
         raise HTTPException(502, "ATOM did not respond")
     return {"success": True, **state}
+
+
+# ---------------------------------------------------------------------------
+# Recordings (stored only; the page plays them back over /ws/arm, through the usual guards)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/recordings")
+def list_recordings():
+    return recordings.list_all()
+
+
+@app.get("/api/recordings/{rid}")
+def get_recording(rid: str):
+    try:
+        return recordings.load(rid)
+    except (KeyError, OSError, ValueError):
+        raise HTTPException(404, "No such recording")
+
+
+@app.post("/api/recordings")
+def save_recording(req: RecordingRequest):
+    name = req.name.strip()
+    if not name:
+        raise HTTPException(422, "The recording needs a name.")
+    lims = model.URDF_LIMITS_DEG
+    t0, last = req.frames[0][0] if req.frames[0] else 0, None
+    frames = []
+    for f in req.frames:
+        if len(f) != 7 or not all(math.isfinite(v) for v in f):
+            raise HTTPException(422, "Each frame must be [t, six joint angles], all finite numbers.")
+        t = f[0] - t0
+        if last is not None and t < last:
+            raise HTTPException(422, "Frame times must not go backwards.")
+        if any(not lims[j][0] - 1 <= a <= lims[j][1] + 1 for j, a in enumerate(f[1:])):
+            raise HTTPException(422, "A frame has a joint angle outside the arm's limits.")
+        last = t
+        frames.append([round(t, 3)] + [round(a, 2) for a in f[1:]])
+    return recordings.save(name, frames)
+
+
+@app.delete("/api/recordings/{rid}")
+def delete_recording(rid: str):
+    try:
+        recordings.delete(rid)
+    except (KeyError, OSError):
+        raise HTTPException(404, "No such recording")
+    return {"success": True}
 
 
 # ---------------------------------------------------------------------------

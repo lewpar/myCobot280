@@ -180,6 +180,21 @@ input[type=text],input[type=password]{font:12.5px var(--mono);flex:1;min-width:0
 .palette{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
 .palette button{aspect-ratio:1;width:100%;padding:0;border-radius:50%;border:1px solid var(--border-strong)}
 
+/* recorder */
+button.rec{display:inline-flex;align-items:center;justify-content:center;gap:8px;font-weight:600}
+button.rec .recdot{width:10px;height:10px;border-radius:50%;background:var(--bad);flex:none}
+button.rec[aria-pressed="true"]{background:var(--bad);border-color:var(--bad);color:#fff}
+button.rec[aria-pressed="true"] .recdot{background:#fff;border-radius:2px;animation:recblink 1s steps(2) infinite}
+@keyframes recblink{50%{opacity:.35}}
+.card-head button{padding:3px 9px;font-size:12px}
+.reclist{display:flex;flex-direction:column;gap:4px;max-height:260px;overflow-y:auto}
+.reclist button{display:flex;justify-content:space-between;align-items:baseline;gap:10px;text-align:left;background:var(--surface-2);border-color:var(--border)}
+.reclist button[aria-selected="true"]{border-color:var(--amber);background:var(--amber-soft)}
+.reclist .n{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
+.reclist .d{flex:none;font:500 11.5px var(--mono);color:var(--muted)}
+.progress{height:4px;border-radius:2px;background:var(--track);margin-top:12px;overflow:hidden}
+.progress div{height:100%;width:0;background:var(--amber)}
+
 /* ---------- Narrow screens: inspector becomes a bottom sheet ---------- */
 @media (max-width:760px){
   .app{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr) auto auto;grid-template-areas:"top" "view" "status" "side"}
@@ -240,6 +255,8 @@ input[type=text],input[type=password]{font:12.5px var(--mono);flex:1;min-width:0
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 7V3M15 7V3M7 7h10v4a5 5 0 0 1-10 0zM12 16v5"/></svg>Robot</button>
     <button class="tab" role="tab" id="tabbtn-atom" aria-controls="tab-atom" aria-selected="false">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="4" y="4" width="4" height="4" rx="1"/><rect x="10" y="4" width="4" height="4" rx="1"/><rect x="16" y="4" width="4" height="4" rx="1"/><rect x="4" y="10" width="4" height="4" rx="1"/><rect x="10" y="10" width="4" height="4" rx="1" opacity=".4"/><rect x="16" y="10" width="4" height="4" rx="1"/><rect x="4" y="16" width="4" height="4" rx="1"/><rect x="10" y="16" width="4" height="4" rx="1"/><rect x="16" y="16" width="4" height="4" rx="1"/></svg>ATOM</button>
+    <button class="tab" role="tab" id="tabbtn-record" aria-controls="tab-record" aria-selected="false">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.5" fill="currentColor" stroke="none"/></svg>Record</button>
     <button id="toggle" class="icon-btn" aria-expanded="true" aria-label="Hide controls" title="Hide controls">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
   </div>
@@ -324,6 +341,30 @@ input[type=text],input[type=password]{font:12.5px var(--mono);flex:1;min-width:0
       <div class="slider"><span>Brightness</span><input type="range" id="atomBri" min="1" max="100" value="100"><output id="atomBriv">100%</output></div>
       <p class="callout" id="atomNote"></p>
       <p class="note">Click or drag across the grid to paint. Uses the address and password from Robot; the arm link doesn't need to be connected.</p>
+    </div>
+  </section>
+
+  <section class="tabpanel" id="tab-record" role="tabpanel" aria-labelledby="tabbtn-record" hidden>
+    <div class="card">
+      <div class="card-head"><h2>Recorder</h2><span class="meta" id="recMeta">10 samples/s</span></div>
+      <button id="recBtn" class="block rec" aria-pressed="false"><span class="recdot"></span><span id="recBtnText">Record</span></button>
+      <div class="row"><button id="recLimp" class="block" aria-pressed="false" disabled>Hand-guide mode</button></div>
+      <p class="note">Records the real arm's measured pose while connected (hand-guide it, or drive it from Motion), otherwise the simulated arm. Still time at the start and end is trimmed.</p>
+      <div id="recSave" hidden>
+        <label class="field-label" for="recName">Name this recording</label>
+        <div class="input-row"><input type="text" id="recName" maxlength="60" placeholder="e.g. Wave hello" spellcheck="false"><button id="recSaveBtn" class="primary">Save</button><button id="recDiscard">Discard</button></div>
+      </div>
+      <p class="callout" id="recNote"></p>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>Saved recordings</h2><button id="recRefresh" title="Reload the list from the backend">Refresh</button></div>
+      <div id="recList" class="reclist" role="listbox" aria-label="Saved recordings"></div>
+      <p class="note" id="recEmpty">Recordings are stored on the backend. Enter the address and password in Robot, then press Refresh.</p>
+      <div class="progress" aria-hidden="true"><div id="recProg"></div></div>
+      <div class="row seg"><button id="recPlay" class="primary" disabled>Play</button><button id="recDel" disabled>Delete</button></div>
+      <label class="chk"><input type="checkbox" id="recLoop"> Loop</label>
+      <div class="slider"><span>Playback speed</span><input type="range" id="recRate" min="25" max="200" step="25" value="100"><output id="recRatev">1×</output></div>
+      <p class="note">Playback first moves to the recording's start pose, then follows it using Max speed and Acceleration from Motion (raise them if the arm lags behind). Every pose is collision-checked; Stop or Esc ends playback, and so does moving the target.</p>
     </div>
   </section>
 
@@ -756,6 +797,7 @@ const dirBoxes=JOINTS.map((j,i)=>{const l=document.createElement('label');l.clas
 $('#btnZero').addEventListener('click',()=>{
   if(!confirm('Make the arm\'s current pose the zero pose for every joint?'))return;send({type:'set_zero'});});
 function adoptMeasured(){ // start the sim from the arm's real pose so the next command doesn't swing it
+  if(play)endPlay('Playback stopped: re-read the arm\'s pose.');
   for(let i=0;i<N;i++){qIK[i]=THREE.MathUtils.clamp(measured[i]*DEG,LIM[i][0],LIM[i][1]);qCmd[i]=qIK[i];servo[i].pos=measured[i]*DEG;servo[i].vel=0;}
   fk(qIK,ikF);setTarget(ikF.tcp.clone());homeLock=true;setDemo(false);lastSent='';
 }
@@ -763,7 +805,8 @@ const anglesDeg=()=>qCmd.map(a=>+(a/DEG).toFixed(2));
 function wsNote(t){$('#wsNote').textContent=t;}
 function send(o){if(ws&&ws.readyState===1)ws.send(JSON.stringify(o));}
 function setLimp(on){
-  limp=on;$('#btnLimp').setAttribute('aria-pressed',on);
+  limp=on;$('#btnLimp').setAttribute('aria-pressed',on);$('#recLimp').setAttribute('aria-pressed',on);
+  if(on&&play)endPlay('Playback stopped: hand-guide mode is on.');
   if(on){setDemo(false);send({type:'torque',on:false});wsNote('Torque is off. Move the arm by hand and the sim follows it.');}
   else{ // hold where the arm is now: adopt the measured pose as the new goal before torque comes back
     if(measured&&measured.every(v=>v!==null)){for(let i=0;i<N;i++){qIK[i]=qCmd[i]=measured[i]*DEG;servo[i].pos=qIK[i];servo[i].vel=0;}fk(qIK,ikF);setTarget(ikF.tcp.clone());}
@@ -785,7 +828,7 @@ function atomDraw(k){
 function apiBase(){ // the REST API lives on the same host as the /ws/arm link
   try{const u=new URL($('#wsUrl').value.trim());return (u.protocol==='wss:'?'https:':'http:')+'//'+u.host+'/api';}catch(_){return null;}
 }
-async function atomApi(method,path,body){
+async function api(method,path,body){ // REST call to the backend, used by the ATOM panel and the recorder
   const base=apiBase(),pw=$('#wsPw').value;
   if(!base)throw new Error('The backend address above isn\'t valid.');
   if(!pw){$('#wsPw').focus();throw new Error('Enter the arm password above first.');}
@@ -814,11 +857,11 @@ function atomPaint(k){
   atomPx[k]=c;atomDraw(k);
   if(atomPending.has(k))return;   // already queued: it sends whatever colour the LED has by then
   atomPending.add(k);
-  atomQueue(()=>{atomPending.delete(k);const [r,g,b]=atomPx[k];return atomApi('POST','/atom/pixel',{x:k%5,y:Math.floor(k/5),r,g,b});});
+  atomQueue(()=>{atomPending.delete(k);const [r,g,b]=atomPx[k];return api('POST','/atom/pixel',{x:k%5,y:Math.floor(k/5),r,g,b});});
 }
 function atomFill(c){
   for(let k=0;k<25;k++){atomPx[k]=c.slice();atomDraw(k);}
-  atomQueue(()=>atomApi('POST','/atom/color',{r:c[0],g:c[1],b:c[2]}));
+  atomQueue(()=>api('POST','/atom/color',{r:c[0],g:c[1],b:c[2]}));
 }
 {let painting=false;
  for(let k=0;k<25;k++){
@@ -837,7 +880,7 @@ function atomFill(c){
 $('#atomFill').addEventListener('click',()=>atomFill(hexRgb($('#atomColor').value)));
 $('#atomClear').addEventListener('click',()=>atomFill([0,0,0]));
 $('#atomRead').addEventListener('click',()=>atomQueue(async()=>{
-  const j=await atomApi('GET','/atom/state');
+  const j=await api('GET','/atom/state');
   if(Array.isArray(j.pixels))j.pixels.slice(0,25).forEach((p,k)=>{atomPx[k]=[p[0]|0,p[1]|0,p[2]|0];});
   if(typeof j.brightness==='number'){atomBright=Math.max(1,Math.round(j.brightness*100/128));$('#atomBri').value=atomBright;$('#atomBriv').textContent=atomBright+'%';}
   for(let k=0;k<25;k++)atomDraw(k);
@@ -846,12 +889,156 @@ $('#atomRead').addEventListener('click',()=>atomQueue(async()=>{
 {let t=null;
  $('#atomBri').addEventListener('input',e=>{
    atomBright=+e.target.value;$('#atomBriv').textContent=atomBright+'%';for(let k=0;k<25;k++)if(atomPx[k].some(v=>v))atomDraw(k);
-   clearTimeout(t);t=setTimeout(()=>atomQueue(()=>atomApi('POST','/atom/brightness',{percent:atomBright})),250);});}
+   clearTimeout(t);t=setTimeout(()=>atomQueue(()=>api('POST','/atom/brightness',{percent:atomBright})),250);});}
+
+/* ---------- Recorder: sample the arm's pose into a timeline, store it on the backend (/api/recordings),
+   play it back by feeding qIK, so it takes the same collision-checked path to qCmd and the servos as any other goal ---------- */
+const REC_DT=100,REC_MAX=36000;   // ms between samples; the backend's frame cap (an hour)
+let rec=null;     // {t0, last, frames:[[t s, deg x6]]} while recording
+let take=null;    // the finished recording, until it is saved or discarded
+let recItems=[],recSel=null,recCache={};
+let play=null;    // {frames, phase:'approach'|'run', t, i, arrived, loaded}
+function recNote(t){$('#recNote').textContent=t;}
+const haveRealNow=()=>!!(measured&&measured.every(v=>v!==null)&&performance.now()-measuredAt<1500);
+function recPose(){return haveRealNow()?measured.slice():servo.map(s=>s.pos/DEG);}
+const fmtDur=s=>s>=60?`${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,'0')}`:s.toFixed(1)+' s';
+function recSample(now){
+  if(now-rec.last<REC_DT)return;
+  rec.last=now;rec.frames.push([+((now-rec.t0)/1000).toFixed(3),...recPose().map(v=>+v.toFixed(2))]);
+  $('#recMeta').textContent=`${fmtDur((now-rec.t0)/1000)} · ${rec.src}`;
+  if(rec.frames.length>=REC_MAX)recStop();
+}
+function recTrim(f){ // drop the still time before the first and after the last movement
+  const moved=(a,b)=>a.some((v,j)=>j>0&&Math.abs(v-b[j])>0.5);
+  let s=0,e=f.length-1;
+  while(s<e&&!moved(f[s+1],f[0]))s++;
+  while(e>s&&!moved(f[e-1],f[f.length-1]))e--;
+  const out=f.slice(s,e+1),t0=out.length?out[0][0]:0;
+  return out.map(r=>[+(r[0]-t0).toFixed(3),...r.slice(1)]);
+}
+function recStart(){
+  if(play)return;
+  take=null;$('#recSave').hidden=true;
+  const now=performance.now();
+  rec={t0:now,last:-1e9,frames:[],src:haveRealNow()?'real arm':'simulation'};recSample(now);
+  recNote(rec.src==='real arm'?'Recording the real arm. Move it, then press Stop recording.':'Not connected, so this records the simulated arm. Move the target, then press Stop recording.');
+  recUI();
+}
+function recStop(){
+  const f=recTrim(rec.frames);rec=null;$('#recMeta').textContent='10 samples/s';
+  if(f.length<2){recNote('Nothing moved, so there is nothing to save.');recUI();return;}
+  take=f;$('#recSave').hidden=false;$('#recName').value='';$('#recName').focus();
+  recNote(`Recorded ${fmtDur(f[f.length-1][0])} (${f.length} samples). Give it a name and save it.`);
+  recUI();
+}
+async function recSave(){
+  const name=$('#recName').value.trim();
+  if(!name){recNote('Type a name for the recording first.');$('#recName').focus();return;}
+  $('#recSaveBtn').disabled=true;
+  try{
+    const r=await api('POST','/recordings',{name,frames:take});
+    recCache[r.id]=take;take=null;$('#recSave').hidden=true;recNote(`Saved "${r.name}".`);
+    await recRefresh(r.id);
+  }catch(e){recNote(e.message+' The recording is kept here; try saving again.');}
+  finally{$('#recSaveBtn').disabled=false;}
+}
+async function recRefresh(select){
+  try{recItems=await api('GET','/recordings');}
+  catch(e){recNote(e.message);return;}
+  if(select!==undefined)recSel=select;
+  if(!recItems.some(r=>r.id===recSel))recSel=null;
+  recRender();
+}
+function recRender(){
+  const box=$('#recList');box.textContent='';
+  recItems.forEach(r=>{
+    const b=document.createElement('button');b.type='button';b.setAttribute('role','option');b.setAttribute('aria-selected',r.id===recSel);
+    const n=document.createElement('span');n.className='n';n.textContent=r.name;
+    const d=document.createElement('span');d.className='d';
+    d.textContent=`${fmtDur(r.duration)} · ${new Date(r.created*1000).toLocaleDateString(undefined,{day:'numeric',month:'short'})}`;
+    b.append(n,d);b.title=r.name;
+    b.addEventListener('click',()=>{if(play)return;recSel=r.id;recRender();});
+    b.addEventListener('dblclick',()=>{if(!play){recSel=r.id;recRender();playStart();}});
+    box.appendChild(b);
+  });
+  $('#recEmpty').textContent=recItems.length?'':'No recordings saved yet.';
+  recUI();
+}
+function recUI(){
+  const b=$('#recBtn');b.setAttribute('aria-pressed',!!rec);$('#recBtnText').textContent=rec?'Stop recording':'Record';b.disabled=!!play;
+  $('#recPlay').textContent=play?'Stop playback':'Play';$('#recPlay').disabled=!play&&(!recSel||!!rec);
+  $('#recDel').disabled=!recSel||!!play||!!rec;
+  if(!play)$('#recProg').style.width='0';
+}
+async function playStart(){
+  if(play||rec||!recSel)return;
+  if(stopped){recNote('The arm is stopped. Press Resume first.');return;}
+  let f=recCache[recSel];
+  if(!f){
+    try{f=(await api('GET','/recordings/'+recSel)).frames;recCache[recSel]=f;}
+    catch(e){recNote(e.message);return;}
+  }
+  if(!Array.isArray(f)||f.length<2){recNote('That recording is empty.');return;}
+  if(play||rec||stopped)return;   // something changed while it loaded
+  if(limp)setLimp(false);
+  setDemo(false);homeLock=true;
+  play={frames:f,phase:'approach',t:0,i:0,arrived:0};
+  recNote('Moving to the start pose…');recUI();
+}
+function endPlay(msg){
+  if(!play)return;
+  play=null;
+  for(let i=0;i<N;i++)qIK[i]=qCmd[i];   // hold the last pose that was actually sent
+  fk(qIK,ikF);setTarget(ikF.tcp.clone());homeLock=true;
+  if(msg)recNote(msg);recUI();
+}
+function playPose(t){ // linear interpolation between samples, into qIK
+  const f=play.frames;
+  if(t<f[play.i][0])play.i=0;
+  while(play.i<f.length-2&&f[play.i+1][0]<=t)play.i++;
+  const a=f[play.i],b=f[play.i+1],u=b[0]>a[0]?THREE.MathUtils.clamp((t-a[0])/(b[0]-a[0]),0,1):1;
+  for(let j=0;j<N;j++)qIK[j]=THREE.MathUtils.clamp((a[j+1]+(b[j+1]-a[j+1])*u)*DEG,LIM[j][0],LIM[j][1]);
+}
+function playStep(dt){
+  if(!homeLock){endPlay('Playback stopped: the target was moved.');return;}
+  const f=play.frames,end=f[f.length-1][0];
+  if(play.phase==='approach'){
+    playPose(0);
+    const simThere=servo.every((s,j)=>Math.abs(s.pos-qIK[j])<0.5*DEG);
+    const realThere=!haveRealNow()||measured.every((v,j)=>Math.abs(v*DEG-qIK[j])<2*DEG);
+    if(simThere&&!play.arrived)play.arrived=performance.now();
+    // the real arm may settle a little off the goal: don't wait for it forever
+    if(simThere&&(realThere||performance.now()-play.arrived>3000)){play.phase='run';play.t=0;play.i=0;recNote('Playing.');}
+  }else{
+    play.t+=dt*$('#recRate').value/100;
+    if(play.t>=end){
+      playPose(end);
+      if($('#recLoop').checked){play.phase='approach';play.arrived=0;play.t=0;}
+      else{fk(qIK,ikF);setTarget(ikF.tcp.clone());play.done=true;}
+    }else playPose(play.t);
+    $('#recProg').style.width=(Math.min(1,play.t/Math.max(end,1e-3))*100).toFixed(1)+'%';
+  }
+  if(!play.done){fk(qIK,ikF);setTarget(ikF.tcp.clone());}
+}
+$('#recBtn').addEventListener('click',()=>rec?recStop():recStart());
+$('#recLimp').addEventListener('click',()=>setLimp(!limp));
+$('#recSaveBtn').addEventListener('click',recSave);
+$('#recName').addEventListener('keydown',e=>{if(e.key==='Enter')recSave();});
+$('#recDiscard').addEventListener('click',()=>{take=null;$('#recSave').hidden=true;recNote('Discarded.');});
+$('#recRefresh').addEventListener('click',()=>recRefresh());
+$('#recPlay').addEventListener('click',()=>play?endPlay('Playback stopped.'):playStart());
+$('#recDel').addEventListener('click',async()=>{
+  const r=recItems.find(x=>x.id===recSel);if(!r||!confirm(`Delete the recording "${r.name}"?`))return;
+  try{await api('DELETE','/recordings/'+r.id);delete recCache[r.id];recNote(`Deleted "${r.name}".`);await recRefresh();}
+  catch(e){recNote(e.message);}
+});
+$('#recRate').addEventListener('input',e=>{$('#recRatev').textContent=(e.target.value/100)+'×';});
+$('#tabbtn-record').addEventListener('click',()=>{if(!recItems.length&&$('#wsPw').value)recRefresh();});
 
 function setStopped(on,fromArm){
   if(on===stopped)return;
   stopped=on;const b=$('#btnStop');b.setAttribute('aria-pressed',on);b.textContent=on?'Resume':'Stop';
-  if(on){setDemo(false);for(let i=0;i<N;i++){qCmd[i]=servo[i].pos;servo[i].vel=0;}if(!fromArm)send({type:'stop'});}
+  if(on){setDemo(false);for(let i=0;i<N;i++){qCmd[i]=servo[i].pos;servo[i].vel=0;}if(!fromArm)send({type:'stop'});if(play)endPlay('Playback stopped.');}
   else{
     if(!fromArm)send({type:'resume'});
     if(ws&&measured)resync=true;   // re-read the real pose before sending anything new
@@ -872,6 +1059,7 @@ function wsStop(msg){
   if(ws){const w=ws;ws=null;try{w.close();}catch(_){}}
   measured=null;limp=false;calibKey='';resync=false;remoteBlocked=null;$('#calNote').textContent='';$('#btnLimp').disabled=true;$('#btnZero').disabled=true;dirBoxes.forEach(b=>b.disabled=true);
   for(let i=0;i<N;i++){LIM[i][0]=URDF_LIM[i][0];LIM[i][1]=URDF_LIM[i][1];}$('#btnLimp').setAttribute('aria-pressed','false');
+  $('#recLimp').disabled=true;$('#recLimp').setAttribute('aria-pressed','false');
   $('#btnWs').textContent='Connect';$('#btnWs').setAttribute('aria-pressed','false');if(msg)wsNote(msg);
 }
 $('#btnWs').addEventListener('click',()=>{
@@ -883,7 +1071,7 @@ $('#btnWs').addEventListener('click',()=>{
   ws=sock;$('#btnWs').textContent='Disconnect';$('#btnWs').setAttribute('aria-pressed','true');wsNote('Connecting…');
   let opened=false;
   let toolSynced=false;
-  sock.onopen=()=>{opened=true;lastSent='';$('#btnLimp').disabled=false;
+  sock.onopen=()=>{opened=true;lastSent='';$('#btnLimp').disabled=false;$('#recLimp').disabled=false;
     sock.send(JSON.stringify({type:'auth',password:pw}));storePw(pw);
     wsNote('Connected. Waiting for servo readings before sending anything.');
     wsTimer=setInterval(()=>{
@@ -954,6 +1142,7 @@ function frame(){
   if(demo){demoT+=dt*0.7;setTarget(V(0.23+0.04*Math.sin(2*demoT),0.08*Math.sin(demoT),0.11+0.03*Math.sin(3*demoT)));}
   const orient=$('#optDown').checked;
   const haveReal=measured&&measured.every(v=>v!==null)&&performance.now()-measuredAt<1500;
+  if(play)playStep(dt);
   if(limp&&haveReal){for(let i=0;i<N;i++)qIK[i]=qCmd[i]=measured[i]*DEG;fk(qIK,ikF);setTarget(ikF.tcp.clone());ikErr={pos:0,ori:0};}
   else if(!homeLock){
     ikErr=ikIterate(qIK,target,14,orient);
@@ -972,6 +1161,8 @@ function frame(){
     blocked=checkPose(qIK)||checkPath(cur,qIK);
     if(!blocked)for(let i=0;i<N;i++)qCmd[i]=qIK[i];
   }
+  if(play&&blocked)endPlay(`Playback stopped: ${blocked}.`);
+  else if(play&&play.done)endPlay('Playback finished.');
 
   const vmax=spd.value*DEG,amax=acc.value*DEG;let moving=false;
   for(let i=0;i<N;i++){
@@ -1011,6 +1202,7 @@ function frame(){
   else{st.className='status ok';$('#statusText').textContent='At target';}
   $('#errText').textContent=(servoF.tcp.distanceTo(target)*1000).toFixed(1)+' mm';
   updateLinkChip();
+  if(rec)recSample(performance.now());
   const showReal=haveReal&&$('#optReal').checked;
   realLine.visible=realDots.visible=showReal;
   if(showReal){fk(measured.map(v=>v*DEG),realF);const ra=realGeo.attributes.position.array;ra.set([0,0,0.06],0);

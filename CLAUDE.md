@@ -33,6 +33,7 @@ Register map used (STS): 9/11 min/max limit, 31 position correction, 40 torque e
 | `mycobot280.py` | Servo/ATOM library: packet building, echo-tolerant checksum-verified reads, bus lock, limits, `move`, `sync_move`, `move_all`, `hold`, `read_positions`, `sync_torque` |
 | `arm_model.py` | **Shared model**: URDF kinematics (`fk`), collision checks (`check_pose`, `check_path`, `check_tick_move`), calibration store (`ik_calibration.json`), home store (`center_positions.json`) |
 | `src/backend/main.py` | FastAPI app: password middleware, validated REST endpoints, motion guard, `/api/stop` `/api/resume`, `/ws/arm`, `/sim` |
+| `src/backend/recordings.py` | Stores recordings (`recordings/<id>.json`, gitignored); playback is done by the page |
 | `src/backend/ik_link.py` | Streaming controller behind `/ws/arm`; also owns the **stop state** used by REST |
 | `src/backend/static/ik_sim.html` | The simulator page (single self-contained file, Three.js r147 UMD from jsDelivr) |
 | `atom_led_matrix/atom_led_matrix.ino` | ATOM firmware (frame parser in `feed_byte`) |
@@ -97,7 +98,7 @@ It's deliberately conservative and approximate; it is not a substitute for watch
 ## Simulator page internals (`ik_sim.html`)
 
 - Layout: top bar (link chip, theme toggle, Stop), 3D viewport (camera presets, legend), tabbed inspector
-  (Motion / Joints / Robot / ATOM) and a status bar. The script finds everything by element id, so keep the
+  (Motion / Joints / Robot / ATOM / Record) and a status bar. The script finds everything by element id, so keep the
   ids when moving markup around. The canvas sizes to `#stage` (ResizeObserver), not the window.
 - IK: damped least squares on the geometric Jacobian, **task priority** (position first, "flange
   facing down" in the null space), step scaled uniformly, joint limits clamped, and `ikRescue`
@@ -108,6 +109,11 @@ It's deliberately conservative and approximate; it is not a substitute for watch
 - ATOM LED panel: talks to `/api/atom/*` over REST (not the WebSocket), with the backend host from
   the WS address field and the password field. Requests go one at a time; a 401/429 drops the rest of the
   queue so a drag can't trip the lockout. The 3D ATOM's LEDs mirror the panel (index row×5+x, seen from behind).
+- Recorder (Record tab): samples `measured` (or the sim servos when offline) at 10 Hz into `[t, deg x6]`
+  frames, trims still ends, saves via `/api/recordings`. Playback sets `homeLock` and writes interpolated
+  frames into **qIK** each frame (after an approach to frame 0), so the normal collision check → qCmd → WS
+  goal path applies. It ends on Stop, hand-guide, a blocked pose, a calibration resync, or when
+  `homeLock` is cleared (the user moved the target).
 - The page auto-fills `ws://<host>/ws/arm` when served from `/sim`. It stores the password in
   sessionStorage (localStorage only if "remember" is ticked).
 - A copy was also published as a claude.ai artifact; **the repo file is the source of truth**.
@@ -122,7 +128,8 @@ tool_mm, limits[6][lo,hi]}`, or `error {code: auth|locked|no_arm, message}`.
 **REST** (all under `/api`, all need the header): `auth`, `health`, `safety`, `stop`, `resume`,
 `servos[?rescan=true]`, `servos/status`, `servos/home` (GET/POST), `servos/center_all`,
 `servos/torque_all`, `servo/{id}` and `/move`, `/move_rel`, `/center`, `/torque`, `/ping`,
-`atom/{color,pixel,brightness,ping,state}`. Refusals: 409 collision, 423 stopped, 422 bad values.
+`atom/{color,pixel,brightness,ping,state}`, `recordings` (GET list / POST `{name, frames}`),
+`recordings/{id}` (GET/DELETE). Refusals: 409 collision, 423 stopped, 422 bad values.
 ATOM writes return `acked` (false = no reply; the flashed firmware may predate the reply-on-write parser).
 
 ## Testing without the arm
