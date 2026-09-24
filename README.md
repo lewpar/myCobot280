@@ -218,7 +218,10 @@ Key servo registers:
   The model lives in `arm_model.py`; the simulator carries a copy so it refuses the same poses before
   sending anything. The check uses the IK calibration, so calibrate first (see below).
 - **Stop:** `POST /api/stop`, or the Stop button / Esc in the simulator. Every joint holds where it is (torque stays on, so nothing drops) and all motion is
-  refused until you resume.
+  refused until you resume. Stop also ends a playback.
+- **Stall guard:** if a torqued joint stays more than 6° short of its goal without moving for a
+  second (something in the way), the arm stops and the page says which joint. Resume to carry on.
+  It can be turned off in the Robot tab.
 
 ## ATOM Protocol
 
@@ -258,21 +261,42 @@ Calibration is saved to `ik_calibration.json` (zeros seeded from `center_positio
 then). If a zero sits far from the middle of a servo's travel, the page says how much range that
 joint has lost.
 
-### Recording and playback
+### Recording, playback and the library
 
-The **Record** tab captures a motion and plays it back. Press **Record**, move the arm (turn on
-**Hand-guide mode** from the same tab to move it by hand, or drive it from Motion), then press
-**Stop recording**, name it and **Save**. Tick **Return to the zero pose after playing** to have
-playback end by moving the arm straight up to the zero pose (marked → 0 in the list). While connected it records the arm's measured pose
-10 times a second; offline it records the simulated arm. Still time at either end is trimmed.
+**Record tab.** Press **Record**, move the arm (turn on **Hand-guide mode** from the same tab to move it
+by hand, or drive it from Motion), then press **Stop recording**, name it and **Save**. While connected
+it records the arm's measured pose 10 times a second; offline it records the simulated arm. Still time
+at either end is trimmed. LED changes you make in the ATOM tab while recording are saved as cues and
+replayed on the ATOM. Tick **Return to the zero pose after playing** to end playback with the arm
+straight up.
 
-Pick a saved recording and press **Play** (or double-click it). The arm first moves to the recording's
-start pose, then follows it at the chosen playback speed, optionally looping. Playback feeds the same
-path as the IK target, so every pose is collision-checked on the page and the backend and the Max speed
-and Acceleration from Motion apply. Stop/Esc, hand-guide mode, or moving the target ends it.
+**Waypoints** (also in Record) are the tidy alternative to hand-guided wobble: pose the arm, **Add point**,
+repeat, then **Make a recording from the points**. The arm moves smoothly between the points at the
+chosen speed, optionally pausing at each.
 
-Recordings are stored on the backend as JSON in `recordings/` (gitignored) through
-`GET/POST /api/recordings`, `GET/DELETE /api/recordings/{id}`.
+**Play tab.** Pick a recording or a sequence. Its tool path is drawn in violet in the 3D view and the
+whole path is collision-checked before **Play** is allowed. Playback first moves to the start pose at
+Max speed (Motion), then follows the recording:
+
+- **Keep the recorded timing** (default) gives each joint the speed it needs to stay on time (up to
+  150°/s); turned off, every joint moves at Max speed and may lag behind fast parts.
+- **Loop** and **Playback speed** (0.25×–2×).
+- When connected, playback runs **on the backend**, so it keeps going if you close the page or lose
+  Wi-Fi. Stop/Esc ends it, and so does moving the target. Every goal still goes through the backend's
+  collision check and limits; REST moves are refused while it plays.
+- Offline, the same playback logic runs in the page on the simulated arm, for previewing.
+
+The selected recording can be renamed, trimmed (drag the start/end handles, then **Apply trim**),
+set to return to zero, **exported** as JSON and deleted. **Import** loads an exported file.
+**Sequences** play several recordings in a row with a pause after each; build them with **New**, add
+steps, reorder them and save.
+
+**Motion tab** extras: **Jog** nudges the tool along X/Y/Z (1–25 mm) or turns a single joint (1–20°);
+hold a button to repeat. **Saved poses** stores the current pose under a name; click it to go back there.
+
+Everything is stored on the Pi as JSON in `recordings/`, `sequences/` and `poses/` (gitignored). The API:
+`/api/recordings[/{id}]`, `/api/sequences[/{id}]`, `/api/poses[/{id}]`, `/api/playback` (start, status)
+and `/api/playback/stop`; see `/docs` on the backend for the request bodies.
 
 Home positions (`GET`/`POST /api/servos/home`, `POST /api/servos/center_all`) are stored in
 `center_positions.json`. Home All moves every joint together after a collision check.
@@ -290,6 +314,14 @@ Two things can't be known from the code alone:
   base to the centre of the flange. Try three or four points spread around the workspace. Errors
   of more than a few millimetres that grow with reach mean a link length in `arm_model.py`
   (`URDF_JOINTS`) and in the simulator's `JOINTS` table needs adjusting.
+
+## Tests
+
+`./run_tests.sh` runs the whole suite without the arm: the backend against a fake servo bus (REST,
+WebSocket link, playback, stall guard, library), plus node tests that check the simulator's collision
+model and player match the Python ones and click through the page in jsdom. It needs Python 3 and
+node 18+; the first run installs the test packages. Pass pytest options through, e.g.
+`./run_tests.sh -k playback`.
 
 ## Tools
 
