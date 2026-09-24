@@ -71,7 +71,8 @@ Env vars: `MYCOBOT_PORT`, `MYCOBOT_BAUD`, `MYCOBOT_PASSWORD`, `MYCOBOT_CORS_ORIG
    constants, `check_pose` ↔ `ik_sim.html`: `JOINTS`, `COLLISION`, `checkPose`), the player
    (`player.py` `Playback` ↔ `ik_sim.html` `Player`, used for offline playback), the recording
    pre-check (`check_frames`/`check_steps` ↔ `checkFrames`/`checkSteps`) and the attachment list
-   (`arm_model.ATTACHMENTS` ↔ `ATTACHMENTS`). Change both, run the tests.
+   (`arm_model.ATTACHMENTS` ↔ `ATTACHMENTS`), and the work area (`DEFAULT_AREA`, `_outside_area` ↔
+   `DEFAULT_AREA`, `outsideArea`). Change both, run the tests.
 5. **Speed 0 and acceleration 0 mean "unlimited" on STS servos.** Never send them. Valid: speed 1–4000,
    accel 1–254 (`SPEED_*`, `ACCEL_*` in `mycobot280.py`). The API rejects out-of-range values (422).
 6. **Password on everything.** REST: header `X-Arm-Password`. `/ws/arm`: first message
@@ -91,7 +92,7 @@ Env vars: `MYCOBOT_PORT`, `MYCOBOT_BAUD`, `MYCOBOT_PASSWORD`, `MYCOBOT_CORS_ORIG
 - Base frame: metres, Z up, origin at the base. Joint angles in degrees in the URDF convention
   (from Elephant's `mycobot_280_pi` URDF). Zero pose: arm straight up, flange facing +X.
 - `ik_calibration.json`: `zero` (tick per joint at the URDF zero), `dir` (±1), `tool_mm`, `tool_d_mm`,
-  `attachment` (`none`/`vacuum`/`custom`), `speed_unit`, `acc_unit`, `calibrated`. Created by the sim's "Set zero" / "Reverse" controls.
+  `attachment` (`none`/`vacuum`/`custom`), `area` (work area), `speed_unit`, `acc_unit`, `calibrated`. Created by the sim's "Set zero" / "Reverse" controls.
   Until it exists, zeros are seeded from `center_positions.json` and `calibrated` is false.
 - ticks = zero + dir × deg × 4096/360 (`arm_model.deg_to_ticks` / `ticks_to_deg`).
 - `center_positions.json`: raw-tick "home" per servo (`/api/servos/home`, `/api/servos/center_all`).
@@ -106,7 +107,14 @@ The **attachment** is a cylinder (`tool_mm` long, `tool_d_mm` wide) along the fl
 15 mm (`TOOL_STEP`). Its points count as wrist points with the tube's radius, plus: against the table only
 its lowest cross-section point counts (full radius when level, 0 when vertical, so a downward tip may
 touch down to `TCP_MIN_Z`), and they must clear the upper arm (J2–J3, `UPPER_ARM_R` + r) and forearm
-(J3–J4, `FOREARM_R` + r). Everything that checks collisions passes both `tool_m` and `tool_r`.
+(J3–J4, `FOREARM_R` + r).
+
+The **work area** (`area`: `enabled`, `center` deg, `span` deg, `radius_mm`; default the right half,
+center −90° = −Y, span 180°) is enforced in `check_pose` too: every body point, attachment point and the
+tip must be inside the slice with its radius as margin (`_outside_area`); points within `AREA_CORE`
+(60 mm) of the base axis are exempt. 0° is +X, where the flange points at the zero pose (away from the
+Pi's ports). Everything that checks collisions passes `tool_m`, `tool_r` and `area`. The test fixture
+turns the area off (most tests move around J1 = 0); `test_work_area.py` uses the real default.
 `check_path` samples 16 poses along a **straight joint-space** path (an approximation of what the
 servos do). If the start pose already collides, only the target is checked so you can move out.
 It's deliberately conservative and approximate; it is not a substitute for watching the arm.
@@ -137,6 +145,9 @@ It's deliberately conservative and approximate; it is not a substitute for watch
 - Attachments tab: picks `attachment` (`setAttachment`), which sets `toolLen`/`toolR` (the TCP moves to the
   tip, and `checkPose` uses both) and shows its 3D model on the flange (`vacuumG`, or `toolStub` for custom;
   `envelope` draws the collision cylinder). Sent as `set_tool`; on connect the backend's saved attachment wins.
+- Robot tab has the Work area card (`setArea`; presets, direction, width, max reach). The slice is drawn on
+  the floor (`areaG`); Figure-8 and Random centre themselves in it (`areaDir`). Sent as `set_area`; on connect
+  the backend's saved area wins, like the attachment.
 - Motion tab also has Jog (tool X/Y/Z moves the target; joint jog moves qIK with `homeLock`) and saved poses
   (`goPose`). Robot tab has the stall-guard toggle; a `fault` from the backend shows in the status bar.
 - The page auto-fills `ws://<host>/ws/arm` when served from `/sim`. It stores the password in
@@ -147,10 +158,11 @@ It's deliberately conservative and approximate; it is not a substitute for watch
 
 **`/ws/arm` messages.** Page → backend: `auth`, `goal {angles[6] deg, speed deg/s, acc deg/s²}`,
 `torque {on}`, `stop`, `resume`, `set_zero`, `set_dir {joint 0-5, dir ±1}`, `set_tool {mm 0-150}`,
-`set_stall_guard {on}`, `set_tool {attachment, mm, d_mm}` (a known attachment keeps its own size).
+`set_stall_guard {on}`, `set_tool {attachment, mm, d_mm}` (a known attachment keeps its own size),
+`set_area {enabled, center -180..180, span 30..360, radius_mm 0|100..450}`.
 Goals are ignored while a playback runs.
 Backend → page (~10 Hz): `state {angles[6]|null, torque, stopped, blocked, calibrated, zero, dir,
-tool_mm, tool_d_mm, attachment, limits[6][lo,hi], fault, stall_guard, playback{name, recording, step, steps, phase, t, duration,
+tool_mm, tool_d_mm, attachment, area, limits[6][lo,hi], fault, stall_guard, playback{name, recording, step, steps, phase, t, duration,
 loop, rate, timed}|null, play_end{n, message}}`, or `error {code: auth|locked|no_arm, message}`.
 
 **REST** (all under `/api`, all need the header): `auth`, `health`, `safety`, `stop`, `resume`,
@@ -174,7 +186,8 @@ and `tests/js` npm packages on first run). `./run_tests.sh -k playback -x` passe
   SYNC WRITE, trapezoidal motion from the speed/accel registers, asserts speed/accel are never 0), the
   ATOM on ID 7, optional TX echo, and hooks (`servos[id].pos` to move a limp joint, `servos[id].stop_at`
   for an obstruction). `conftest.py` injects it and points every data file at a temp dir.
-- `test_attachments.py` (tool collision rules, choosing one over WS, playback refused with the tool on),
+- `test_work_area.py` (default right half, other slices, REST/WS/playback refusals),
+  `test_attachments.py` (tool collision rules, choosing one over WS, playback refused with the tool on),
   `test_motion_api.py`, `test_ws.py` (auth, goals, stop/resume handshake, torque-on hold, stall guard),
   `test_library.py`, `test_player.py` (timing with a simulated clock), `test_playback.py` (on the fake arm).
 - `test_page.py` runs node: `checkPose` vs `check_pose` on 10,000 poses (0 mismatches), `Player` vs

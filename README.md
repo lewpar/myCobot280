@@ -271,6 +271,17 @@ against the table (only a downward-pointing tip may touch down), the base and sh
 arm and forearm, so the wrist can't fold it back into the arm. **Show the collision envelope** draws that
 cylinder. Keep **Keep the flange facing down** on in Motion when picking things up.
 
+### Work area
+
+The **Work area** card in the Robot tab keeps the arm inside a slice of the circle around its base,
+drawn in green on the floor. By default it's the **right half**: seen from above, with 0° being the
+direction the flange points at the zero pose (away from the Pi's ports), the slice is centred on −90°,
+the arm's right. Presets switch to the left half, front half or the full circle; the sliders set the
+direction, the width (30°–360°) and an optional maximum reach. Every part of the arm and its attachment
+must stay inside, so near the edges the arm's elbow and wrist count, not just the tool tip. Poses outside
+are refused like a collision by the page and the backend (REST moves, IK goals, playback). The setting
+is saved on the Pi.
+
 ### Recording, playback and the library
 
 **Record tab.** Press **Record**, move the arm (turn on **Hand-guide mode** from the same tab to move it

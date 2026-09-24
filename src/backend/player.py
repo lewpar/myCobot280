@@ -31,7 +31,7 @@ def pose_at(frames, t, hint=0):
     return [a[j] + (b[j] - a[j]) * u for j in range(1, 7)], i
 
 
-def check_frames(frames, tool_m=0.0, tool_r=model.TOOL_R_DEFAULT):
+def check_frames(frames, tool_m=0.0, tool_r=model.TOOL_R_DEFAULT, area=None):
     """Collision check of a recording: None if clear, else (t, reason) for the first bad frame.
     Poses less than a degree apart from the last checked one are skipped."""
     last = None
@@ -39,22 +39,22 @@ def check_frames(frames, tool_m=0.0, tool_r=model.TOOL_R_DEFAULT):
         q = f[1:]
         if last is not None and k < len(frames) - 1 and max(abs(x - y) for x, y in zip(q, last)) < 1.0:
             continue
-        why = model.check_pose(q, tool_m, tool_r)
+        why = model.check_pose(q, tool_m, tool_r, area)
         if why:
             return f[0], why
         last = q
     return None
 
 
-def check_steps(steps, tool_m=0.0, tool_r=model.TOOL_R_DEFAULT):
+def check_steps(steps, tool_m=0.0, tool_r=model.TOOL_R_DEFAULT, area=None):
     """None if every step is clear, else a message naming the step and time."""
     for n, s in enumerate(steps):
-        bad = check_frames(s["frames"], tool_m, tool_r)
+        bad = check_frames(s["frames"], tool_m, tool_r, area)
         where = f'"{s["name"]}"' + (f" (step {n + 1})" if len(steps) > 1 else "")
         if bad:
             return f"{where} at {bad[0]:.1f} s: {bad[1]}"
         if s.get("return_zero"):
-            why = model.check_pose([0] * 6, tool_m, tool_r)
+            why = model.check_pose([0] * 6, tool_m, tool_r, area)
             if why:
                 return f"{where}: the zero pose is blocked ({why})"
     return None

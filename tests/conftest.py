@@ -34,6 +34,10 @@ def data_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(arm_model, "CENTER_FILE", str(tmp_path / "center_positions.json"))
     for store in library.STORES:
         monkeypatch.setattr(store, "dir", str(tmp_path / store.name))
+    # most tests move the arm around J1 = 0, outside the default work area (the right half):
+    # start with it off; tests of the work area delete this file to get the real default
+    import json
+    (tmp_path / "ik_calibration.json").write_text(json.dumps({"area": {**arm_model.DEFAULT_AREA, "enabled": False}}))
     return tmp_path
 
 

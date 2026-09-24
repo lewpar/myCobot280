@@ -353,6 +353,15 @@ select{font:12.5px var(--mono);background:var(--code);color:var(--text);border:1
       <p class="note">Hand-guide turns torque off so you can pose the arm by hand. Hold it first: it drops without torque. The stall check stops the arm when a joint stays well short of its goal without moving, which usually means something is in the way.</p>
     </div>
     <div class="card">
+      <div class="card-head"><h2>Work area</h2><span class="meta" id="areaMeta"></span></div>
+      <label class="chk"><input type="checkbox" id="areaOn" checked> Keep the arm inside the work area</label>
+      <div class="seg" role="group" aria-label="Work area presets" id="areaPresets"></div>
+      <div class="slider"><span>Direction</span><input type="range" id="areaCenter" min="-180" max="180" step="5" value="-90"><output id="areaCenterv"></output></div>
+      <div class="slider"><span>Width</span><input type="range" id="areaSpan" min="30" max="360" step="5" value="180"><output id="areaSpanv"></output></div>
+      <div class="slider"><span>Max reach</span><input type="range" id="areaRadius" min="0" max="450" step="10" value="0"><output id="areaRadiusv"></output></div>
+      <p class="note">The green slice on the floor. Every part of the arm and its attachment must stay inside it; poses outside are refused like a collision, on this page and by the backend. Directions are seen from above: 0° is where the flange points at the zero pose (away from the Pi's ports), −90° is the arm's right.</p>
+    </div>
+    <div class="card">
       <div class="card-head"><h2>Calibration</h2></div>
       <p class="note" style="margin-top:0">In hand-guide mode, pose the arm like the sim's zero pose, then set the zero. Bend each joint by hand: if the green pose turns the opposite way, reverse that joint.</p>
       <div class="row"><button id="btnZero" class="block" disabled>Set zero to the arm's current pose</button></div>
@@ -589,7 +598,19 @@ function ikRescue(qCur,target,orient){
 
 /* ---------- Collision model: keep in sync with arm_model.py (metres) ---------- */
 const COLLISION={FLOOR_MARGIN:0.005,TCP_MIN_Z:0.003,BASE_R:0.075,BASE_TOP:0.12,COLUMN_R:0.05,COLUMN_TOP:0.19,WRIST_TO_UPPER_ARM:0.05,
-  TOOL_STEP:0.015,UPPER_ARM_R:0.03,FOREARM_R:0.028};
+  TOOL_STEP:0.015,UPPER_ARM_R:0.03,FOREARM_R:0.028,AREA_CORE:0.06};
+/* Work area: the slice of the circle around the base the arm must stay inside (as arm_model.DEFAULT_AREA).
+   center: degrees, 0 = +X (where the flange points at zero), -90 = -Y (the arm's right); span: width in degrees
+   (360 = no side limit); radius_mm: outer limit, 0 = none. */
+const DEFAULT_AREA={enabled:true,center:-90,span:180,radius_mm:0};
+let area={...DEFAULT_AREA};
+function outsideArea(p,r){
+  const rad=Math.hypot(p.x,p.y),lim=area.radius_mm/1000;
+  if(lim>0&&rad+r>lim)return 'would reach past the work area';
+  if(area.span>=360||rad<COLLISION.AREA_CORE)return null;
+  const off=Math.abs(((Math.atan2(p.y,p.x)/DEG-area.center+180)%360+360)%360-180);
+  return off>area.span/2-Math.asin(Math.min(1,r/rad))/DEG?'would leave the work area':null;
+}
 const colF=makeFK(),_fl=new THREE.Vector3(),_sd=new THREE.Vector3(),_sd2=new THREE.Vector3();
 function segDist(p,a,b){
   _sd.subVectors(b,a);const L=_sd.lengthSq();
@@ -621,6 +642,10 @@ function checkPose(q){ // q in radians; null if clear, otherwise a reason
   }
   if(tool.length&&colF.tcp.z-tf<C.TCP_MIN_Z)return 'the attachment\'s tip would go below the table';
   if(colF.tcp.z<C.TCP_MIN_Z)return 'the tool tip would go below the table';
+  if(area.enabled){
+    body.push([tool.length?'the attachment\'s tip':'the flange',colF.tcp,0,tool.length?toolR:0.02,true]);
+    for(const [name,p,,rs] of body){const why=outsideArea(p,rs);if(why)return `${name} ${why}`;}
+  }
   return null;
 }
 const _pq=new Array(N).fill(0);
@@ -661,6 +686,21 @@ const root=new THREE.Group();root.rotation.x=-Math.PI/2;scene.add(root);  // bas
 
 const reachRing=new THREE.Mesh(new THREE.RingGeometry(0.278,0.282,128),new THREE.MeshBasicMaterial({color:0xe79a00,transparent:true,opacity:0.5,side:THREE.DoubleSide}));
 reachRing.position.z=0.001;root.add(reachRing);
+// the work area on the floor: a translucent slice with its edges
+const areaMat=new THREE.MeshBasicMaterial({color:0x23845a,transparent:true,opacity:0.1,side:THREE.DoubleSide,depthWrite:false});
+const areaEdgeMat=new THREE.LineBasicMaterial({color:0x23845a,transparent:true,opacity:0.7});
+const areaG=new THREE.Group();areaG.position.z=0.0006;root.add(areaG);
+function drawArea(){
+  areaG.children.slice().forEach(c=>{areaG.remove(c);c.geometry.dispose();});
+  areaG.visible=area.enabled;if(!area.enabled)return;
+  const R=area.radius_mm?area.radius_mm/1000:0.3,full=area.span>=360,a0=(area.center-area.span/2)*DEG,len=Math.min(360,area.span)*DEG;
+  areaG.add(new THREE.Mesh(new THREE.RingGeometry(COLLISION.AREA_CORE,R,96,1,a0,len),areaMat));
+  const pts=[];
+  if(!full)pts.push(V(Math.cos(a0)*COLLISION.AREA_CORE,Math.sin(a0)*COLLISION.AREA_CORE,0));
+  for(let k=0;k<=96;k++){const a=a0+len*k/96;pts.push(V(Math.cos(a)*R,Math.sin(a)*R,0));}
+  if(!full){const a1=a0+len;pts.push(V(Math.cos(a1)*COLLISION.AREA_CORE,Math.sin(a1)*COLLISION.AREA_CORE,0));}
+  areaG.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),areaEdgeMat));
+}
 // small base-frame axes so the X/Y/Z readout is easy to relate to the arm
 const axesHelper=new THREE.AxesHelper(0.08);axesHelper.position.set(-0.13,-0.13,0.001);root.add(axesHelper);
 
@@ -797,7 +837,7 @@ function applyTool(){
 }
 
 /* ---------- Target, ghost, trail (all in the base frame) ---------- */
-const target=new THREE.Vector3(0.16,-0.06,0.12);
+const target=new THREE.Vector3(0.06,-0.16,0.12);
 const targetMat=new THREE.MeshStandardMaterial({color:0xe79a00,emissive:0xe79a00,emissiveIntensity:0.55,transparent:true,opacity:0.9});
 const targetObj=new THREE.Mesh(new THREE.SphereGeometry(0.009,24,16),targetMat);targetObj.position.copy(target);root.add(targetObj);
 const dropLine=new THREE.Line(new THREE.BufferGeometry().setFromPoints([V(0,0,0),V(0,0,0)]),new THREE.LineDashedMaterial({color:0x888888,dashSize:0.008,gapSize:0.005}));
@@ -825,6 +865,7 @@ function pushTrail(p){
 function applyTheme(){
   const c=new THREE.Color(cssVar('--scene')||'#d9dee2');scene.background=c;scene.fog=new THREE.Fog(c,2,5);buildGrid();
   reachRing.material.color.set(cssVar('--amber')||'#e79a00');
+  areaMat.color.set(cssVar('--good')||'#23845a');areaEdgeMat.color.set(cssVar('--good')||'#23845a');
 }
 
 let gizmo=null;
@@ -889,10 +930,12 @@ syncSliders();
 
 function setDemo(on){demo=on;$('#btnDemo').setAttribute('aria-pressed',on);}
 $('#btnDemo').addEventListener('click',()=>{homeLock=false;setDemo(!demo);if(demo){demoT=0;$('#optDown').checked=true;
-  const b=ikRescue(qIK,V(0.23,0,0.11),true);if(b)for(let i=0;i<N;i++)qIK[i]=b.q[i];}});
+  const c=areaDir(),b=ikRescue(qIK,V(0.23*Math.cos(c),0.23*Math.sin(c),0.11),true);if(b)for(let i=0;i<N;i++)qIK[i]=b.q[i];}});
 $('#btnHome').addEventListener('click',()=>{setDemo(false);setStopped(false);for(let i=0;i<N;i++)qIK[i]=0;fk(qIK,ikF);setTarget(ikF.tcp.clone());$('#optDown').checked=false;homeLock=true;});
 $('#btnRandom').addEventListener('click',()=>{setDemo(false);homeLock=false;
-  const r=0.12+Math.random()*0.13,a=Math.random()*Math.PI*2,z=0.03+Math.random()*0.2;setTarget(V(Math.cos(a)*r,Math.sin(a)*r,z));});
+  const span=area.enabled?Math.min(area.span,360)*0.8:360,a=areaDir()+(Math.random()-0.5)*span*DEG;   // inside the work area
+  const r=0.12+Math.random()*0.13,z=0.03+Math.random()*0.2;setTarget(V(Math.cos(a)*r,Math.sin(a)*r,z));});
+function areaDir(){return area.enabled&&area.span<360?area.center*DEG:0;}
 $('#optDown').addEventListener('change',()=>{homeLock=false;lastRescueKey='';});
 $('#optTrail').addEventListener('change',e=>{trail.visible=e.target.checked;if(!e.target.checked){trailCount=0;trailGeo.setDrawRange(0,0);}});
 $('#optGhost').addEventListener('change',e=>{ghost.visible=ghostDots.visible=e.target.checked;});
@@ -909,6 +952,33 @@ const uiGet=k=>{try{return localStorage.getItem(k);}catch(_){return null;}};
 const uiSet=(k,v)=>{try{v==null?localStorage.removeItem(k):localStorage.setItem(k,v);}catch(_){}};
 {let a=null;try{a=JSON.parse(uiGet('mycobot-attachment'));}catch(_){}   // last attachment used on this device (the backend's wins once connected)
  if(a&&ATTACHMENTS[a.id])setAttachment(a.id,false,a.len,a.dia);else setAttachment('none',false);}
+
+/* work area card (Robot tab) */
+const AREA_PRESETS=[['Right half',{center:-90,span:180}],['Left half',{center:90,span:180}],['Front half',{center:0,span:180}],['Full circle',{center:-90,span:360}]];
+const areaDirName=c=>({'-90':'right','90':'left','0':'front','180':'back','-180':'back'})[String(Math.round(c))]||'';
+let areaTimer=null;
+function setArea(a,user){
+  area={enabled:!!a.enabled,center:+a.center,span:+a.span,radius_mm:+a.radius_mm||0};
+  $('#areaOn').checked=area.enabled;$('#areaCenter').value=area.center;$('#areaSpan').value=area.span;$('#areaRadius').value=area.radius_mm;
+  $('#areaCenterv').textContent=`${area.center}°`+(areaDirName(area.center)?` ${areaDirName(area.center)}`:'');
+  $('#areaSpanv').textContent=area.span>=360?'full':area.span+'°';
+  $('#areaRadiusv').textContent=area.radius_mm?area.radius_mm+' mm':'no limit';
+  ['#areaCenter','#areaSpan','#areaRadius'].forEach(id=>$(id).disabled=!area.enabled);
+  $('#areaPresets').querySelectorAll('button').forEach((b,k)=>{const p=AREA_PRESETS[k][1];
+    b.setAttribute('aria-pressed',area.enabled&&area.span===p.span&&(p.span>=360||area.center===p.center));});
+  $('#areaMeta').textContent=!area.enabled?'off':area.span>=360?(area.radius_mm?'circle':'no side limit'):`${area.span}° slice`;
+  drawArea();homeLock=false;lastRescueKey='';
+  uiSet('mycobot-area',JSON.stringify(area));
+  if(user){clearTimeout(areaTimer);areaTimer=setTimeout(()=>send({type:'set_area',...area}),250);}
+}
+AREA_PRESETS.forEach(([name,p])=>{const b=document.createElement('button');b.type='button';b.textContent=name;
+  b.addEventListener('click',()=>setArea({...area,...p,enabled:true},true));$('#areaPresets').appendChild(b);});
+$('#areaOn').addEventListener('change',e=>setArea({...area,enabled:e.target.checked},true));
+$('#areaCenter').addEventListener('input',e=>setArea({...area,center:+e.target.value},true));
+$('#areaSpan').addEventListener('input',e=>setArea({...area,span:+e.target.value},true));
+$('#areaRadius').addEventListener('input',e=>{const v=+e.target.value;setArea({...area,radius_mm:v<100?0:v},true);});
+{let a=null;try{a=JSON.parse(uiGet('mycobot-area'));}catch(_){}
+ setArea(a&&typeof a.center==='number'?a:DEFAULT_AREA,false);}
 const tabs=[...document.querySelectorAll('.tab')];
 function showTab(name,focus){
   tabs.forEach(t=>{const on=t.id==='tabbtn-'+name;t.setAttribute('aria-selected',on);t.tabIndex=on?0:-1;
@@ -1536,7 +1606,7 @@ $('#btnWs').addEventListener('click',()=>{
   try{sock=new WebSocket($('#wsUrl').value.trim());}catch(err){wsNote('That address is not a valid WebSocket URL. It should look like ws://raspberrypi.local:8000/ws/arm.');return;}
   ws=sock;$('#btnWs').textContent='Disconnect';$('#btnWs').setAttribute('aria-pressed','true');wsNote('Connecting…');
   let opened=false;
-  let toolSynced=false;
+  let toolSynced=false,areaSynced=false;
   sock.onopen=()=>{opened=true;lastSent='';$('#btnLimp').disabled=false;$('#recLimp').disabled=false;
     sock.send(JSON.stringify({type:'auth',password:pw}));storePw(pw);
     wsNote('Connected. Waiting for servo readings before sending anything.');libAutoload();
@@ -1569,6 +1639,9 @@ $('#btnWs').addEventListener('click',()=>{
     if(!toolSynced&&typeof m.tool_mm==='number'){ // the backend's saved attachment wins: it's what its collision check uses
       toolSynced=true;const was=attachment;setAttachment(m.attachment||'custom',false,m.tool_mm,m.tool_d_mm);
       if(was!==attachment)wsNote(`The arm is set up with: ${ATTACHMENTS[attachment].name}. Change it in Attachments if that's wrong.`);}
+    if(!areaSynced&&m.area&&typeof m.area.center==='number'){ // and so does its work area
+      areaSynced=true;const was=JSON.stringify(area);setArea(m.area,false);
+      if(was!==JSON.stringify(area))wsNote('Using the work area saved on the arm (Robot tab).');}
     // warn when calibration is missing or a zero leaves a joint short of its travel
     const notes=[];
     if(m.calibrated===false)notes.push('Not calibrated yet, so the angles use default zeros and the arm-side collision check is only approximate.');
@@ -1616,7 +1689,8 @@ const clock=new THREE.Clock();
 function frame(){
   requestAnimationFrame(frame);
   const dt=Math.min(clock.getDelta(),0.05);
-  if(demo){demoT+=dt*0.7;setTarget(V(0.23+0.04*Math.sin(2*demoT),0.08*Math.sin(demoT),0.11+0.03*Math.sin(3*demoT)));}
+  if(demo){demoT+=dt*0.7;const u=0.23+0.04*Math.sin(2*demoT),v=0.08*Math.sin(demoT),c=areaDir();   // centred in the work area
+    setTarget(V(u*Math.cos(c)-v*Math.sin(c),u*Math.sin(c)+v*Math.cos(c),0.11+0.03*Math.sin(3*demoT)));}
   const orient=$('#optDown').checked;
   const haveReal=measured&&measured.every(v=>v!==null)&&performance.now()-measuredAt<1500;
   if(play)playStep();

@@ -136,8 +136,8 @@ const input = (s, v) => { $(s).value = v; $(s).dispatchEvent(new w.Event('input'
 
   // 7. waypoints
   click('#tabbtn-record');
-  click('#btnRandom'); await sleep(1200); click('#wpAdd');
-  input('#tx', 180); input('#ty', 40); await sleep(1200); click('#wpAdd');
+  input('#tx', 40); input('#ty', -190); input('#tz', 100); await sleep(1500); click('#wpAdd');
+  input('#tx', 120); input('#ty', -150); await sleep(1200); click('#wpAdd');
   check(txt('#wpMeta') === '2 points' && !$('#wpMake').disabled, 'two waypoints added');
   click('#wpMake');
   check(!$('#recSave').hidden && /through 2 points/.test(txt('#recNote')), 'waypoints make a take', txt('#recNote'));
@@ -180,8 +180,9 @@ const input = (s, v) => { $(s).value = v; $(s).dispatchEvent(new w.Event('input'
   const plus = $('#jogXYZ').querySelectorAll('button')[1];
   plus.dispatchEvent(new w.MouseEvent('pointerdown', { bubbles: true })); plus.dispatchEvent(new w.MouseEvent('pointerup', { bubbles: true }));
   check(+$('#tx').value === x0 + 5, 'jog X +5 mm', `${x0} -> ${$('#tx').value}`);
+  input('#tx', 60); input('#ty', -160); input('#tz', 120); await sleep(1500);
   click('#jogModeJ');
-  await sleep(800);
+  await sleep(300);
   const j1 = parseFloat(w.document.querySelector('.joint .val').textContent);
   const jplus = $('#jogJ').querySelectorAll('button')[1];
   jplus.dispatchEvent(new w.MouseEvent('pointerdown', { bubbles: true })); jplus.dispatchEvent(new w.MouseEvent('pointerup', { bubbles: true }));
@@ -200,6 +201,24 @@ const input = (s, v) => { $(s).value = v; $(s).dispatchEvent(new w.Event('input'
   input('#tool', 40); input('#toolD', 30);
   check(!$('#attCustom').hidden && /40 × ⌀30/.test(txt('#attList')), 'custom size', txt('#attList'));
   click(att('Vacuum suction'));
+
+  // 10c. work area: default right half; the figure-8 runs inside it; presets change it
+  click('#tabbtn-robot');
+  check($('#areaOn').checked && txt('#areaCenterv').includes('right') && txt('#areaSpanv') === '180°', 'default work area: right half', txt('#areaCenterv'));
+  click('#tabbtn-motion'); click('#btnDemo');
+  let blockedSeen = '';
+  for (let k = 0; k < 40; k++) { await sleep(100); if (/Blocked/.test(txt('#statusText'))) blockedSeen = txt('#statusText'); }
+  click('#btnDemo');
+  check(!blockedSeen, 'figure-8 stays inside the work area', blockedSeen);
+  input('#tx', 0); input('#ty', 200); input('#tz', 100);          // a target on the left
+  await until(() => /work area/.test(txt('#statusText')), 3000);
+  check(/work area/.test(txt('#statusText')), 'a target on the left is refused', txt('#statusText'));
+  click('#tabbtn-robot');
+  click([...$('#areaPresets').children].find(b => b.textContent === 'Left half'));
+  await sleep(1500);
+  check(!/work area/.test(txt('#statusText')), 'left half preset allows it', txt('#statusText'));
+  click([...$('#areaPresets').children].find(b => b.textContent === 'Right half'));
+  input('#tx', 60); input('#ty', -160); input('#tz', 120);
 
   // 11. connected: playback runs on the backend and the page sends no goals meanwhile
   click('#btnWs');
@@ -223,6 +242,12 @@ const input = (s, v) => { $(s).value = v; $(s).dispatchEvent(new w.Event('input'
   click([...$('#attList').children].find(b => b.textContent.startsWith('Vacuum suction')));
   await until(() => wsSent.some(m => m.type === 'set_tool'), 2000);
   check(wsSent.some(m => m.type === 'set_tool' && m.attachment === 'vacuum'), 'set_tool sent', JSON.stringify(wsSent.filter(m => m.type === 'set_tool')));
+
+  // 11c. changing the work area tells the backend
+  click('#tabbtn-robot');
+  $('#areaSpan').value = 150; $('#areaSpan').dispatchEvent(new w.Event('input'));
+  await until(() => wsSent.some(m => m.type === 'set_area' && m.span === 150), 2000);
+  check(wsSent.some(m => m.type === 'set_area' && m.span === 150 && m.center === -90), 'set_area sent', JSON.stringify(wsSent.filter(m => m.type === 'set_area')));
 
   // 12. stall guard toggle and fault display
   $('#optStall').checked = false; $('#optStall').dispatchEvent(new w.Event('change'));

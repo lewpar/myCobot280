@@ -26,18 +26,24 @@ def node(script, data=None, timeout=60):
     return r.stdout
 
 
-@pytest.mark.parametrize("tool_mm,tool_d_mm", [(0, 20), (80, 25), (150, 60)])
-def test_collision_model_matches(tool_mm, tool_d_mm):
+AREAS = [None, dict(model.DEFAULT_AREA), {"enabled": True, "center": 30.0, "span": 120.0, "radius_mm": 250.0},
+         {"enabled": True, "center": 180.0, "span": 360.0, "radius_mm": 200.0}]
+
+
+@pytest.mark.parametrize("tool_mm,tool_d_mm,area", [(0, 20, None), (80, 25, None), (150, 60, None),
+                                                    (0, 20, AREAS[1]), (80, 25, AREAS[1]), (80, 25, AREAS[2]),
+                                                    (40, 10, AREAS[3])])
+def test_collision_model_matches(tool_mm, tool_d_mm, area):
     rnd = random.Random(280 + tool_mm)
     poses = [[round(rnd.uniform(lo - 3, hi + 3), 2) for lo, hi in model.URDF_LIMITS_DEG] for _ in range(3000)]
     # plus poses near the table and the base, where the checks are close calls
     poses += [[rnd.uniform(-180, 180), rnd.uniform(40, 140), rnd.uniform(-150, 150), rnd.uniform(-150, 150),
                rnd.uniform(-150, 150), 0] for _ in range(2000)]
-    js = json.loads(node("parity.js", {"poses": poses, "tool_mm": tool_mm, "tool_d_mm": tool_d_mm}))["blocked"]
-    py = [model.check_pose(q, tool_mm / 1000, tool_d_mm / 2000) is not None for q in poses]
+    js = json.loads(node("parity.js", {"poses": poses, "tool_mm": tool_mm, "tool_d_mm": tool_d_mm, "area": area}))["blocked"]
+    py = [model.check_pose(q, tool_mm / 1000, tool_d_mm / 2000, area) is not None for q in poses]
     bad = [q for q, a, b in zip(poses, js, py) if a != b]
     assert not bad, f"{len(bad)} mismatches, e.g. {bad[:3]}"
-    assert 0.1 < sum(py) / len(py) < 0.9        # the sample actually exercises both outcomes
+    assert 50 < sum(py) < len(py) - 50          # the sample actually exercises both outcomes
 
 
 def test_attachments_match():
@@ -46,6 +52,10 @@ def test_attachments_match():
         ["node", "-e", "const {pureBlocks}=require('./page');process.stdout.write(JSON.stringify(pureBlocks().ATTACHMENTS))"],
         cwd=JS, capture_output=True, text=True, check=True).stdout)
     assert set(js) == set(model.ATTACHMENTS)
+    area = json.loads(subprocess.run(
+        ["node", "-e", "const {pureBlocks}=require('./page');process.stdout.write(JSON.stringify(pureBlocks().DEFAULT_AREA))"],
+        cwd=JS, capture_output=True, text=True, check=True).stdout)
+    assert area == model.DEFAULT_AREA
     for k, a in model.ATTACHMENTS.items():
         assert (js[k]["length"], js[k]["diameter"]) == (a["length_mm"], a["diameter_mm"]), k
 

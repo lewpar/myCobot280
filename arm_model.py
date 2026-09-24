@@ -48,6 +48,14 @@ UPPER_ARM_R = 0.03       # J2-J3 link radius + margin, for attachment points
 FOREARM_R = 0.028        # J3-J4 link radius + margin
 TOOL_R_DEFAULT = 0.01    # radius assumed when only a length is known (a 20 mm custom tool)
 
+# Work area: a slice of the circle around the base the arm must stay inside (keep in sync with the page).
+# center: direction of the slice's middle in degrees (0 = +X, the way the flange points at the zero pose;
+# -90 = -Y, the arm's right). span: its width in degrees (360 = the whole circle). radius_mm: outer limit,
+# 0 for none. Every body point, attachment point and the tool tip must be inside, with its radius as margin.
+# Points within AREA_CORE of the base axis are always inside (the column itself turns there).
+AREA_CORE = 0.06
+DEFAULT_AREA = {"enabled": True, "center": -90.0, "span": 180.0, "radius_mm": 0.0}
+
 # Attachments the page offers (keep in sync with ATTACHMENTS in ik_sim.html): length and diameter in mm.
 ATTACHMENTS = {
     "none": {"name": "No attachment", "length_mm": 0, "diameter_mm": 0},
@@ -56,7 +64,7 @@ ATTACHMENTS = {
 }
 
 DEFAULT_CALIB = {"zero": [2048] * 6, "dir": [1] * 6, "tool_mm": 0.0,
-                 "tool_d_mm": TOOL_R_DEFAULT * 2000, "attachment": "custom",
+                 "tool_d_mm": TOOL_R_DEFAULT * 2000, "attachment": "custom", "area": dict(DEFAULT_AREA),
                  "speed_unit": 1.0,    # servo speed register: steps/s per unit (STS: 1)
                  "acc_unit": 100.0}    # servo acceleration register: steps/s^2 per unit (STS: 100)
 
@@ -116,9 +124,35 @@ def _seg_dist(p, a, b):
     return math.dist(p, c)
 
 
-def check_pose(q_deg, tool_m=0.0, tool_r=TOOL_R_DEFAULT):
+def clean_area(a):
+    """A valid work area dict, or None if ``a`` isn't one."""
+    try:
+        out = {"enabled": bool(a["enabled"]), "center": float(a["center"]), "span": float(a["span"]),
+               "radius_mm": float(a.get("radius_mm", 0))}
+    except (KeyError, TypeError, ValueError):
+        return None
+    ok = (-180 <= out["center"] <= 180 and 30 <= out["span"] <= 360
+          and (out["radius_mm"] == 0 or 100 <= out["radius_mm"] <= 450))
+    return out if ok and all(math.isfinite(v) for v in (out["center"], out["span"], out["radius_mm"])) else None
+
+
+def _outside_area(p, r, area):
+    """None if point p (with radius r) is inside the work area, else what's wrong."""
+    rad = math.hypot(p[0], p[1])
+    lim = area["radius_mm"] / 1000
+    if lim > 0 and rad + r > lim:
+        return "would reach past the work area"
+    if area["span"] >= 360 or rad < AREA_CORE:
+        return None
+    off = abs((math.degrees(math.atan2(p[1], p[0])) - area["center"] + 180) % 360 - 180)
+    if off > area["span"] / 2 - math.degrees(math.asin(min(1.0, r / rad))):
+        return "would leave the work area"
+    return None
+
+
+def check_pose(q_deg, tool_m=0.0, tool_r=TOOL_R_DEFAULT, area=None):
     """None if the pose is clear, otherwise a short reason. The attachment is ``tool_m`` long with
-    radius ``tool_r`` (metres)."""
+    radius ``tool_r`` (metres); ``area`` is a work area dict (see DEFAULT_AREA) or None for no limit."""
     for j, (q, (lo, hi)) in enumerate(zip(q_deg, URDF_LIMITS_DEG)):
         if not lo - 0.5 <= q <= hi + 0.5:
             return f"J{j + 1} would pass its {lo}..{hi} degree limit"
@@ -159,16 +193,22 @@ def check_pose(q_deg, tool_m=0.0, tool_r=TOOL_R_DEFAULT):
         return "the attachment's tip would go below the table"
     if k["tcp"][2] < TCP_MIN_Z:
         return "the tool tip would go below the table"
+    if area and area["enabled"]:
+        tip = ("the attachment's tip" if tool else "the flange", k["tcp"], tool_r if tool else 0.02)
+        for name, p, _, r_side, _ in body + [(tip[0], tip[1], 0, tip[2], True)]:
+            why = _outside_area(p, r_side, area)
+            if why:
+                return f"{name} {why}"
     return None
 
 
-def check_path(q_from, q_to, tool_m=0.0, steps=16, tool_r=TOOL_R_DEFAULT):
+def check_path(q_from, q_to, tool_m=0.0, steps=16, tool_r=TOOL_R_DEFAULT, area=None):
     """Check poses along a straight joint-space move (an approximation of what the servos do)."""
-    if any(v is None for v in q_from) or check_pose(q_from, tool_m, tool_r):
-        return check_pose(q_to, tool_m, tool_r)   # already in contact (or unknown): allow moving to any clear pose
+    if any(v is None for v in q_from) or check_pose(q_from, tool_m, tool_r, area):
+        return check_pose(q_to, tool_m, tool_r, area)   # already in contact (or unknown): allow moving to any clear pose
     for s in range(1, steps + 1):
         f = s / steps
-        why = check_pose([a + (b - a) * f for a, b in zip(q_from, q_to)], tool_m, tool_r)
+        why = check_pose([a + (b - a) * f for a, b in zip(q_from, q_to)], tool_m, tool_r, area)
         if why:
             return why + (" on the way there" if s < steps else "")
     return None
@@ -211,14 +251,16 @@ def load_calibration():
                 c[key] = float(saved[key])
         if saved.get("attachment") in ATTACHMENTS:
             c["attachment"] = saved["attachment"]
+        if clean_area(saved.get("area")):
+            c["area"] = clean_area(saved["area"])
     except (OSError, ValueError, TypeError):
         pass
     return c
 
 
 def save_calibration(c):
-    data = {k: c[k] for k in ("zero", "dir", "tool_mm", "tool_d_mm", "attachment", "speed_unit", "acc_unit",
-                              "calibrated")}
+    data = {k: c[k] for k in ("zero", "dir", "tool_mm", "tool_d_mm", "attachment", "area", "speed_unit",
+                              "acc_unit", "calibrated")}
     with _file_lock:
         tmp = CALIB_FILE + ".tmp"
         with open(tmp, "w") as f:
@@ -248,4 +290,4 @@ def check_tick_move(c, current_ticks, new_ticks):
         return "not every servo answered, so the move can't be checked"
     q0 = pose_from_ticks(c, current_ticks)
     q1 = pose_from_ticks(c, [n if n is not None else t for n, t in zip(new_ticks, current_ticks)])
-    return check_path(q0, q1, c["tool_mm"] / 1000, tool_r=c["tool_d_mm"] / 2000)
+    return check_path(q0, q1, c["tool_mm"] / 1000, tool_r=c["tool_d_mm"] / 2000, area=c["area"])

@@ -527,7 +527,7 @@ def start_playback(req: PlaybackRequest):
         for st in seq["steps"]:
             r = _get(library.RECORDINGS, st["recording"], "recording (a step of this sequence was deleted)")
             steps.append({**r, "pause": st["pause"]})
-    why = player.check_steps(steps, link.tool_m, link.tool_r)
+    why = player.check_steps(steps, link.tool_m, link.tool_r, link.area)
     if why:
         raise HTTPException(409, f"Playback refused: {why}.")
     pb = player.Playback(name, steps, time.monotonic(), rate=req.rate, loop=req.loop, timed=req.timed,

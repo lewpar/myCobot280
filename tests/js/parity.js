@@ -4,6 +4,7 @@ const { pureBlocks } = require('./page');
 const K = pureBlocks();
 const inp = JSON.parse(require('fs').readFileSync(0, 'utf8'));
 K.setTool((inp.tool_mm || 0) / 1000, (inp.tool_d_mm || 20) / 2000);
+K.setArea(inp.area || { enabled: false, center: 0, span: 360, radius_mm: 0 });
 const out = { blocked: inp.poses.map(q => !!K.checkPose(q.map(v => v * K.DEG))) };
 if (inp.player) {
   const p = inp.player, pl = new K.Player('x', p.steps, 0, p.opts), arm = p.arm.slice(), goals = [];
