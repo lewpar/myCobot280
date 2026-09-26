@@ -73,8 +73,8 @@ export function initMotion(){
   $('#btnHome').addEventListener('click',()=>{setDemo(false);setStopped(false);for(let i=0;i<N;i++)qIK[i]=0;targetFromPose();$('#optDown').checked=false;S.homeLock=true;});
   $('#btnRandom').addEventListener('click',()=>{setDemo(false);S.homeLock=false;
     const span=area.enabled?Math.min(area.span,360)*0.8:360,a=areaDir()+(Math.random()-0.5)*span*DEG;   // inside the work area
-    const r=0.12+Math.random()*0.13,z=0.03+Math.random()*0.2;setTarget(V(Math.cos(a)*r,Math.sin(a)*r,z));});
-  $('#optDown').addEventListener('change',()=>{S.homeLock=false;S.lastRescueKey='';});
+    const r0=Math.max(0.12,area.enabled?(area.base_mm||0)/1000+0.02:0),r=r0+Math.random()*Math.max(0.02,0.25-r0),z=0.03+Math.random()*0.2;setTarget(V(Math.cos(a)*r,Math.sin(a)*r,z));});
+  $('#optDown').addEventListener('change',()=>{S.homeLock=false;S.rescue.key='';});
   $('#optTrail').addEventListener('change',e=>{trail.visible=e.target.checked;if(!e.target.checked)clearTrail();});
   $('#optGhost').addEventListener('change',e=>{ghost.visible=ghostDots.visible=e.target.checked;});
   $('#poseSave').addEventListener('click',async()=>{

@@ -151,7 +151,8 @@
       <div class="slider"><span>Direction</span><input type="range" id="areaCenter" min="-180" max="180" step="5" value="0"><output id="areaCenterv"></output></div>
       <div class="slider"><span>Width</span><input type="range" id="areaSpan" min="30" max="360" step="5" value="180"><output id="areaSpanv"></output></div>
       <div class="slider"><span>Max reach</span><input type="range" id="areaRadius" min="0" max="450" step="10" value="0"><output id="areaRadiusv"></output></div>
-      <p class="note">The green slice on the floor. The tool tip (the target point: the flange centre, or the attachment's tip) must stay inside it; the rest of the arm may cross its edges. Poses that take the tip outside are refused like a collision, on this page and by the backend. Directions are seen from above: 0° is the front, where the flange points at the zero pose (away from the Pi's ports); −90° is the arm's right.</p>
+      <div class="slider"><span>Keep clear of the base</span><input type="range" id="areaBase" min="0" max="250" step="10" value="150"><output id="areaBasev"></output></div>
+      <p class="note">The green slice on the floor. The tool tip (the target point: the flange centre, or the attachment's tip) must stay inside it; the rest of the arm may cross its edges. The tip also keeps clear of the base (up to 25 cm high): reaching in that close makes the arm fold its wrist back onto itself. Poses that take the tip outside are refused like a collision, on this page and by the backend. Directions are seen from above: 0° is the front, where the flange points at the zero pose (away from the Pi's ports); −90° is the arm's right.</p>
     </div>
     <div class="card">
       <div class="card-head"><h2>Calibration</h2></div>

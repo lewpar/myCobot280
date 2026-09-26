@@ -47,14 +47,22 @@ TOOL_STEP = 0.015
 UPPER_ARM_R = 0.03       # J2-J3 link radius + margin, for attachment points
 FOREARM_R = 0.028        # J3-J4 link radius + margin
 TOOL_R_DEFAULT = 0.01    # radius assumed when only a length is known (a 20 mm custom tool)
+# The ATOM head (5x5 LED matrix) sits behind the J5 body on the J6 axis, facing away from the flange:
+# (distance behind the flange face, radius) of the spheres that cover it. Checked like the wrist, and
+# against the forearm, which it can fold back into.
+ATOM_SPHERES = ((0.050, 0.017), (0.066, 0.016))
 
 # Work area: a slice of the circle around the base the tool tip (the TCP: flange centre, or the attachment's
 # tip) must stay inside; the rest of the arm may cross its edges. Keep in sync with the page.
 # center: direction of the slice's middle in degrees (0 = +X, the way the flange points at the zero pose,
 # away from the Pi's ports; -90 = -Y, the arm's right). span: its width in degrees (360 = the whole circle).
-# radius_mm: outer limit, 0 for none. A tip within AREA_CORE of the base axis is always inside.
+# radius_mm: outer limit, 0 for none. base_mm: a keep-out cylinder of that radius around the base axis, up to
+# BASE_KEEPOUT_TOP high, that the tip may not enter (0 for none): working that close in makes the arm fold its
+# wrist back onto itself. Above it (the zero pose, the raised poses routes go through) a tip within AREA_CORE
+# of the axis is always inside.
 AREA_CORE = 0.06
-DEFAULT_AREA = {"enabled": True, "center": 0.0, "span": 180.0, "radius_mm": 0.0}
+BASE_KEEPOUT_TOP = 0.25
+DEFAULT_AREA = {"enabled": True, "center": 0.0, "span": 180.0, "radius_mm": 0.0, "base_mm": 150.0}
 
 # Attachments the page offers (keep in sync with ATTACHMENTS in sim/js/kinematics.js): length and diameter in mm.
 ATTACHMENTS = {
@@ -128,12 +136,14 @@ def clean_area(a):
     """A valid work area dict, or None if ``a`` isn't one."""
     try:
         out = {"enabled": bool(a["enabled"]), "center": float(a["center"]), "span": float(a["span"]),
-               "radius_mm": float(a.get("radius_mm", 0))}
+               "radius_mm": float(a.get("radius_mm", 0)), "base_mm": float(a.get("base_mm", DEFAULT_AREA["base_mm"]))}
     except (KeyError, TypeError, ValueError):
         return None
     ok = (-180 <= out["center"] <= 180 and 30 <= out["span"] <= 360
-          and (out["radius_mm"] == 0 or 100 <= out["radius_mm"] <= 450))
-    return out if ok and all(math.isfinite(v) for v in (out["center"], out["span"], out["radius_mm"])) else None
+          and (out["radius_mm"] == 0 or 100 <= out["radius_mm"] <= 450)
+          and (out["base_mm"] == 0 or 60 <= out["base_mm"] <= 250)
+          and (out["radius_mm"] == 0 or out["base_mm"] < out["radius_mm"]))
+    return out if ok and all(math.isfinite(v) for k, v in out.items() if k != "enabled") else None
 
 
 def _outside_area(p, area):
@@ -142,6 +152,8 @@ def _outside_area(p, area):
     lim = area["radius_mm"] / 1000
     if lim > 0 and rad > lim:
         return "would reach past the work area"
+    if rad < area.get("base_mm", 0) / 1000 and p[2] < BASE_KEEPOUT_TOP:
+        return "would come too close to the base"
     if area["span"] >= 360 or rad < AREA_CORE:
         return None
     off = abs((math.degrees(math.atan2(p[1], p[0])) - area["center"] + 180) % 360 - 180)
@@ -165,6 +177,8 @@ def check_pose(q_deg, tool_m=0.0, tool_r=TOOL_R_DEFAULT, area=None):
         ("J6", j[5], 0.022, 0.022, True),
         ("the flange", k["flange"], 0.0, 0.02, True),
     ]
+    atom = [(tuple(f - n * d for f, n in zip(k["flange"], k["normal"])), r) for d, r in ATOM_SPHERES]
+    body += [("the ATOM", p, r, r, True) for p, r in atom]
     tool = []
     if tool_m > 0.002:
         # lowest point of the cylinder's cross-section: its full radius when level, nothing when vertical
@@ -182,6 +196,9 @@ def check_pose(q_deg, tool_m=0.0, tool_r=TOOL_R_DEFAULT, area=None):
             return f"{name} would hit the shoulder"
         if wrist and _seg_dist(p, j[1], j[2]) < WRIST_TO_UPPER_ARM:
             return f"{name} would hit the upper arm"
+    for p, r in atom:
+        if _seg_dist(p, j[2], j[3]) < FOREARM_R + r:
+            return "the ATOM would hit the forearm"
     for p in tool:   # the attachment folding back into the arm's own links
         if _seg_dist(p, j[1], j[2]) < UPPER_ARM_R + tool_r:
             return "the attachment would hit the upper arm"
@@ -198,10 +215,12 @@ def check_pose(q_deg, tool_m=0.0, tool_r=TOOL_R_DEFAULT, area=None):
     return None
 
 
-def check_path(q_from, q_to, tool_m=0.0, steps=16, tool_r=TOOL_R_DEFAULT, area=None):
-    """Check poses along a straight joint-space move (an approximation of what the servos do)."""
+def check_path(q_from, q_to, tool_m=0.0, steps=16, tool_r=TOOL_R_DEFAULT, area=None, every_deg=3.0):
+    """Check poses along a straight joint-space move (ik_link synchronises the servos' speeds so they follow
+    it, roughly). At least ``steps`` samples, and one every ``every_deg`` of the joint that moves most."""
     if any(v is None for v in q_from) or check_pose(q_from, tool_m, tool_r, area):
         return check_pose(q_to, tool_m, tool_r, area)   # already in contact (or unknown): allow moving to any clear pose
+    steps = max(steps, math.ceil(max(abs(b - a) for a, b in zip(q_from, q_to)) / every_deg))
     for s in range(1, steps + 1):
         f = s / steps
         why = check_pose([a + (b - a) * f for a, b in zip(q_from, q_to)], tool_m, tool_r, area)

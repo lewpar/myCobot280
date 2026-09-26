@@ -107,3 +107,20 @@ def test_playback_checked_with_the_attachment(client):
     main_link.calib.update(attachment="vacuum", tool_mm=80.0, tool_d_mm=25.0)
     r = client.post("/api/playback", headers=H, json={"recording": rid})
     assert r.status_code == 409 and "attachment" in r.json()["detail"]
+
+
+def test_the_atom_head_is_part_of_the_arm(monkeypatch):
+    """The ATOM behind the J5 body can hit the table, the base or the arm's own links: those poses are refused,
+    and are clear without it."""
+    rnd = random.Random(5)
+    found = set()
+    for _ in range(20000):
+        q = [rnd.uniform(lo, hi) for lo, hi in model.URDF_LIMITS_DEG]
+        why = model.check_pose(q)
+        if why and "ATOM" in why:
+            with monkeypatch.context() as m:
+                m.setattr(model, "ATOM_SPHERES", ())
+                if model.check_pose(q) is None:
+                    found.add(why)
+    assert {"the ATOM would hit the forearm", "the ATOM would hit the shoulder"} <= found, found
+    assert model.check_pose([0] * 6) is None

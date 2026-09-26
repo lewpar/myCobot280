@@ -109,16 +109,24 @@ The **attachment** is a cylinder (`tool_mm` long, `tool_d_mm` wide) along the fl
 15 mm (`TOOL_STEP`). Its points count as wrist points with the tube's radius, plus: against the table only
 its lowest cross-section point counts (full radius when level, 0 when vertical, so a downward tip may
 touch down to `TCP_MIN_Z`), and they must clear the upper arm (J2–J3, `UPPER_ARM_R` + r) and forearm
-(J3–J4, `FOREARM_R` + r).
+(J3–J4, `FOREARM_R` + r). The **ATOM head** (behind the J5 body, on the J6 axis) is two spheres
+(`ATOM_SPHERES`: 50 mm / r 17 and 66 mm / r 16 behind the flange face), checked like wrist points plus the forearm.
+The forearm check uses the kinematic J3–J4 line; the 3D model's forearm tube sits up to ~30 mm off it, which
+is one reason close-in folded poses are kept out by `base_mm` instead.
 
-The **work area** (`area`: `enabled`, `center` deg, `span` deg, `radius_mm`; default the front half,
-center 0°, span 180°) is enforced in `check_pose` too, but **only for the tool tip** (the TCP: flange
+The **work area** (`area`: `enabled`, `center` deg, `span` deg, `radius_mm`, `base_mm`; default the front
+half, center 0°, span 180°, base keep-out 150 mm) is enforced in `check_pose` too, but **only for the tool tip** (the TCP: flange
 centre or attachment tip); the rest of the arm may cross the edges (`_outside_area`). A tip within
-`AREA_CORE` (60 mm) of the base axis is always inside. 0° is +X, where the flange points at the zero pose
+`AREA_CORE` (60 mm) of the base axis is always inside, except that **`base_mm`** keeps the tip out of a
+cylinder that radius around the base axis up to `BASE_KEEPOUT_TOP` (250 mm): reaching in that close and low
+folds the wrist back onto the arm (the ATOM into the column). It stops below 250 mm so the zero pose and the
+raised poses routes go through stay allowed. Saved areas without `base_mm` get the default. 0° is +X, where the flange points at the zero pose
 (away from the Pi's ports); −90° is −Y, the arm's right. Everything that checks collisions passes
 `tool_m`, `tool_r` and `area`. The test fixture turns the area off; `test_work_area.py` uses the default.
-`check_path` samples 16 poses along a **straight joint-space** path (an approximation of what the
-servos do). If the start pose already collides, only the target is checked so you can move out.
+`check_path` samples a **straight joint-space** path: at least 16 poses, and one every 3° of the joint that
+moves most. The servos are made to follow that line: `ik_link._send_goal` splits a goal's speed between the
+joints by how far each goes (the acceleration stays the same for all, so stopping stays quick), and the page's
+simulated servos do the same. If the start pose already collides, only the target is checked so you can move out.
 It's deliberately conservative and approximate; it is not a substitute for watching the arm.
 
 ## Simulator page internals (`static/sim/`)
@@ -143,10 +151,19 @@ It's deliberately conservative and approximate; it is not a substitute for watch
   (Motion / Joints / Robot / ATOM / Attachments / Record / Play) and a status bar. Tabs size to their labels. The script finds everything by element id, so keep the
   ids when moving markup around. The canvas sizes to `#stage` (ResizeObserver), not the window.
 - IK: damped least squares on the geometric Jacobian, **task priority** (position first, "flange
-  facing down" in the null space), step scaled uniformly, joint limits clamped, and `ikRescue`
-  restarts from seeded poses when stuck or colliding (collisions add a 1e6 score penalty).
-- `qIK` = solver output; `qCmd` = what the servos are told. **Only collision-free poses and paths are
-  copied from qIK to qCmd.** The simulated servos use a trapezoidal velocity profile toward qCmd.
+  facing down" in the null space), step scaled uniformly, joint limits clamped. Each frame `ik.solveFrame`
+  steps it **clear of collisions** (`ikIterateClear`: it stops at the last clear step instead of walking into
+  one) and, when stuck (short of the target, colliding, or with no route from the servos), runs `ikRescue`:
+  32 seeded restarts plus two upright seeds stepped clear (what solving from the zero pose finds), ranked
+  collision-free first, then reachable, then closest; retried up to 6 times with fresh random seeds
+  (`S.rescue` holds the state; `S.rescue.key=''` starts over after a setting change).
+- `qIK` = solver output; `qCmd` = what the servos are told. **Only collision-free poses reach qCmd, along a
+  clear route**: `ik.planMove(servos, qIK)` is straight there if that's clear, else through raised poses (J2–J5
+  at 0: lift, turn the base, come down; also lifting the shoulder or straightening the elbow first). It's
+  re-planned every frame, so qCmd is the next pose on the route ("going up and around" in the status bar).
+  Local playback never detours (it must follow its recording). Each frame the rest of the servos' current
+  move is re-checked finely (every 1°) and they hold where they are if it's no longer clear. The simulated
+  servos use a trapezoidal velocity profile toward qCmd, synchronised like the real ones.
 - Hand-guide mode: torque off, qIK/qCmd follow the measured pose. Stop: freeze qCmd, send `stop`.
 - ATOM LED panel: talks to `/api/atom/*` over REST (not the WebSocket), with the backend host from
   the WS address field and the password field. Requests go one at a time; a 401/429 drops the rest of the
@@ -181,7 +198,7 @@ backend answers `hello {protocol}`, then `config` (now and whenever it changes),
 Page → backend: `goal {angles[6] deg, speed 1-360 deg/s (capped at 150), acc 1-2000 deg/s², epoch}` (turns
 torque on if it was off), `torque {on}`, `stop`, `resume`, `set_zero`, `set_dir {joint 0-5, dir ±1}`,
 `set_tool {attachment, mm 0-150, d_mm 1-60}` (a known attachment keeps its own size), `set_stall_guard {on}`,
-`set_area {enabled, center -180..180, span 30..360, radius_mm 0|100..450}`. Booleans must be JSON booleans and
+`set_area {enabled, center -180..180, span 30..360, radius_mm 0|100..450, base_mm 0|60..250}`. Booleans must be JSON booleans and
 numbers finite (NaN/Infinity are rejected at the socket).
 Backend → page: `config {calibrated, zero, dir, tool_mm, tool_d_mm, attachment, area, limits[6][lo,hi],
 stall_guard}`; `state {angles[6]|null, torque, stopped, blocked, fault, playback{name, recording, step, steps,
@@ -218,7 +235,9 @@ and `tests/js` npm packages on first run). `./run_tests.sh -k playback -x` passe
   `test_attachments.py` (tool collision rules, choosing one over WS, playback refused with the tool on),
   `test_motion_api.py`, `test_ws.py` (auth and close codes, hello/config/state, goal validation and epochs, error replies, bad input and bus errors not killing the link, stop/resume, torque-on hold, stall guard); `tests/wsclient.py` is the test client,
   `test_library.py`, `test_player.py` (timing with a simulated clock), `test_playback.py` (on the fake arm).
-- `test_page.py` runs node: `checkPose` vs `check_pose` on 10,000 poses (0 mismatches), `Player` vs
+- `test_page.py` runs node: `checkPose` vs `check_pose` on 10,000 poses (0 mismatches), `tests/js/solver.js`
+  (the page's per-frame solving on fixed targets: reached after drags and from arbitrary poses, detours, no
+  collisions on the way), `Player` vs
   `Playback` goal-for-goal, and `tests/js/smoke.js` (jsdom, fake WebGL/WebSocket/backend) through record,
   save, edit, trim, import/export, waypoints, sequences, local and backend playback, poses, jog, faults.
   `tests/js/page.js` bundles the page's modules with esbuild (a test-only dependency) so node and jsdom can
@@ -242,6 +261,8 @@ and `tests/js` npm packages on first run). `./run_tests.sh -k playback -x` passe
 - The collision margins against the real housings, and the vacuum attachment's size and mounting
   (assumed centred on the flange axis, 25 × 80 mm from the flange face to the cup).
 - The ATOM firmware change (parser rewrite) has only been host-tested, not flashed.
+- Synchronised joint speeds on the real servos (does the arm follow the straight joint-space line?), the
+  ATOM head spheres against the real head, and the 150 mm base keep-out against how you actually work.
 - Playback with per-joint speeds (timed mode), and the stall guard thresholds (`STALL_DEG` 6°, `STALL_S`
   1 s in `ik_link.py`) against real load: gravity sag must stay under 6° or it will false-trip.
 
@@ -249,6 +270,8 @@ and `tests/js` npm packages on first run). `./run_tests.sh -k playback -x` passe
 
 - REST moves work in raw ticks and can fight the IK stream if both are used at once.
 - Plain HTTP: the password stops casual use, not traffic capture. HTTPS would need a reverse proxy.
-- The collision path check assumes straight joint-space motion; real servos finish at different times.
+- The collision path check assumes straight joint-space motion. The servos are synchronised to follow it,
+  but with a shared acceleration their ramps differ slightly, and discrete samples can clip an edge (the
+  solver test allows 2 mm on the work area's soft edges, none on real collisions).
 - LED cues played on the arm change the real ATOM, but the page's LED panel doesn't mirror them (press Read back).
 - Backend playback keeps running with no page open (by design); stop it with Stop, `/api/stop` or `/api/playback/stop`.

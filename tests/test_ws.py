@@ -229,3 +229,15 @@ def test_rest_move_does_not_trip_stall_guard(client):
         client.post("/api/servo/1/move", headers=H, json={"position": 2600, "speed": 3000, "accel": 100})
         time.sleep(2)
         assert not main.link.stopped, main.link.fault
+
+
+def test_joints_are_synchronised(client):
+    """One speed per goal is split between the joints by how far each goes, so they arrive together and the
+    arm follows the straight joint-space path the collision check looked at."""
+    with ArmWS(client) as a:
+        a.ready()
+        a.goal([40, 10, 0, 0, 0, 0], speed=40, acc=2000)
+        time.sleep(0.5)                                   # partway: J1 has 40° to go, J2 only 10°
+        f1, f2 = joint_deg(client.bus, 0) / 40, joint_deg(client.bus, 1) / 10
+        assert 0.2 < f1 < 0.9 and abs(f1 - f2) < 0.1, (f1, f2)
+        assert wait_for(lambda: abs(joint_deg(client.bus, 0) - 40) < 1 and abs(joint_deg(client.bus, 1) - 10) < 1, 5)

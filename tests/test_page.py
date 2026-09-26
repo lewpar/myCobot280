@@ -26,8 +26,8 @@ def node(script, data=None, timeout=60):
     return r.stdout
 
 
-AREAS = [None, dict(model.DEFAULT_AREA), {"enabled": True, "center": 30.0, "span": 120.0, "radius_mm": 250.0},
-         {"enabled": True, "center": 180.0, "span": 360.0, "radius_mm": 200.0}]
+AREAS = [None, dict(model.DEFAULT_AREA), {"enabled": True, "center": 30.0, "span": 120.0, "radius_mm": 250.0, "base_mm": 0.0},
+         {"enabled": True, "center": 180.0, "span": 360.0, "radius_mm": 200.0, "base_mm": 100.0}]
 
 
 @pytest.mark.parametrize("tool_mm,tool_d_mm,area", [(0, 20, None), (80, 25, None), (150, 60, None),
@@ -86,6 +86,20 @@ def test_player_matches(opts):
     for a, b in zip(py, js):
         assert abs(a[0] - b[0]) < 1e-6 and a[1] == b[1], (a[:2], b[:2])
         assert all(abs(x - y) < 1e-6 for x, y in zip(a[2] + a[3], b[2] + b[3])), (a, b)
+
+
+def test_solver_gets_there_without_collisions():
+    """The page's per-frame solving (tests/js/solver.js): targets reachable from the zero pose are reached when
+    dragged there too, and mostly from arbitrary poses; the synchronised servos never collide on the way."""
+    out = json.loads(node("solver.js", timeout=300))
+    assert out["collided"] == [], out["collided"]
+    assert out["graze_mm"] < 2, out["graze_mm"]    # the work area's edges: clipped between samples at most
+    c = out["cases"]
+    assert c["zero/drag"]["n"] >= 30 and c["zero/drag"]["ok"] == c["zero/drag"]["n"], c
+    for k in ("pose/jump", "pose/drag"):      # the rest need a route out that the work area forbids
+        assert c[k]["ok"] >= 0.85 * c[k]["n"], c
+    d = out["detour"]
+    assert d["clear"] and "hit" in d["straight"] and d["vias"] >= 1 and not any(d["legs"]), d
 
 
 def test_page_smoke():

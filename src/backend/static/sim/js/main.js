@@ -7,9 +7,9 @@
 
    Modules only declare things when imported; everything that touches the page happens in their init*(). */
 import * as THREE from 'three';
-import {DEG,N,LIM,makeFK,fk,toolLen,toolR} from './kinematics.js';
+import {DEG,N,LIM,makeFK,fk} from './kinematics.js';
 import {area,outsideArea,checkPose,checkPath} from './collision.js';
-import {ikIterate,ikRescue} from './ik.js';
+import {ikRescue,solveFrame,planMove} from './ik.js';
 import {renderer,scene,camera,orbit,gizmo,root,rotGroups,ledMats,targetMat,targetObj,dropLine,floorRing,
   ghost,ghostGeo,ghostDots,realLine,realGeo,realDots,trail,pushTrail,pathLine,applyTheme,resize} from './scene.js';
 import {S,qIK,qCmd,servo,target,setTarget,targetFromPose,syncUI,setDemo,areaDir,haveRealNow} from './state.js';
@@ -53,7 +53,7 @@ setTarget(target.clone());
 {const b=ikRescue(qIK,target,true);if(b)for(let i=0;i<N;i++)qIK[i]=b.q[i];}
 
 const servoF=makeFK(),ghostF=makeFK(),realF=makeFK();
-let ikErr={pos:0,ori:0},lastRescueT=0;
+let ikErr={pos:0,ori:0},detour=false;
 const clock=new THREE.Clock();
 function frame(){
   requestAnimationFrame(frame);
@@ -66,29 +66,33 @@ function frame(){
   if(S.remotePlay&&!S.homeLock&&!S.remoteStopSent){S.remoteStopSent=true;playStop();playNote('Stopping playback: the target was moved.');}
   const following=haveReal&&(S.limp||!!S.remotePlay);   // the sim mirrors the real arm
   if(following){for(let i=0;i<N;i++)qIK[i]=qCmd[i]=measured[i]*DEG;targetFromPose();ikErr={pos:0,ori:0};}
-  else if(!S.homeLock){
-    ikErr=ikIterate(qIK,target,14,orient);
-    const stuck=ikErr.pos>0.002||(orient&&ikErr.ori>2*DEG)||!!checkPose(qIK);
-    const k=target.toArray().map(v=>v.toFixed(4)).join()+orient+toolLen+toolR;
-    if(stuck&&!S.demo&&k!==S.lastRescueKey&&performance.now()-lastRescueT>250){
-      S.lastRescueKey=k;lastRescueT=performance.now();
-      const b=ikRescue(qIK,target,orient);
-      if(b&&(b.r.pos<ikErr.pos-0.001||(b.r.pos<0.002&&b.r.ori<ikErr.ori-DEG))){for(let i=0;i<N;i++)qIK[i]=b.q[i];ikErr=b.r;}
-    }
-  }else ikErr={pos:0,ori:0};
-  // only collision-free poses (and paths) reach the servos
-  let blocked=null;
+  else if(!S.homeLock)ikErr=solveFrame(qIK,target,orient,servo.map(s=>s.pos),S.rescue,performance.now(),!S.demo);
+  else ikErr={pos:0,ori:0};
+  // only collision-free poses reach the servos, along a clear route: straight there, or (not during a
+  // playback, which must follow its recording) through raised poses around whatever is in the way.
+  // Re-planned every frame from where the servos are, so qCmd is the next pose on the route.
+  let blocked=null;detour=false;
   if(!S.stopped&&!following){
     const cur=servo.map(s=>s.pos);
-    blocked=checkPose(qIK)||checkPath(cur,qIK);
-    if(!blocked)for(let i=0;i<N;i++)qCmd[i]=qIK[i];
+    // the servos are still heading for the last qCmd: if the rest of that move isn't clear (checked finely,
+    // from where they are now), hold them here
+    if(checkPath(cur,qCmd,16,DEG))for(let i=0;i<N;i++)qCmd[i]=cur[i];
+    blocked=checkPose(qIK);
+    if(!blocked){const route=S.play?(checkPath(cur,qIK)?null:[]):planMove(cur,qIK);
+      if(route){const next=route.length?route[0]:qIK;detour=route.length>0;for(let i=0;i<N;i++)qCmd[i]=next[i];}
+      else blocked=checkPath(cur,qIK);}
   }
   if(S.play&&blocked)endPlay(`Playback stopped: ${blocked}.`);
   else if(S.play&&S.play.done)endPlay('Playback finished.');
 
-  const vmax=spd.value*DEG,amax=acc.value*DEG;let moving=false;
+  // simulated servos: a trapezoidal profile per joint. Like the backend, the speed is split between the joints
+  // by how far each has to go, so they all arrive together and the arm follows the straight joint-space path
+  // the collision check looked at (roughly: every joint keeps the full acceleration, so stopping stays quick).
+  // A timed playback sets its own per-joint speeds.
+  const vmax=spd.value*DEG,amax=acc.value*DEG;let moving=false,far=0;
+  for(let i=0;i<N;i++)far=Math.max(far,Math.abs(qCmd[i]-servo[i].pos));
   for(let i=0;i<N;i++){
-    const s=servo[i],err=qCmd[i]-s.pos,vj=S.simSpeeds?S.simSpeeds[i]*DEG:vmax;
+    const s=servo[i],err=qCmd[i]-s.pos,vj=S.simSpeeds?S.simSpeeds[i]*DEG:vmax*(far>1e-9?Math.abs(err)/far:1);
     const vdes=Math.sign(err)*Math.min(vj,Math.sqrt(2*amax*Math.abs(err))*0.95);
     s.vel+=THREE.MathUtils.clamp(vdes-s.vel,-amax*dt,amax*dt);
     let step=s.vel*dt;
@@ -117,11 +121,12 @@ function frame(){
 
   const st=$('#status');
   if(S.stopped){st.className='status bad';$('#statusText').textContent=S.armFault?'Stopped: '+S.armFault:'Stopped. Press Resume to move again';}
-  else if(area.enabled&&outsideArea(target)&&!S.limp){st.className='status bad';$('#statusText').textContent='The target is outside the work area (Robot tab)';}
+  else if(area.enabled&&outsideArea(target)&&!S.limp){st.className='status bad';
+    $('#statusText').textContent=/close to the base/.test(outsideArea(target))?'The target is too close to the base (Robot tab, Work area)':'The target is outside the work area (Robot tab)';}
   else if(blocked||S.remoteBlocked){st.className='status bad';const why=blocked||S.remoteBlocked;
     $('#statusText').textContent=`Blocked: ${why}${blocked?'':' (checked by the arm)'}`;}
   else if(!reachable){st.className='status bad';$('#statusText').textContent=orient&&ikErr.pos<0.003?'Reachable, but not facing straight down':'Out of reach, holding the closest pose';}
-  else if(moving){st.className='status';$('#statusText').textContent='Servos moving';}
+  else if(moving){st.className='status';$('#statusText').textContent=detour?'Servos moving, going up and around':'Servos moving';}
   else{st.className='status ok';$('#statusText').textContent='At target';}
   $('#errText').textContent=(servoF.tcp.distanceTo(target)*1000).toFixed(1)+' mm';
   updateLinkChip();

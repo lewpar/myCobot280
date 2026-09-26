@@ -101,7 +101,7 @@ const input = (s, v) => { $(s).value = v; $(s).dispatchEvent(new w.Event('input'
   check(/Path clear/.test(txt('#edCheck')) && !$('#recPlay').disabled, 'pre-check passes, Play enabled', txt('#edCheck'));
 
   // 3. play it in the simulation (not connected)
-  input('#tx', 0); await sleep(1500);
+  input('#tx', 120); await sleep(1500);   // away from the start, so playback has an approach (x=0 is beside the shoulder)
   click('#recPlay');
   check(/simulation/.test(txt('#playNote')), 'plays locally when offline', txt('#playNote'));
   await until(() => /finished|stopped/i.test(txt('#playNote')));

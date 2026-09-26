@@ -281,7 +281,9 @@ The **Work area** card in the Robot tab keeps the tool tip inside a slice of the
 base, drawn in green on the floor. By default it's the **front half**: seen from above, centred on 0°,
 the direction the flange points at the zero pose (away from the Pi's ports). Presets switch to the
 right half, left half or the full circle; the sliders set the direction, the width (30°–360°) and an
-optional maximum reach. Only the tip (the flange centre, or the attachment's tip) has to stay inside;
+optional maximum reach, and **Keep clear of the base** (default 150 mm) keeps the tip out of a cylinder
+around the base up to 25 cm high: reaching in that close and low makes the arm fold its wrist back onto
+itself. Only the tip (the flange centre, or the attachment's tip) has to stay inside;
 the rest of the arm may cross the edges. Poses that take the tip outside are refused like a collision by
 the page and the backend (REST moves, IK goals, playback). The setting is saved on the Pi.
 

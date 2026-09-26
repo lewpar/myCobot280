@@ -1,4 +1,5 @@
-"""The work area: a slice of the circle around the base the arm must stay inside (default: the right half)."""
+"""The work area: a slice of the circle around the base the tool tip must stay inside (default: the front half),
+keeping clear of the base."""
 import json
 import os
 import random
@@ -21,7 +22,7 @@ def use_default_area(data_dir):
 
 
 def test_default_is_the_front_half():
-    assert FRONT == {"enabled": True, "center": 0.0, "span": 180.0, "radius_mm": 0.0}
+    assert FRONT == {"enabled": True, "center": 0.0, "span": 180.0, "radius_mm": 0.0, "base_mm": 150.0}
     assert model.check_pose([0] * 6, 0, 0.01, FRONT) is None                 # zero pose: arm straight up
     assert model.check_pose([0] * 6, *VAC, FRONT) is None
     assert model.check_pose(REACH_FRONT, *VAC, FRONT) is None
@@ -41,7 +42,7 @@ def test_only_the_tip_counts():
         tip_in = model._outside_area(k["tcp"], FRONT) is None
         body_out = any(model._outside_area(p, FRONT) for p in k["joints"][2:5])
         why = model.check_pose(q, *VAC, FRONT) or ""
-        assert ("work area" in why) == (not tip_in and not model.check_pose(q, *VAC)), (q, why)
+        assert ("work area" in why or "close to the base" in why) == (not tip_in and not model.check_pose(q, *VAC)), (q, why)
         crossing += tip_in and body_out and why == ""
     assert crossing > 100          # poses with the elbow or wrist outside, tip inside: allowed
 
@@ -59,11 +60,25 @@ def test_other_areas():
     assert model.check_pose(REACH_FRONT, *VAC, {**short, "radius_mm": round(reach * 1000 + 5)}) is None
 
 
+def test_keep_clear_of_the_base():
+    """A low tip close to the base folds the wrist back onto the arm (the ATOM into the column): refused."""
+    folded = [123.1, 73.3, 49.7, 147.0, 0.0, -25.9]       # tip 130 mm from the axis, 72 mm up
+    full = {**FRONT, "span": 360.0}
+    assert model.check_pose(folded, 0, 0.01, full) == "the flange would come too close to the base"
+    assert model.check_pose(folded, 0, 0.01, {**full, "base_mm": 0.0}) is None      # 0 turns it off
+    assert model.check_pose(folded, 0, 0.01, {**full, "base_mm": 120.0}) is None    # smaller than 130 mm
+    assert model.check_pose([0] * 6, 0, 0.01, full) is None     # straight up: above the keep-out, on the axis
+    assert model.check_pose(REACH_FRONT, *VAC, FRONT) is None   # normal work, further out
+
+
 def test_clean_area():
     assert model.clean_area({"enabled": 1, "center": "10", "span": 90}) == {
-        "enabled": True, "center": 10.0, "span": 90.0, "radius_mm": 0.0}
+        "enabled": True, "center": 10.0, "span": 90.0, "radius_mm": 0.0, "base_mm": 150.0}   # older saves get the default
+    assert model.clean_area({"enabled": True, "center": 0, "span": 90, "base_mm": 0})["base_mm"] == 0
     for bad in (None, {}, {"enabled": True, "center": 200, "span": 90}, {"enabled": True, "center": 0, "span": 10},
-                {"enabled": True, "center": 0, "span": 90, "radius_mm": 50}, {"enabled": True, "center": "x", "span": 90}):
+                {"enabled": True, "center": 0, "span": 90, "radius_mm": 50}, {"enabled": True, "center": "x", "span": 90},
+                {"enabled": True, "center": 0, "span": 90, "base_mm": 30}, {"enabled": True, "center": 0, "span": 90, "base_mm": 300},
+                {"enabled": True, "center": 0, "span": 90, "radius_mm": 150, "base_mm": 200}):
         assert model.clean_area(bad) is None, bad
 
 
@@ -77,7 +92,7 @@ def test_backend_default_and_set_area(data_dir, bus):
             assert a.error()["ref"] == "set_area"
             a.send(type="set_area", enabled=True, center=45, span=120, radius_mm=300)
             m = a.wait_config(lambda c: c["area"]["center"] == 45)
-            assert m["area"] == {"enabled": True, "center": 45.0, "span": 120.0, "radius_mm": 300.0}
+            assert m["area"] == {"enabled": True, "center": 45.0, "span": 120.0, "radius_mm": 300.0, "base_mm": 150.0}
         assert json.load(open(model.CALIB_FILE))["area"]["center"] == 45
         main.link.shutdown()
 

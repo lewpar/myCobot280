@@ -44,12 +44,12 @@ const areaG=new THREE.Group();areaG.position.z=0.0006;root.add(areaG);
 function drawArea(){
   areaG.children.slice().forEach(c=>{areaG.remove(c);c.geometry.dispose();});
   areaG.visible=area.enabled;if(!area.enabled)return;
-  const R=area.radius_mm?area.radius_mm/1000:0.3,full=area.span>=360,a0=(area.center-area.span/2)*DEG,len=Math.min(360,area.span)*DEG;
-  areaG.add(new THREE.Mesh(new THREE.RingGeometry(COLLISION.AREA_CORE,R,96,1,a0,len),areaMat));
+  const R=area.radius_mm?area.radius_mm/1000:0.3,r0=Math.max(COLLISION.AREA_CORE,(area.base_mm||0)/1000),full=area.span>=360,a0=(area.center-area.span/2)*DEG,len=Math.min(360,area.span)*DEG;
+  areaG.add(new THREE.Mesh(new THREE.RingGeometry(r0,R,96,1,a0,len),areaMat));
   const pts=[];
-  if(!full)pts.push(V(Math.cos(a0)*COLLISION.AREA_CORE,Math.sin(a0)*COLLISION.AREA_CORE,0));
+  if(!full)pts.push(V(Math.cos(a0)*r0,Math.sin(a0)*r0,0));
   for(let k=0;k<=96;k++){const a=a0+len*k/96;pts.push(V(Math.cos(a)*R,Math.sin(a)*R,0));}
-  if(!full){const a1=a0+len;pts.push(V(Math.cos(a1)*COLLISION.AREA_CORE,Math.sin(a1)*COLLISION.AREA_CORE,0));}
+  if(!full){const a1=a0+len;pts.push(V(Math.cos(a1)*r0,Math.sin(a1)*r0,0));}
   areaG.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),areaEdgeMat));
 }
 // small base-frame axes so the X/Y/Z readout is easy to relate to the arm

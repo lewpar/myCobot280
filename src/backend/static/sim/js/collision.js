@@ -4,17 +4,21 @@ import * as THREE from 'three';
 import {DEG,JOINTS,N,URDF_LIM,makeFK,fk,toolLen,toolR} from './kinematics.js';
 
 export const COLLISION={FLOOR_MARGIN:0.005,TCP_MIN_Z:0.003,BASE_R:0.075,BASE_TOP:0.12,COLUMN_R:0.05,COLUMN_TOP:0.19,WRIST_TO_UPPER_ARM:0.05,
-  TOOL_STEP:0.015,UPPER_ARM_R:0.03,FOREARM_R:0.028,AREA_CORE:0.06};
+  TOOL_STEP:0.015,UPPER_ARM_R:0.03,FOREARM_R:0.028,AREA_CORE:0.06,BASE_KEEPOUT_TOP:0.25,
+  // the ATOM head behind the J5 body, on the J6 axis: [distance behind the flange face, radius] of its spheres
+  ATOM_SPHERES:[[0.050,0.017],[0.066,0.016]]};
 /* Work area: the slice of the circle around the base the tool tip must stay inside; the rest of the arm may
    cross its edges (as arm_model.DEFAULT_AREA). center: degrees, 0 = +X (where the flange points at zero),
-   -90 = -Y (the arm's right); span: width in degrees (360 = no side limit); radius_mm: outer limit, 0 = none.
-   Only setAreaModel changes it. */
-export const DEFAULT_AREA={enabled:true,center:0,span:180,radius_mm:0};
+   -90 = -Y (the arm's right); span: width in degrees (360 = no side limit); radius_mm: outer limit, 0 = none;
+   base_mm: a keep-out cylinder that radius around the base axis, up to BASE_KEEPOUT_TOP, 0 = none (working that
+   close in folds the wrist back onto the arm). Only setAreaModel changes it. */
+export const DEFAULT_AREA={enabled:true,center:0,span:180,radius_mm:0,base_mm:150};
 export let area={...DEFAULT_AREA};
 export function setAreaModel(a){area=a;}
 export function outsideArea(p){
   const rad=Math.hypot(p.x,p.y),lim=area.radius_mm/1000;
   if(lim>0&&rad>lim)return 'would reach past the work area';
+  if(rad<(area.base_mm||0)/1000&&p.z<COLLISION.BASE_KEEPOUT_TOP)return 'would come too close to the base';
   if(area.span>=360||rad<COLLISION.AREA_CORE)return null;
   const off=Math.abs(((Math.atan2(p.y,p.x)/DEG-area.center+180)%360+360)%360-180);
   return off>area.span/2?'would leave the work area':null;
@@ -31,6 +35,8 @@ export function checkPose(q){ // q in radians; null if clear, otherwise a reason
   _fl.copy(colF.tcp).addScaledVector(colF.dir,-toolLen);
   const body=[['the elbow (J3)',j[2],0.03,0.03,false],['the forearm',j[2].clone().lerp(j[3],0.5),0.028,0.028,false],
     ['J4',j[3],0.026,0.026,false],['the wrist (J5)',j[4],0.024,0.024,true],['J6',j[5],0.022,0.022,true],['the flange',_fl,0,0.02,true]];
+  const atom=C.ATOM_SPHERES.map(([d,r])=>[_fl.clone().addScaledVector(colF.dir,-d),r]);
+  atom.forEach(([p,r])=>body.push(['the ATOM',p,r,r,true]));
   // the attachment: a cylinder along the flange normal, sampled every TOOL_STEP; its lowest point is its full
   // radius when level and nothing when vertical
   const tool=[],tf=toolR*Math.sqrt(Math.max(0,1-colF.dir.z*colF.dir.z));
@@ -44,6 +50,7 @@ export function checkPose(q){ // q in radians; null if clear, otherwise a reason
     if(wrist&&rad<C.COLUMN_R+rs&&p.z-rs<C.COLUMN_TOP)return `${name} would hit the shoulder`;
     if(wrist&&segDist(p,j[1],j[2])<C.WRIST_TO_UPPER_ARM)return `${name} would hit the upper arm`;
   }
+  for(const [p,r] of atom)if(segDist(p,j[2],j[3])<C.FOREARM_R+r)return 'the ATOM would hit the forearm';
   for(const p of tool){ // the attachment folding back into the arm's own links
     if(segDist(p,j[1],j[2])<C.UPPER_ARM_R+toolR)return 'the attachment would hit the upper arm';
     if(segDist(p,j[2],j[3])<C.FOREARM_R+toolR)return 'the attachment would hit the forearm';
@@ -54,8 +61,10 @@ export function checkPose(q){ // q in radians; null if clear, otherwise a reason
   return null;
 }
 const _pq=new Array(N).fill(0);
-export function checkPath(q0,q1,steps=16){ // straight joint-space move, like the servos roughly do
+export function checkPath(q0,q1,steps=16,every=3*DEG){ // straight joint-space move (the servos are synchronised to follow it)
   if(checkPose(q0))return checkPose(q1);   // already in contact: allow moving to any clear pose
+  let d=0;for(let i=0;i<N;i++)d=Math.max(d,Math.abs(q1[i]-q0[i]));
+  steps=Math.max(steps,Math.ceil(d/every));   // at least every 3° (radians), so a long move can't skip over a collision
   for(let s=1;s<=steps;s++){const f=s/steps;for(let i=0;i<N;i++)_pq[i]=q0[i]+(q1[i]-q0[i])*f;
     const why=checkPose(_pq);if(why)return why+(s<steps?' on the way there':'');}
   return null;

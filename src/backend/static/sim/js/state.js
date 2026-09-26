@@ -11,7 +11,7 @@ export const S={
   stopped:false,          // Stop pressed (or the arm stopped itself): nothing new is sent until Resume
   homeLock:false,         // qIK was set directly (zero pose, saved pose, playback, jog): the solver leaves it alone
   demo:false,demoT:0,     // Figure-8 running, and its phase
-  lastRescueKey:'',       // target and options the last ikRescue ran for; '' makes it try again
+  rescue:{key:'',t:-1e9,tries:0},   // ik.solveFrame's restart state; rescue.key='' makes it start over (settings changed)
   ws:null,                // the /ws/arm socket, null when offline
   measured:null,measuredAt:0,   // the real arm's joint angles (degrees, null where a servo didn't answer)
   limp:false,             // hand-guide mode: torque off, the sim follows the arm

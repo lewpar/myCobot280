@@ -24,7 +24,8 @@ Messages from the page:
     {"type": "set_tool", "attachment": "none"|"vacuum"|"custom", "mm": 0-150, "d_mm": 1-60}
                                                (mm/d_mm only matter for "custom")
     {"type": "set_stall_guard", "on": true|false}
-    {"type": "set_area", "enabled": bool, "center": -180..180, "span": 30-360, "radius_mm": 0|100-450}
+    {"type": "set_area", "enabled": bool, "center": -180..180, "span": 30-360, "radius_mm": 0|100-450,
+     "base_mm": 0|60-250 (keep-out around the base, below radius_mm; default 150)}
 A command that can't be applied gets {"type": "error", "code": "bad_request"|"refused"|"internal",
 "ref": <its type>, "message": str}; a command that worked shows up in the next config/state.
 
@@ -348,7 +349,8 @@ class IKLink:
         a = model.clean_area(msg) if isinstance(msg.get("enabled"), bool) else None
         if a is None:
             return _error("bad_request", "set_area",
-                          "Needs enabled (bool), center -180..180, span 30-360 and radius_mm 0 or 100-450.")
+                          "Needs enabled (bool), center -180..180, span 30-360, radius_mm 0 or 100-450 "
+                          "and base_mm 0 or 60-250 (less than radius_mm).")
         with self._lock:
             self.calib["area"] = a
             self._pending_goal = None
@@ -443,7 +445,8 @@ class IKLink:
 
     def _send_goal(self, goal):
         """Collision-check the move from the current pose and send it. Returns the reason if refused.
-        ``goal`` is (angles deg, speed deg/s or [deg/s x6], acc deg/s²), already validated."""
+        ``goal`` is (angles deg, speed deg/s or [deg/s x6], acc deg/s²), already validated. A single speed is
+        the fastest joint's; the others get their share of it (see below)."""
         angles, dps, dps2 = goal
         current = model.pose_from_ticks(self.calib, self.ticks)
         why = model.check_path(current, angles, self.tool_m, tool_r=self.tool_r, area=self.area)
@@ -455,7 +458,13 @@ class IKLink:
             self._set_torque(True)
         c = self.calib
         reg = lambda d: int(max(1.0, min(MAX_DPS, d)) * model.TICKS_PER_DEG / c["speed_unit"])
-        speed = {sid: reg(d) for sid, d in zip(IDS, dps)} if isinstance(dps, (list, tuple)) else reg(dps)
+        if not isinstance(dps, (list, tuple)):
+            # one speed for the move: split it between the joints by how far each has to go, so they arrive
+            # together and the arm follows the straight joint-space path check_path looked at. The
+            # acceleration stays the same for every joint, so each can still stop quickly.
+            far = max(abs(a - b) for a, b in zip(angles, current))
+            dps = [min(MAX_DPS, dps) * (abs(a - b) / far if far > 1e-6 else 1.0) for a, b in zip(angles, current)]
+        speed = {sid: reg(d) for sid, d in zip(IDS, dps)}
         acc = int(math.ceil(max(1.0, min(GOAL_ACC[1], dps2)) * model.TICKS_PER_DEG / c["acc_unit"]))
         targets = [model.deg_to_ticks(c, j, a) for j, a in enumerate(angles)]
         self.arm.sync_move(dict(zip(IDS, targets)), speed, acc)
