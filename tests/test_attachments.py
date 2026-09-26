@@ -4,8 +4,9 @@ import math
 import random
 
 import arm_model as model
-from conftest import H, PASSWORD, wait_for
+from conftest import H, wait_for
 from helpers import frames_line
+from wsclient import ArmWS
 
 VAC = (0.08, 0.0125)
 
@@ -70,21 +71,18 @@ def test_tilted_tool_counts_its_radius_against_the_table():
 
 
 def test_choose_attachment_over_ws(client):
-    with client.websocket_connect("/ws/arm") as w:
-        w.send_json({"type": "auth", "password": PASSWORD})
-        m = w.receive_json()
+    with ArmWS(client) as a:
+        m = a.wait_config(lambda c: True)
         assert m["attachment"] == "custom" and m["tool_mm"] == 0     # defaults
-        w.send_json({"type": "set_tool", "attachment": "vacuum", "mm": 5, "d_mm": 5})
-        m = w.receive_json()
-        while m.get("attachment") != "vacuum":
-            m = w.receive_json()
+        a.send(type="set_tool", attachment="vacuum", mm=5, d_mm=5)
+        m = a.wait_config(lambda c: c["attachment"] == "vacuum")
         assert (m["tool_mm"], m["tool_d_mm"]) == (80, 25)            # a known attachment keeps its own size
-        w.send_json({"type": "set_tool", "attachment": "custom", "mm": 200, "d_mm": 10})   # too long: ignored
-        w.send_json({"type": "set_tool", "attachment": "laser", "mm": 10, "d_mm": 10})      # unknown: ignored
-        w.send_json({"type": "set_tool", "attachment": "custom", "mm": 40, "d_mm": 12})
-        m = w.receive_json()
-        while m.get("tool_mm") != 40:
-            m = w.receive_json()
+        a.send(type="set_tool", attachment="custom", mm=200, d_mm=10)   # too long: refused
+        assert "mm must be" in a.error()["message"]
+        a.send(type="set_tool", attachment="laser", mm=10, d_mm=10)     # unknown: refused
+        assert "attachment must be" in a.error()["message"]
+        a.send(type="set_tool", attachment="custom", mm=40, d_mm=12)
+        m = a.wait_config(lambda c: c["tool_mm"] == 40)
         assert m["attachment"] == "custom" and m["tool_d_mm"] == 12
     saved = json.load(open(model.CALIB_FILE))
     assert (saved["attachment"], saved["tool_mm"], saved["tool_d_mm"]) == ("custom", 40, 12)

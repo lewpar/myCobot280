@@ -9,7 +9,7 @@ Control software for a **myCobot 280 Pi** (six-axis desk arm, Raspberry Pi 4 in 
 The **FastAPI backend** is the only interface to the arm:
 
 - **FastAPI backend** (`src/backend/`), REST API + a WebSocket IK link + serves the IK simulator page.
-- **IK simulator** (`src/backend/static/ik_sim.html`, served at `/sim`), a Three.js page that solves
+- **IK simulator** (`src/backend/static/sim/`, served at `/sim/`), a Three.js page that solves
   inverse kinematics, simulates the servos, and streams joint angles to the real arm.
 
 ## Hardware facts
@@ -36,7 +36,7 @@ Register map used (STS): 9/11 min/max limit, 31 position correction, 40 torque e
 | `src/backend/ik_link.py` | Bus loop behind `/ws/arm`: streams goals, owns the **stop state** used by REST, runs **playback**, and the **stall guard** |
 | `src/backend/player.py` | Playback timing (phases, per-joint speeds, LED cues) and the up-front path check; pure logic, ticked by `ik_link` |
 | `src/backend/library.py` | Recordings, sequences, saved poses: validation + one JSON file each in `recordings/`, `sequences/`, `poses/` (gitignored) |
-| `src/backend/static/ik_sim.html` | The simulator page (single self-contained file, Three.js r147 UMD from jsDelivr) |
+| `src/backend/static/sim/` | The simulator page: `index.html`, `style.css`, native ES modules in `js/` (no build step; three.js r147 from jsDelivr via an import map) |
 | `atom_led_matrix/atom_led_matrix.ino` | ATOM firmware (frame parser in `feed_byte`) |
 | `tools/check_servo_units.py` | Times moves to measure real speed/accel register units; `--write` saves them |
 | `tools/diagnostics/` | Old bring-up scripts, not used by anything |
@@ -68,11 +68,11 @@ Env vars: `MYCOBOT_PORT`, `MYCOBOT_BAUD`, `MYCOBOT_PASSWORD`, `MYCOBOT_CORS_ORIG
    `_guard_motion` in `main.py`, `_send_goal` in `ik_link.py`). REST moves are refused (409) during playback.
 4. **Three things exist twice** and must stay identical, enforced by `tests/test_page.py`:
    the kinematics and collision model (`arm_model.py`: `URDF_JOINTS`, `URDF_LIMITS_DEG`, the collision
-   constants, `check_pose` ↔ `ik_sim.html`: `JOINTS`, `COLLISION`, `checkPose`), the player
-   (`player.py` `Playback` ↔ `ik_sim.html` `Player`, used for offline playback), the recording
-   pre-check (`check_frames`/`check_steps` ↔ `checkFrames`/`checkSteps`) and the attachment list
-   (`arm_model.ATTACHMENTS` ↔ `ATTACHMENTS`), and the work area (`DEFAULT_AREA`, `_outside_area` ↔
-   `DEFAULT_AREA`, `outsideArea`). Change both, run the tests.
+   constants, `check_pose` ↔ `sim/js/kinematics.js` `JOINTS` and `sim/js/collision.js` `COLLISION`,
+   `checkPose`), the player (`player.py` `Playback` ↔ `sim/js/player.js` `Player`, used for offline playback),
+   the recording pre-check (`check_frames`/`check_steps` ↔ `collision.js` `checkFrames`/`checkSteps`), the
+   attachment list (`arm_model.ATTACHMENTS` ↔ `kinematics.js` `ATTACHMENTS`), and the work area
+   (`DEFAULT_AREA`, `_outside_area` ↔ `collision.js` `DEFAULT_AREA`, `outsideArea`). Change both, run the tests.
 5. **Speed 0 and acceleration 0 mean "unlimited" on STS servos.** Never send them. Valid: speed 1–4000,
    accel 1–254 (`SPEED_*`, `ACCEL_*` in `mycobot280.py`). The API rejects out-of-range values (422).
 6. **Password on everything.** REST: header `X-Arm-Password`. `/ws/arm`: first message
@@ -80,9 +80,11 @@ Env vars: `MYCOBOT_PORT`, `MYCOBOT_BAUD`, `MYCOBOT_PASSWORD`, `MYCOBOT_CORS_ORIG
    Compare with `hmac.compare_digest`. Failed attempts are rate-limited (5/min per IP → 429).
 7. **Re-enabling torque must first set goal = present position** (see `IKLink._set_torque`), or the arm
    jumps to whatever stale goal the servo holds.
-8. **After any calibration change or resume, the page re-reads the real pose before sending goals**, and
-   the backend ignores goals for 0.5 s (`_calib_changed`). Keep both halves of that handshake. The same
-   applies when a backend playback ends (`_end_play_locked` sets `_calib_changed`; the page adopts the pose).
+8. **After any calibration change or resume, the page re-reads the real pose before sending goals.** The
+   backend enforces it with an **epoch** (`IKLink._new_epoch_locked`): it goes up on resume, `set_zero`,
+   `set_dir` and the end of a backend playback, and goals carrying an older epoch are refused. The page takes
+   the new epoch only in the state it adopts the pose from. Anything new that re-maps angles or moves the arm
+   behind the page's back must bump the epoch too.
 9. **Anything outside the IK loop that changes servo goals calls `link.forget_goal()`** (REST moves go
    through `_guard_motion`, which does it; torque endpoints do it). Otherwise the stall guard compares
    the arm against a goal it no longer has and stops it for no reason.
@@ -109,18 +111,34 @@ its lowest cross-section point counts (full radius when level, 0 when vertical, 
 touch down to `TCP_MIN_Z`), and they must clear the upper arm (J2–J3, `UPPER_ARM_R` + r) and forearm
 (J3–J4, `FOREARM_R` + r).
 
-The **work area** (`area`: `enabled`, `center` deg, `span` deg, `radius_mm`; default the right half,
-center −90° = −Y, span 180°) is enforced in `check_pose` too: every body point, attachment point and the
-tip must be inside the slice with its radius as margin (`_outside_area`); points within `AREA_CORE`
-(60 mm) of the base axis are exempt. 0° is +X, where the flange points at the zero pose (away from the
-Pi's ports). Everything that checks collisions passes `tool_m`, `tool_r` and `area`. The test fixture
-turns the area off (most tests move around J1 = 0); `test_work_area.py` uses the real default.
+The **work area** (`area`: `enabled`, `center` deg, `span` deg, `radius_mm`; default the front half,
+center 0°, span 180°) is enforced in `check_pose` too, but **only for the tool tip** (the TCP: flange
+centre or attachment tip); the rest of the arm may cross the edges (`_outside_area`). A tip within
+`AREA_CORE` (60 mm) of the base axis is always inside. 0° is +X, where the flange points at the zero pose
+(away from the Pi's ports); −90° is −Y, the arm's right. Everything that checks collisions passes
+`tool_m`, `tool_r` and `area`. The test fixture turns the area off; `test_work_area.py` uses the default.
 `check_path` samples 16 poses along a **straight joint-space** path (an approximation of what the
 servos do). If the start pose already collides, only the target is checked so you can move out.
 It's deliberately conservative and approximate; it is not a substitute for watching the arm.
 
-## Simulator page internals (`ik_sim.html`)
+## Simulator page internals (`static/sim/`)
 
+- No framework, no build step: `index.html` has the markup and an import map (`three`, `three/addons/`
+  → jsDelivr, r147); `js/main.js` is the entry point. Modules, by job:
+  `kinematics.js` (`JOINTS`, `fk`, `LIM`, attachment size), `collision.js` (`checkPose`, `checkPath`, work area,
+  recording pre-check), `ik.js` (solver), `player.js` (`Player`): pure, imported directly by the parity tests.
+  `scene.js` (every three.js object; throws if WebGL fails, which shows `#fail`), `state.js` (shared state),
+  `api.js` (REST + password), `link.js` (`/ws/arm`, Stop/Resume, hand-guide, calibration), `settings.js`
+  (attachment + work area), `motion.js`, `atom.js`, `record.js`, `play.js` (one per tab), `chrome.js`
+  (tabs, theme, views, link chip, joint bars), `main.js` (wiring + frame loop).
+- **Modules don't touch the page when imported**; each has an `init*()` that `main.js` calls in order. Keep it
+  that way: the modules import each other in cycles, which is only safe because nothing runs at import time.
+- **Shared mutable state lives in `S`** (`state.js`: `stopped`, `homeLock`, `measured`, `limp`, `play`,
+  `remotePlay`, …) because an imported `let` can't be assigned from another module. `toolLen`/`toolR` and
+  `area` are live `let` exports changed only through `setToolSize` / `setAreaModel`. Everything else is private
+  to its module. `qIK`, `qCmd`, `servo`, `target` and `LIM` are shared arrays/vectors, mutated in place.
+- Browsers won't load modules from `file://`: use the backend (or any static server). The backend sends the
+  files with `Cache-Control: no-cache`, so an update never mixes old and new modules.
 - Layout: top bar (link chip, theme toggle, Stop), 3D viewport (camera presets, legend), tabbed inspector
   (Motion / Joints / Robot / ATOM / Attachments / Record / Play) and a status bar. Tabs size to their labels. The script finds everything by element id, so keep the
   ids when moving markup around. The canvas sizes to `#stage` (ResizeObserver), not the window.
@@ -146,24 +164,34 @@ It's deliberately conservative and approximate; it is not a substitute for watch
   tip, and `checkPose` uses both) and shows its 3D model on the flange (`vacuumG`, or `toolStub` for custom;
   `envelope` draws the collision cylinder). Sent as `set_tool`; on connect the backend's saved attachment wins.
 - Robot tab has the Work area card (`setArea`; presets, direction, width, max reach). The slice is drawn on
-  the floor (`areaG`); Figure-8 and Random centre themselves in it (`areaDir`). Sent as `set_area`; on connect
+  the floor (`areaG`); Figure-8 and Random centre themselves in it (`areaDir`). A target outside it says so
+  in the status bar (the solver would otherwise report "out of reach"). Sent as `set_area`; on connect
   the backend's saved area wins, like the attachment.
 - Motion tab also has Jog (tool X/Y/Z moves the target; joint jog moves qIK with `homeLock`) and saved poses
   (`goPose`). Robot tab has the stall-guard toggle; a `fault` from the backend shows in the status bar.
-- The page auto-fills `ws://<host>/ws/arm` when served from `/sim`. It stores the password in
+- The page auto-fills `ws://<host>/ws/arm` when served from `/sim/`. It stores the password in
   sessionStorage (localStorage only if "remember" is ticked).
-- A copy was also published as a claude.ai artifact; **the repo file is the source of truth**.
+- An older single-file copy was published as a claude.ai artifact; it no longer matches (protocol 1).
+  **The repo is the source of truth.**
 
 ## Protocols
 
-**`/ws/arm` messages.** Page → backend: `auth`, `goal {angles[6] deg, speed deg/s, acc deg/s²}`,
-`torque {on}`, `stop`, `resume`, `set_zero`, `set_dir {joint 0-5, dir ±1}`, `set_tool {mm 0-150}`,
-`set_stall_guard {on}`, `set_tool {attachment, mm, d_mm}` (a known attachment keeps its own size),
-`set_area {enabled, center -180..180, span 30..360, radius_mm 0|100..450}`.
-Goals are ignored while a playback runs.
-Backend → page (~10 Hz): `state {angles[6]|null, torque, stopped, blocked, calibrated, zero, dir,
-tool_mm, tool_d_mm, attachment, area, limits[6][lo,hi], fault, stall_guard, playback{name, recording, step, steps, phase, t, duration,
-loop, rate, timed}|null, play_end{n, message}}`, or `error {code: auth|locked|no_arm, message}`.
+**`/ws/arm` (protocol 2, full reference in the `ik_link.py` docstring).** The page sends `auth` first; the
+backend answers `hello {protocol}`, then `config` (now and whenever it changes), then `state` about 10 times a second.
+Page → backend: `goal {angles[6] deg, speed 1-360 deg/s (capped at 150), acc 1-2000 deg/s², epoch}` (turns
+torque on if it was off), `torque {on}`, `stop`, `resume`, `set_zero`, `set_dir {joint 0-5, dir ±1}`,
+`set_tool {attachment, mm 0-150, d_mm 1-60}` (a known attachment keeps its own size), `set_stall_guard {on}`,
+`set_area {enabled, center -180..180, span 30..360, radius_mm 0|100..450}`. Booleans must be JSON booleans and
+numbers finite (NaN/Infinity are rejected at the socket).
+Backend → page: `config {calibrated, zero, dir, tool_mm, tool_d_mm, attachment, area, limits[6][lo,hi],
+stall_guard}`; `state {angles[6]|null, torque, stopped, blocked, fault, playback{name, recording, step, steps,
+phase, t, duration, loop, rate, timed}|null, play_end{n, message}, epoch, clients}`;
+`error {code, ref, message}`. Fatal codes (the socket closes): `auth` (4401), `locked` (4429), `no_arm` (4503).
+Non-fatal, answering one command (`ref` = its type): `bad_request` (malformed or out of range), `refused`
+(valid but not now: stopped, playback running, stale epoch, a servo not answering for `set_zero`),
+`internal` (the handler raised). Success has no reply; it shows up in the next config/state.
+An exception in the bus loop stops the arm with a `fault` instead of killing the loop.
+Several pages may connect (`clients`); their goals simply overwrite each other, last one wins.
 
 **REST** (all under `/api`, all need the header): `auth`, `health`, `safety`, `stop`, `resume`,
 `servos[?rescan=true]`, `servos/status`, `servos/home` (GET/POST), `servos/center_all`,
@@ -186,13 +214,16 @@ and `tests/js` npm packages on first run). `./run_tests.sh -k playback -x` passe
   SYNC WRITE, trapezoidal motion from the speed/accel registers, asserts speed/accel are never 0), the
   ATOM on ID 7, optional TX echo, and hooks (`servos[id].pos` to move a limp joint, `servos[id].stop_at`
   for an obstruction). `conftest.py` injects it and points every data file at a temp dir.
-- `test_work_area.py` (default right half, other slices, REST/WS/playback refusals),
+- `test_work_area.py` (default front half, only the tip counts, other slices, REST/WS/playback refusals),
   `test_attachments.py` (tool collision rules, choosing one over WS, playback refused with the tool on),
-  `test_motion_api.py`, `test_ws.py` (auth, goals, stop/resume handshake, torque-on hold, stall guard),
+  `test_motion_api.py`, `test_ws.py` (auth and close codes, hello/config/state, goal validation and epochs, error replies, bad input and bus errors not killing the link, stop/resume, torque-on hold, stall guard); `tests/wsclient.py` is the test client,
   `test_library.py`, `test_player.py` (timing with a simulated clock), `test_playback.py` (on the fake arm).
 - `test_page.py` runs node: `checkPose` vs `check_pose` on 10,000 poses (0 mismatches), `Player` vs
   `Playback` goal-for-goal, and `tests/js/smoke.js` (jsdom, fake WebGL/WebSocket/backend) through record,
   save, edit, trim, import/export, waypoints, sequences, local and backend playback, poses, jog, faults.
+  `tests/js/page.js` bundles the page's modules with esbuild (a test-only dependency) so node and jsdom can
+  run them; `tests/js/three-shim.js` swaps in a WebGLRenderer that draws nothing. `test_sim_files.py` checks
+  `/sim/` is served (redirect, no password, `no-cache`, modules as JavaScript, every relative import exists).
 - ATOM parser (not in the suite yet): extract the `// ---- Frame parser` … `// ---- end frame parser`
   block and compile it on the host with g++ and a small harness.
 

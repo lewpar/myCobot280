@@ -1,4 +1,4 @@
-"""The simulator page (ik_sim.html), tested with node: its collision model and Player must match the
+"""The simulator page (static/sim/, ES modules), tested with node: its collision model and Player must match the
 Python ones exactly, and the whole page must work in jsdom against a fake backend.
 
 Skipped when node or tests/js/node_modules is missing (./run_tests.sh installs them)."""

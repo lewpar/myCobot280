@@ -12,6 +12,9 @@ PY=venv/bin/python
 [ -x "$PY" ] || { python3 -m venv venv; }
 "$PY" -m pip install -q --disable-pip-version-check -r tests/requirements.txt
 if command -v node >/dev/null && [ -f tests/js/package.json ]; then
-    [ -d tests/js/node_modules ] || (cd tests/js && npm install --silent --no-audit --no-fund)
+    stamp=tests/js/node_modules/.package.sha256 want="$(sha256sum tests/js/package.json | cut -d' ' -f1)"
+    if [ "$(cat "$stamp" 2>/dev/null)" != "$want" ]; then
+        (cd tests/js && npm install --silent --no-audit --no-fund) && echo "$want" > "$stamp"
+    fi
 fi
 exec "$PY" -m pytest "$@"

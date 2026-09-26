@@ -108,7 +108,7 @@ print_urls() {
     fi
     echo
     for a in "${addrs[@]}"; do
-        echo "  Simulator     ${BOLD}http://$a:$HTTP_PORT/sim${NC}"
+        echo "  Simulator     ${BOLD}http://$a:$HTTP_PORT/sim/${NC}"
     done
     echo "  API docs      http://${addrs[0]}:$HTTP_PORT/docs"
     echo

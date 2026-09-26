@@ -7,7 +7,7 @@ arm_model — shared model of the myCobot280 used by the backend and the tools.
 * Saved centre ("home") positions in raw ticks (center_positions.json).
 * A simple collision check: table, base/shoulder column, and wrist-vs-upper-arm.
 
-The IK simulator page (src/backend/static/ik_sim.html) carries a copy of the same collision
+The IK simulator page (src/backend/static/sim/js/collision.js) carries a copy of the same collision
 model so it can refuse poses before sending them; the backend checks again before moving.
 """
 
@@ -35,7 +35,7 @@ URDF_JOINTS = [
 URDF_LIMITS_DEG = [(-168, 168), (-140, 140), (-150, 150), (-150, 150), (-155, 160), (-180, 180)]
 
 # ---- collision model (metres) -------------------------------------------------------------------
-# Keep these in sync with COLLISION in ik_sim.html.
+# Keep these in sync with COLLISION in sim/js/collision.js.
 FLOOR_MARGIN = 0.005     # clearance kept between any link and the table
 TCP_MIN_Z = 0.003        # the tool tip itself may come this close to the table
 BASE_R, BASE_TOP = 0.075, 0.12      # pedestal + J1 housing, checked against J3 and beyond
@@ -48,15 +48,15 @@ UPPER_ARM_R = 0.03       # J2-J3 link radius + margin, for attachment points
 FOREARM_R = 0.028        # J3-J4 link radius + margin
 TOOL_R_DEFAULT = 0.01    # radius assumed when only a length is known (a 20 mm custom tool)
 
-# Work area: a slice of the circle around the base the arm must stay inside (keep in sync with the page).
-# center: direction of the slice's middle in degrees (0 = +X, the way the flange points at the zero pose;
-# -90 = -Y, the arm's right). span: its width in degrees (360 = the whole circle). radius_mm: outer limit,
-# 0 for none. Every body point, attachment point and the tool tip must be inside, with its radius as margin.
-# Points within AREA_CORE of the base axis are always inside (the column itself turns there).
+# Work area: a slice of the circle around the base the tool tip (the TCP: flange centre, or the attachment's
+# tip) must stay inside; the rest of the arm may cross its edges. Keep in sync with the page.
+# center: direction of the slice's middle in degrees (0 = +X, the way the flange points at the zero pose,
+# away from the Pi's ports; -90 = -Y, the arm's right). span: its width in degrees (360 = the whole circle).
+# radius_mm: outer limit, 0 for none. A tip within AREA_CORE of the base axis is always inside.
 AREA_CORE = 0.06
-DEFAULT_AREA = {"enabled": True, "center": -90.0, "span": 180.0, "radius_mm": 0.0}
+DEFAULT_AREA = {"enabled": True, "center": 0.0, "span": 180.0, "radius_mm": 0.0}
 
-# Attachments the page offers (keep in sync with ATTACHMENTS in ik_sim.html): length and diameter in mm.
+# Attachments the page offers (keep in sync with ATTACHMENTS in sim/js/kinematics.js): length and diameter in mm.
 ATTACHMENTS = {
     "none": {"name": "No attachment", "length_mm": 0, "diameter_mm": 0},
     "vacuum": {"name": "Vacuum suction", "length_mm": 80, "diameter_mm": 25},
@@ -136,18 +136,16 @@ def clean_area(a):
     return out if ok and all(math.isfinite(v) for v in (out["center"], out["span"], out["radius_mm"])) else None
 
 
-def _outside_area(p, r, area):
-    """None if point p (with radius r) is inside the work area, else what's wrong."""
+def _outside_area(p, area):
+    """None if point p is inside the work area, else what's wrong."""
     rad = math.hypot(p[0], p[1])
     lim = area["radius_mm"] / 1000
-    if lim > 0 and rad + r > lim:
+    if lim > 0 and rad > lim:
         return "would reach past the work area"
     if area["span"] >= 360 or rad < AREA_CORE:
         return None
     off = abs((math.degrees(math.atan2(p[1], p[0])) - area["center"] + 180) % 360 - 180)
-    if off > area["span"] / 2 - math.degrees(math.asin(min(1.0, r / rad))):
-        return "would leave the work area"
-    return None
+    return "would leave the work area" if off > area["span"] / 2 else None
 
 
 def check_pose(q_deg, tool_m=0.0, tool_r=TOOL_R_DEFAULT, area=None):
@@ -194,11 +192,9 @@ def check_pose(q_deg, tool_m=0.0, tool_r=TOOL_R_DEFAULT, area=None):
     if k["tcp"][2] < TCP_MIN_Z:
         return "the tool tip would go below the table"
     if area and area["enabled"]:
-        tip = ("the attachment's tip" if tool else "the flange", k["tcp"], tool_r if tool else 0.02)
-        for name, p, _, r_side, _ in body + [(tip[0], tip[1], 0, tip[2], True)]:
-            why = _outside_area(p, r_side, area)
-            if why:
-                return f"{name} {why}"
+        why = _outside_area(k["tcp"], area)
+        if why:
+            return ("the attachment's tip " if tool else "the flange ") + why
     return None
 
 

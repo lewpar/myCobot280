@@ -1,8 +1,9 @@
 {
   "name": "mycobot280-page-tests",
   "private": true,
-  "description": "Node tests for src/backend/static/ik_sim.html, run by pytest (tests/test_page.py)",
+  "description": "Node tests for the simulator page in src/backend/static/sim/, run by pytest (tests/test_page.py); esbuild only bundles its modules for node and jsdom",
   "dependencies": {
+    "esbuild": "^0.25.12",
     "jsdom": "^30.1.1",
     "three": "0.147.0"
   }

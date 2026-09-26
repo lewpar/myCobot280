@@ -5,6 +5,7 @@ import arm_model as model
 import main
 from conftest import H, wait_for
 from helpers import colliding_pose, frames_line, joint_deg
+from wsclient import ArmWS
 
 
 def save(client, name, frames, **kw):
@@ -117,18 +118,15 @@ def test_stall_ends_playback(client):
 
 
 def test_ws_goals_ignored_during_playback(client):
-    from conftest import PASSWORD
     rid = save(client, "Hold", frames_line(0, 0, 5, 3))
-    with client.websocket_connect("/ws/arm") as w:
-        w.send_json({"type": "auth", "password": PASSWORD})
-        w.receive_json()
+    with ArmWS(client) as a:
+        a.ready()
         play(client, recording=rid)
-        for _ in range(5):
-            w.send_json({"type": "goal", "angles": [-60, 0, 0, 0, 0, 0], "speed": 150, "acc": 1000})
-            time.sleep(0.1)
-        m = w.receive_json()
-        while m.get("playback") is None:
-            m = w.receive_json()
+        m = a.state(lambda m: m["playback"])
         assert m["playback"]["name"] == "Hold"
+        for _ in range(5):
+            a.goal([-60, 0, 0, 0, 0, 0], speed=150)
+            time.sleep(0.1)
+        assert "playback" in a.error()["message"]
         assert joint_deg(client.bus, 0) > -2
         client.post("/api/playback/stop", headers=H)

@@ -250,6 +250,10 @@ The backend serves a 3D inverse-kinematics simulator at `http://<pi>:8000/sim` a
 `/ws/arm` that streams joint angles to the servos (one sync-write packet per update) and measured
 positions back (~10 Hz).
 
+The page is plain HTML, CSS and native ES modules in `src/backend/static/sim/` (three.js r147 from jsDelivr through
+an import map). There is no build step: edit a file and reload. Browsers don't load modules from `file://`, so
+open it through the backend (or any static server, e.g. `python3 -m http.server` in that folder, for offline use).
+
 1. `./run.sh backend`, open `http://<pi>:8000/sim`, go to the **Robot** tab, enter the password and press **Connect**.
    The chip in the top bar shows the link state; **Stop** (or Esc) is always in the top-right corner.
 2. Still in **Robot**, turn on **Hand-guide mode**, pose the arm like the sim's zero pose (arm straight up), press
@@ -273,14 +277,13 @@ cylinder. Keep **Keep the flange facing down** on in Motion when picking things 
 
 ### Work area
 
-The **Work area** card in the Robot tab keeps the arm inside a slice of the circle around its base,
-drawn in green on the floor. By default it's the **right half**: seen from above, with 0° being the
-direction the flange points at the zero pose (away from the Pi's ports), the slice is centred on −90°,
-the arm's right. Presets switch to the left half, front half or the full circle; the sliders set the
-direction, the width (30°–360°) and an optional maximum reach. Every part of the arm and its attachment
-must stay inside, so near the edges the arm's elbow and wrist count, not just the tool tip. Poses outside
-are refused like a collision by the page and the backend (REST moves, IK goals, playback). The setting
-is saved on the Pi.
+The **Work area** card in the Robot tab keeps the tool tip inside a slice of the circle around the
+base, drawn in green on the floor. By default it's the **front half**: seen from above, centred on 0°,
+the direction the flange points at the zero pose (away from the Pi's ports). Presets switch to the
+right half, left half or the full circle; the sliders set the direction, the width (30°–360°) and an
+optional maximum reach. Only the tip (the flange centre, or the attachment's tip) has to stay inside;
+the rest of the arm may cross the edges. Poses that take the tip outside are refused like a collision by
+the page and the backend (REST moves, IK goals, playback). The setting is saved on the Pi.
 
 ### Recording, playback and the library
 

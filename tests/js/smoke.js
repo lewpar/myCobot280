@@ -39,25 +39,30 @@ async function fetch(url, o = {}) {
     return res(200, summary(x));
   }
 }
-let sock = null, pose = [0, 20, 20, 20, 0, 0], wsSent = [], armState = { stopped: false, fault: null }, playEndN = 0, playEndMsg = null;
-function playEnd(msg) { playEndN++; playEndMsg = msg; }
+let sock = null, pose = [0, 20, 20, 20, 0, 0], wsSent = [], armState = { stopped: false, fault: null, epoch: 0 }, playEndN = 0, playEndMsg = null;
+function playEnd(msg) { playEndN++; playEndMsg = msg; armState.epoch++; }
+const CONFIG = { type: 'config', calibrated: true, zero: [2048, 2048, 2048, 2048, 2048, 2048], dir: [1, 1, 1, 1, 1, 1],
+  tool_mm: 0, tool_d_mm: 20, attachment: 'custom', area: { enabled: false, center: 0, span: 180, radius_mm: 0 },
+  limits: [[-168, 168], [-140, 140], [-150, 150], [-150, 150], [-155, 160], [-180, 180]], stall_guard: true };
 class FakeWS {
-  constructor() { sock = this; this.readyState = 1; setTimeout(() => this.onopen(), 5);
+  constructor() { sock = this; this.readyState = 1;
+    setTimeout(() => { this.onopen(); this.emit({ type: 'hello', protocol: 2 }); this.emit(CONFIG); }, 5);
     this.iv = setInterval(() => {
       if (remote && Date.now() > remote.until) { remote = null; playEnd('Playback finished.'); }
-      this.onmessage({ data: JSON.stringify({ type: 'state', angles: pose, torque: true, stopped: armState.stopped, blocked: null,
-        calibrated: true, zero: [2048, 2048, 2048, 2048, 2048, 2048], dir: [1, 1, 1, 1, 1, 1], tool_mm: 0,
-        limits: [[-168, 168], [-140, 140], [-150, 150], [-150, 150], [-155, 160], [-180, 180]],
-        fault: armState.fault, stall_guard: true,
+      this.emit({ type: 'state', angles: pose, torque: true, stopped: armState.stopped, blocked: null,
+        fault: armState.fault, epoch: armState.epoch, clients: 1,
         playback: remote ? { name: remote.name, recording: remote.name, step: 0, steps: 1, phase: 'run', t: 0.4, duration: 1 } : null,
-        play_end: { n: playEndN, message: playEndMsg } }) });
+        play_end: { n: playEndN, message: playEndMsg } });
     }, 100); }
-  send(m) { m = JSON.parse(m); wsSent.push(m); if (m.type === 'goal') pose = m.angles.slice(); }
+  emit(m) { this.onmessage({ data: JSON.stringify(m) }); }
+  send(m) { m = JSON.parse(m); wsSent.push(m);
+    if (m.type === 'goal' && m.epoch === armState.epoch) pose = m.angles.slice();
+    if (m.type === 'resume') armState = { stopped: false, fault: null, epoch: armState.epoch + 1 }; }
   close() { clearInterval(this.iv); }
 }
 
 // ---- harness ----
-const { w, errors } = loadPage({ fetch, WebSocket: FakeWS });
+let w, errors;
 const $ = s => w.document.querySelector(s);
 const click = s => (typeof s === 'string' ? $(s) : s).dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -68,6 +73,7 @@ async function until(fn, ms = 15000) { const t = Date.now(); while (!fn() && Dat
 const input = (s, v) => { $(s).value = v; $(s).dispatchEvent(new w.Event('input', { bubbles: true })); };
 
 (async () => {
+  ({ w, errors } = await loadPage({ fetch, WebSocket: FakeWS }));
   $('#wsPw').value = 'pw';
   await sleep(200);
 
@@ -202,22 +208,25 @@ const input = (s, v) => { $(s).value = v; $(s).dispatchEvent(new w.Event('input'
   check(!$('#attCustom').hidden && /40 × ⌀30/.test(txt('#attList')), 'custom size', txt('#attList'));
   click(att('Vacuum suction'));
 
-  // 10c. work area: default right half; the figure-8 runs inside it; presets change it
+  // 10c. work area: default front half (only the tip counts); the figure-8 runs inside it; presets change it
   click('#tabbtn-robot');
-  check($('#areaOn').checked && txt('#areaCenterv').includes('right') && txt('#areaSpanv') === '180°', 'default work area: right half', txt('#areaCenterv'));
+  check($('#areaOn').checked && txt('#areaCenterv').includes('front') && txt('#areaSpanv') === '180°', 'default work area: front half', txt('#areaCenterv'));
   click('#tabbtn-motion'); click('#btnDemo');
   let blockedSeen = '';
   for (let k = 0; k < 40; k++) { await sleep(100); if (/Blocked/.test(txt('#statusText'))) blockedSeen = txt('#statusText'); }
   click('#btnDemo');
   check(!blockedSeen, 'figure-8 stays inside the work area', blockedSeen);
-  input('#tx', 0); input('#ty', 200); input('#tz', 100);          // a target on the left
+  input('#tx', -60); input('#ty', -180); input('#tz', 120);       // a target just behind the right edge
   await until(() => /work area/.test(txt('#statusText')), 3000);
-  check(/work area/.test(txt('#statusText')), 'a target on the left is refused', txt('#statusText'));
+  check(/outside the work area/.test(txt('#statusText')), 'a target past the edge is refused', txt('#statusText'));
+  input('#tx', -150); input('#ty', -100); input('#tz', 100);      // well behind: says why, not "out of reach"
+  await until(() => /outside the work area/.test(txt('#statusText')), 3000);
+  check(/target is outside the work area/.test(txt('#statusText')), 'a target behind is explained', txt('#statusText'));
   click('#tabbtn-robot');
-  click([...$('#areaPresets').children].find(b => b.textContent === 'Left half'));
-  await sleep(1500);
-  check(!/work area/.test(txt('#statusText')), 'left half preset allows it', txt('#statusText'));
   click([...$('#areaPresets').children].find(b => b.textContent === 'Right half'));
+  await sleep(1500);
+  check(!/work area/.test(txt('#statusText')), 'right half preset allows it', txt('#statusText'));
+  click([...$('#areaPresets').children].find(b => b.textContent === 'Front half'));
   input('#tx', 60); input('#ty', -160); input('#tz', 120);
 
   // 11. connected: playback runs on the backend and the page sends no goals meanwhile
@@ -247,14 +256,31 @@ const input = (s, v) => { $(s).value = v; $(s).dispatchEvent(new w.Event('input'
   click('#tabbtn-robot');
   $('#areaSpan').value = 150; $('#areaSpan').dispatchEvent(new w.Event('input'));
   await until(() => wsSent.some(m => m.type === 'set_area' && m.span === 150), 2000);
-  check(wsSent.some(m => m.type === 'set_area' && m.span === 150 && m.center === -90), 'set_area sent', JSON.stringify(wsSent.filter(m => m.type === 'set_area')));
+  check(wsSent.some(m => m.type === 'set_area' && m.span === 150 && m.center === 0), 'set_area sent', JSON.stringify(wsSent.filter(m => m.type === 'set_area')));
 
   // 12. stall guard toggle and fault display
   $('#optStall').checked = false; $('#optStall').dispatchEvent(new w.Event('change'));
   check(wsSent.some(m => m.type === 'set_stall_guard' && m.on === false), 'stall guard toggle sent');
-  armState = { stopped: true, fault: 'J2 stalled 9° short of its goal' };
+  armState = { stopped: true, fault: 'J2 stalled 9° short of its goal', epoch: armState.epoch };
   await until(() => txt('#statusText').includes('stalled'));
   check(txt('#statusText').includes('J2 stalled'), 'fault shown in the status bar', txt('#statusText'));
+
+  // 13. goals carry the epoch: resuming bumps it, the page re-reads the pose and only sends the new one
+  check(wsSent.filter(m => m.type === 'goal').every(m => Number.isInteger(m.epoch)), 'goals carry an epoch');
+  const before = armState.epoch; wsSent = [];
+  click('#btnStop');
+  await until(() => wsSent.some(m => m.type === 'goal'), 3000);
+  const goals = wsSent.filter(m => m.type === 'goal');
+  check(wsSent[0] && wsSent[0].type === 'resume', 'resume sent', JSON.stringify(wsSent[0]));
+  check(goals.length && goals.every(m => m.epoch === before + 1), 'goals after resume use the new epoch', JSON.stringify(goals.map(m => m.epoch)));
+
+  // 14. a refused command is shown but keeps the link; a refused goal is silent
+  sock.emit({ type: 'error', code: 'refused', ref: 'goal', message: 'Stale goal' });
+  sock.emit({ type: 'error', code: 'bad_request', ref: 'set_area', message: 'Needs enabled (bool)' });
+  check(txt('#wsNote').includes('Needs enabled'), 'non-fatal error shown', txt('#wsNote'));
+  check(txt('#btnWs') === 'Disconnect', 'non-fatal error keeps the link', txt('#btnWs'));
+  sock.emit({ type: 'error', code: 'auth', message: 'nope' });
+  check(txt('#btnWs') === 'Connect', 'fatal error ends the link', txt('#btnWs'));
 
   check(!errors.length, 'no page errors', errors.join(' | '));
   process.exit(failed ? 1 : 0);

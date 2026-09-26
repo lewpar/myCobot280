@@ -6,6 +6,7 @@ import os
 import secrets
 import sys
 import time
+import traceback
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 
@@ -16,7 +17,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -606,66 +608,127 @@ def torque_all_servos(req: TorqueRequest):
 
 
 # ---------------------------------------------------------------------------
-# IK simulator page, served from here so it can reach /ws/arm on the same host.
-# The page itself holds no secrets; it asks for the password before connecting.
+# IK simulator page (static/sim: index.html, style.css and ES modules in js/, no build step), served
+# from here so it can reach /ws/arm on the same host. It holds no secrets; it asks for the password
+# before connecting.
 # ---------------------------------------------------------------------------
 
-@app.get("/sim")
+class _SimFiles(StaticFiles):
+    # revalidate every time: a browser must never run a mix of old and new modules after an update
+    def file_response(self, *args, **kwargs):
+        r = super().file_response(*args, **kwargs)
+        r.headers["Cache-Control"] = "no-cache"
+        return r
+
+
+@app.get("/sim", include_in_schema=False)
 def ik_sim_page():
-    return FileResponse(os.path.join(os.path.dirname(__file__), "static", "ik_sim.html"))
+    return RedirectResponse("/sim/")   # the modules are loaded relative to /sim/
+
+
+app.mount("/sim", _SimFiles(directory=os.path.join(os.path.dirname(__file__), "static", "sim"), html=True), name="sim")
 
 
 # ---------------------------------------------------------------------------
 # Live IK link (the simulator page connects here)
 # ---------------------------------------------------------------------------
 
+# Close codes: 4401 wrong password, 4429 locked out, 4503 no arm, 1011 backend error.
+# Protocol: see the docstring at the top of ik_link.py.
+
+def _reject_constant(name):
+    raise ValueError(f"{name} is not valid JSON")
+
+
+async def _receive_json(ws: WebSocket):
+    """The next message as a dict, or None if it isn't a JSON object (binary frames, NaN and
+    Infinity included). Raises WebSocketDisconnect when the page goes away."""
+    m = await ws.receive()
+    if m["type"] == "websocket.disconnect":
+        raise WebSocketDisconnect(m.get("code", 1000))
+    try:
+        msg = json.loads(m["text"], parse_constant=_reject_constant) if m.get("text") is not None else None
+    except ValueError:
+        msg = None
+    return msg if isinstance(msg, dict) else None
+
+
+async def _ws_refuse(ws: WebSocket, code: str, message: str, close_code: int):
+    try:
+        await ws.send_json({"type": "error", "code": code, "message": message})
+        await ws.close(code=close_code)
+    except Exception:
+        pass
+
+
+def _handle(msg):
+    if msg is None:
+        return {"type": "error", "code": "bad_request", "ref": None,
+                "message": 'Messages must be JSON objects with a "type".'}
+    try:
+        return link.handle(msg)
+    except Exception as e:
+        traceback.print_exc()
+        return {"type": "error", "code": "internal", "ref": msg.get("type"), "message": f"{type(e).__name__}: {e}"}
+
+
 @app.websocket("/ws/arm")
 async def ws_arm(ws: WebSocket):
     await ws.accept()
     ip = ws.client.host if ws.client else "?"
     if _locked_out(ip):
-        await ws.send_json({"type": "error", "code": "locked",
-                            "message": "Too many wrong passwords. Wait a minute and try again."})
-        await ws.close(code=4429)
+        await _ws_refuse(ws, "locked", "Too many wrong passwords. Wait a minute and try again.", 4429)
         return
     try:
-        first = json.loads(await asyncio.wait_for(ws.receive_text(), timeout=5))
-    except (asyncio.TimeoutError, ValueError, WebSocketDisconnect):
-        first = {}
-    if not (isinstance(first, dict) and first.get("type") == "auth" and _password_ok(first.get("password"))):
+        first = await asyncio.wait_for(_receive_json(ws), timeout=5)
+    except (asyncio.TimeoutError, WebSocketDisconnect):
+        first = None
+    if not (first and first.get("type") == "auth" and isinstance(first.get("password"), str)
+            and _password_ok(first["password"])):
         await _record_failure(ip)
-        try:
-            await ws.send_json({"type": "error", "code": "auth", "message": "Wrong or missing password."})
-            await ws.close(code=4401)
-        except Exception:
-            pass
+        await _ws_refuse(ws, "auth", "Wrong or missing password.", 4401)
         return
     if link is None:
-        await ws.send_json({"type": "error", "code": "no_arm", "message": f"Robot not connected on {SERIAL_PORT}"})
-        await ws.close()
+        await _ws_refuse(ws, "no_arm", f"Robot not connected on {SERIAL_PORT}", 4503)
         return
     link.add_client()
+    send_lock = asyncio.Lock()     # the sender task and replies share the socket
+
+    async def send(m):
+        async with send_lock:
+            await ws.send_json(m)
 
     async def sender():
-        while True:
-            await asyncio.sleep(0.1)
-            state = await asyncio.to_thread(link.state)
-            await ws.send_json(state)
-
-    task = asyncio.create_task(sender())
-    try:
-        while True:
-            raw = await ws.receive_text()
+        rev = -1
+        try:
+            while True:
+                config, rev, state = await asyncio.to_thread(link.snapshot, rev)
+                if config:
+                    await send(config)
+                await send(state)
+                await asyncio.sleep(0.1)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            traceback.print_exc()
             try:
-                msg = json.loads(raw)
-            except ValueError:
-                continue
-            if isinstance(msg, dict):
-                await asyncio.to_thread(link.handle, msg)
-    except WebSocketDisconnect:
+                await ws.close(code=1011)
+            except Exception:
+                pass
+
+    try:
+        await send(link.hello())
+        task = asyncio.create_task(sender())
+        try:
+            while True:
+                reply = await asyncio.to_thread(_handle, await _receive_json(ws))
+                if reply:
+                    await send(reply)
+        finally:
+            task.cancel()
+    except (WebSocketDisconnect, RuntimeError):   # RuntimeError: sending after the socket closed
         pass
     finally:
-        task.cancel()
         link.remove_client()
 
 
