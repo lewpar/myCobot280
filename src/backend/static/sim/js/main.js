@@ -12,7 +12,7 @@ import {DEG,N,LIM,makeFK,fk} from './kinematics.js';
 import {area,outsideArea,checkPose,checkPath} from './collision.js';
 import {ikRes,requestSolve,solverNote,nearPose,initSolve} from './solve.js';
 import {renderer,scene,camera,orbit,gizmo,root,rotGroups,ledMats,targetMat,targetObj,dropLine,floorRing,
-  ghost,ghostGeo,ghostDots,realLine,realGeo,realDots,trail,pushTrail,pathLine,applyTheme,resize} from './scene.js';
+  ghost,ghostGeo,ghostDots,realLine,realGeo,realDots,trail,pushTrail,pathLine,applyTheme,resize,updateJointFx} from './scene.js';
 import {S,qIK,qCmd,servo,target,setTarget,targetFromPose,syncUI,setDemo,areaDir,haveRealNow} from './state.js';
 import {initApi} from './api.js';
 import {initSettings} from './settings.js';
@@ -22,6 +22,7 @@ import {initLink,armDriving} from './link.js';
 import {initAtom} from './atom.js';
 import {initRecord,recTick} from './record.js';
 import {initPlay,playStep,playStop,endPlay,playNote,pathWanted} from './play.js';
+import {initWizard,wizardFrame,wizardStatus} from './wizard.js';
 import {$,cssVar,V} from './util.js';
 
 initChrome();
@@ -33,6 +34,7 @@ initRecord();
 initPlay();
 initApi();
 initSolve();
+initWizard();
 
 // dragging the target's arrows
 gizmo.addEventListener('dragging-changed',e=>{orbit.enabled=!e.value;if(e.value){setDemo(false);S.homeLock=false;}});
@@ -67,9 +69,13 @@ function frame(){
   const haveReal=haveRealNow(),measured=S.measured;
   if(S.play)playStep();
   if(S.remotePlay&&!S.homeLock&&!S.remoteStopSent){S.remoteStopSent=true;playStop();playNote('Stopping playback: the target was moved.');}
-  const following=haveReal&&(S.limp||!!S.remotePlay);   // the sim mirrors the real arm
+  const wiz=S.wizard?wizardFrame(dt):null;   // the wizard's own pose for the sim arm (radians), or null
+  if(wiz)for(let i=0;i<N;i++){qIK[i]=qCmd[i]=servo[i].pos=wiz[i];servo[i].vel=0;}
+  // the sim mirrors the real arm: hand-guide, a backend playback, or a pose the backend won't move from
+  const following=!wiz&&haveReal&&(S.limp||!!S.remotePlay||!!S.armRange);
+  if(following)for(let i=0;i<N;i++){qIK[i]=qCmd[i]=measured[i]*DEG;}
   // the backend solves: ask /ws/ik for the next answer, unless the arm is solving (link.js sends it the target)
-  if(!following&&!armDriving()&&!S.play){
+  if(!wiz&&!following&&!armDriving()&&!S.play){
     const restart=S.ikRestart&&!S.homeLock;
     if(requestSolve({xyz:S.homeLock?null:target,angles:S.homeLock?qIK:null,down:orient,q:qIK,from:servo.map(s=>s.pos),
       rescue:!S.demo,restart})&&restart)S.ikRestart=false;
@@ -77,16 +83,17 @@ function frame(){
   const r=ikRes;
   // take the solution only if it started from the pose we still have (nothing set qIK directly meanwhile);
   // the arm's own solve always counts
-  if(!following&&!S.homeLock&&r&&r.fresh&&r.target&&(r.src==='arm'||nearPose(r.basis,qIK,1e-6))){
+  if(!wiz&&!following&&!S.homeLock&&r&&r.fresh&&r.target&&(r.src==='arm'||nearPose(r.basis,qIK,1e-6))){
     for(let i=0;i<N;i++)qIK[i]=r.angles[i]*DEG;r.fresh=false;}
-  if(following||S.homeLock)ikErr={pos:0,ori:0};
+  if(following)targetFromPose();
+  if(wiz||following||S.homeLock)ikErr={pos:0,ori:0};
   else if(r&&r.target)ikErr={pos:r.pos_err_mm/1000,ori:r.ori_err_deg*DEG};
   else ikErr=null;   // no answer yet
   // only collision-free poses reach the servos, along a clear route: straight there, or (not during a
   // playback, which must follow its recording) through raised poses around whatever is in the way. The
   // backend plans it from where the servos are with every answer, so qCmd is the next pose on the route.
   let blocked=null;detour=false;
-  if(!S.stopped&&!following){
+  if(!S.stopped&&!following&&!wiz){
     const cur=servo.map(s=>s.pos);
     // the servos are still heading for the last qCmd: if the rest of that move isn't clear (checked finely,
     // from where they are now), hold them here
@@ -112,7 +119,7 @@ function frame(){
     s.vel+=THREE.MathUtils.clamp(vdes-s.vel,-amax*dt,amax*dt);
     let step=s.vel*dt;
     if(Math.abs(step)>Math.abs(err)&&Math.sign(step)===Math.sign(err)){step=err;s.vel=0;}
-    s.pos=THREE.MathUtils.clamp(s.pos+step,LIM[i][0],LIM[i][1]);
+    s.pos=wiz||following?s.pos+step:THREE.MathUtils.clamp(s.pos+step,LIM[i][0],LIM[i][1]);   // (a real pose is shown as it is)
     if(Math.abs(qCmd[i]-s.pos)<3e-4&&Math.abs(s.vel)<0.02){s.pos=qCmd[i];s.vel=0;}
     rotGroups[i].rotation.z=s.pos;
     ledMats[i].emissiveIntensity=0.12+1.6*Math.abs(s.vel)/vmax;
@@ -120,7 +127,11 @@ function frame(){
     const ui=jointUI[i];ui.pos.style.left=pct(i,s.pos);ui.tgt.style.left=pct(i,qCmd[i]);ui.val.textContent=(s.pos/DEG).toFixed(1)+'°';
   }
   fk(servo.map(s=>s.pos),servoF);
+  updateJointFx(servoF,dt);
   if(trail.visible)pushTrail(servoF.tcp);
+  // the wizard shows only the arm: no target, arrows or ghost in the way
+  targetObj.visible=dropLine.visible=floorRing.visible=!wiz;gizmo.visible=gizmo.enabled=!wiz;
+  ghost.visible=ghostDots.visible=!wiz&&$('#optGhost').checked;
   fk(qIK,ghostF);
   const ga=ghostGeo.attributes.position.array;ga.set([0,0,0.06],0);
   ghostF.pos.forEach((p,k)=>ga.set([p.x,p.y,p.z],(k+1)*3));ga.set([ghostF.tcp.x,ghostF.tcp.y,ghostF.tcp.z],(N+1)*3);
@@ -135,7 +146,9 @@ function frame(){
   floorRing.position.set(target.x,target.y,0.0008);
 
   const st=$('#status');
-  if(S.stopped){st.className='status bad';$('#statusText').textContent=S.armFault?'Stopped: '+S.armFault:'Stopped. Press Resume to move again';}
+  if(wiz){st.className='status';$('#statusText').textContent=wizardStatus();}
+  else if(S.stopped){st.className='status bad';$('#statusText').textContent=S.armFault?'Stopped: '+S.armFault:'Stopped. Press Resume to move again';}
+  else if(S.armRange){st.className='status bad';$('#statusText').textContent='Won\'t move: '+S.armRange;}
   else if(area.enabled&&outsideArea(target)&&!S.limp){st.className='status bad';
     $('#statusText').textContent=/close to the base/.test(outsideArea(target))?'The target is too close to the base (Setup tab, Work area)':'The target is outside the work area (Setup tab)';}
   else if(blocked||S.remoteBlocked){st.className='status bad';const why=blocked||S.remoteBlocked;
@@ -148,7 +161,7 @@ function frame(){
   updateLinkChip();
   recTick(performance.now());
   pathLine.visible=pathWanted&&!$('#tab-play').hidden;
-  const showReal=haveReal&&$('#optReal').checked;
+  const showReal=haveReal&&($('#optReal').checked||!!wiz);
   realLine.visible=realDots.visible=showReal;
   if(showReal){fk(measured.map(v=>v*DEG),realF);const ra=realGeo.attributes.position.array;ra.set([0,0,0.06],0);
     realF.pos.forEach((p,k)=>ra.set([p.x,p.y,p.z],(k+1)*3));ra.set([realF.tcp.x,realF.tcp.y,realF.tcp.z],(N+1)*3);realGeo.attributes.position.needsUpdate=true;}

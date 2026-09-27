@@ -2,3 +2,4 @@ fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 pyserial
 python-dotenv
+ikpy>=4.1          # the optional IKPy engine (MYCOBOT_IK=ikpy); pulls in numpy, scipy and sympy

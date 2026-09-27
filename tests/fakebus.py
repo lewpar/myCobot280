@@ -10,11 +10,15 @@ Test hooks:
     bus.echo = True               the adapter echoes every request back before the reply
     bus.atom_log                  ATOM writes as (address, bytes)
     bus.alive                     set of IDs that answer
+    bus.servos[sid].corr          position correction (EEPROM 31): the reading is the physical position
+                                  minus it. 128 written to the torque register re-centres (reads 2048);
+                                  both need the EEPROM unlocked (55 = 0), as on the real servos
 """
 import threading
 import time
 
 ADDR_MIN, ADDR_MAX, ADDR_TORQUE, ADDR_ACC, ADDR_GOAL, ADDR_SPEED, ADDR_POS = 9, 11, 40, 41, 42, 46, 56
+ADDR_CORR, ADDR_LOCK = 31, 55
 
 
 def _chk(body):
@@ -39,9 +43,32 @@ class FakeServo:
         self.vel = 0.0
         self.goal = pos
         self.stop_at = None
+        self.corr = 0
+        self.eeprom_writes = 0
+        self.regs[ADDR_LOCK] = 1
         self.regs[ADDR_GOAL:ADDR_GOAL + 2] = pos.to_bytes(2, "little")
 
+    def _shift(self, new_corr):
+        """A new correction: the same physical position reads differently (and so does the goal)."""
+        d = new_corr - self.corr
+        self.corr = new_corr
+        self.pos -= d     # the goal register keeps its number, so it now means somewhere else (as on the real servo)
+        if self.stop_at is not None:
+            self.stop_at -= d
+        w = 0x0800 | -new_corr if new_corr < 0 else new_corr
+        self.regs[ADDR_CORR:ADDR_CORR + 2] = w.to_bytes(2, "little")
+        self.eeprom_writes += 1
+
     def write(self, addr, data):
+        if addr == ADDR_TORQUE and data[:1] == b"\x80":        # "calibrate the middle": read 2048 from now on
+            if not self.regs[ADDR_LOCK]:
+                self._shift(self.corr + int(round(self.pos)) - 2048)
+            return
+        if addr == ADDR_CORR and len(data) == 2:
+            if not self.regs[ADDR_LOCK]:
+                w = int.from_bytes(data, "little")
+                self._shift(-(w & 0x7FF) if w & 0x800 else w & 0x7FF)
+            return
         self.regs[addr:addr + len(data)] = data
         if addr <= ADDR_GOAL + 1 and addr + len(data) > ADDR_GOAL:
             self.goal = int.from_bytes(self.regs[ADDR_GOAL:ADDR_GOAL + 2], "little")

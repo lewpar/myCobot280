@@ -40,7 +40,7 @@ def test_ws_no_arm_close_code(no_arm):
 
 def test_ws_hello_config_then_state(client):
     with ArmWS(client) as a:
-        assert a.hello == {"type": "hello", "protocol": 3}
+        assert a.hello == {"type": "hello", "protocol": 4}
         first = a.recv()
         assert first["type"] == "config"
         assert {"calibrated", "zero", "dir", "tool_mm", "tool_d_mm", "attachment", "area", "limits",
@@ -267,23 +267,31 @@ def test_target_drives_the_arm_to_a_point(client):
         assert not a.errors
 
 
-def test_target_joint_pose_goes_up_and_over(client):
-    """A joint target whose straight path would hit the table gets there through raised poses, never colliding."""
+def test_target_joint_pose_goes_up_and_over(client, monkeypatch):
+    """A joint target whose straight path would hit the table gets there through raised poses, never colliding.
+    (The route is re-planned from where the arm is every solve, so once it has moved a little the rest may be
+    straight: the detour is looked for in the planner's answers, not only in the states sent 10 times a second.)"""
     a_pose, b_pose = [28, -84, -89, 82, 66, 113], [19, -82, 46, -83, -87, -11]
     assert "hit" in model.check_path(a_pose, b_pose)
+    plans = []
+    real = main.link._solver.step
+
+    def spy(*args, **kw):
+        q, res = real(*args, **kw)
+        plans.append(res["detour"])
+        return q, res
+    monkeypatch.setattr(main.link._solver, "step", spy)
     with ArmWS(client) as a:
         a.ready()
         a.goal(a_pose)
         assert wait_for(lambda: max(abs(x - y) for x, y in zip(arm_pose(client.bus), a_pose)) < 1, 8)
         a.target(angles=b_pose)
-        detour = False
         for _ in range(300):
             m = a.state()
             assert not model.check_pose(m["angles"]), m["angles"]
-            detour |= bool(m["ik"] and m["ik"]["detour"])
             if m["ik"] and m["ik"]["arrived"]:
                 break
-        assert detour and m["ik"]["arrived"] and m["ik"]["target"] is None
+        assert plans and plans[0] and m["ik"]["arrived"] and m["ik"]["target"] is None
         assert max(abs(x - y) for x, y in zip(arm_pose(client.bus), b_pose)) < 1
 
 

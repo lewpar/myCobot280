@@ -255,7 +255,10 @@ The backend serves a 3D inverse-kinematics simulator at `http://<pi>:8000/sim` a
 - `/ws/ik` only solves (it doesn't need the arm): send a point and where the servos are, get back the joint
   angles and the next pose on a clear route. The page uses it when it isn't driving the arm.
 
-The IK lives on the backend only (`src/backend/ik.py`), so any client gets the same solver as the page.
+The IK lives on the backend only (`src/backend/ik.py`), so any client gets the same solver as the page. It has
+two engines, chosen with `MYCOBOT_IK` in `src/backend/.env`: `native` (the default, fast enough for the Pi) or
+`ikpy` ([IKPy](https://ikpy.readthedocs.io), about 25 times slower). The collision checks and route planning
+around them are the same.
 
 The page is plain HTML, CSS and native ES modules in `src/backend/static/sim/` (three.js r147 from jsDelivr through
 an import map). There is no build step: edit a file and reload. Browsers don't load modules from `file://`, so
@@ -264,10 +267,20 @@ connected.
 
 1. `./run.sh backend`, open `http://<pi>:8000/sim`, click the connection chip in the top bar, enter the password and press **Connect**.
    The chip shows the link state; **Stop** (or Esc) is always in the top-right corner.
-2. Turn on **Hand-guide** (top bar, shown once connected), open **Setup → Calibration**, pose the arm like the sim's zero pose (arm straight up), press
-   **Set zero to the arm's current pose**.
-3. Bend each joint by hand. If the green (measured) pose turns the other way, tick **Reverse** for it.
-4. If something is mounted on the flange, pick it in **Setup → Attachment** (see below).
+2. Open **Setup → Calibration → Start the calibration wizard** (or the **Calibrate** button that appears in
+   the top bar when the arm needs it). It walks you through it with the 3D model: torque off while you hold
+   the arm, pose it straight up, re-centre the servos whose wrap point is in the way, save the zero, then turn
+   each joint a little so it can check (and fix) its direction.
+3. If something is mounted on the flange, pick it in **Setup → Attachment** (see below).
+
+The manual controls are still in the Calibration card: **Hand-guide**, **Set zero to the arm's current pose**,
+and **Reverse** per joint.
+
+**Servo centres.** Each servo counts 0–4095 over a turn. If a joint's zero is near either end, part of its
+travel is past the servo's wrap point: the joint then reads half a turn out, and the backend refuses to move
+it (driving it back would turn it the wrong way, into the arm). Move it back by hand, and re-centre the
+servos in the zero pose, from the wizard or with `tools/recenter_servos.py --write` (backend stopped;
+`--undo` reverts the last one).
 
 Calibration is saved to `ik_calibration.json` (zeros seeded from `center_positions.json` until
 then). If a zero sits far from the middle of a servo's travel, the page says how much range that

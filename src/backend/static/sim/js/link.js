@@ -15,17 +15,20 @@ import {storePw,forgetPw} from './api.js';
 import {showConn} from './chrome.js';
 import {$} from './util.js';
 
-const WS_PROTOCOL=3,WS_FATAL=['auth','locked','no_arm'];   // errors with these codes end the link
+const WS_PROTOCOL=4,WS_FATAL=['auth','locked','no_arm'];   // errors with these codes end the link
 let wsTimer=null,lastSent='',armTorque=null,calibKey='',resync=false,armEpoch=null,armClients=1,calibMsg=false;
 let dirBoxes=[];
 
 export function send(o){if(S.ws&&S.ws.readyState===1)S.ws.send(JSON.stringify(o));}
+/* Everything the backend sends, for modules that need more than this one handles (the calibration wizard). */
+const listeners=new Set();
+export function onArm(fn){listeners.add(fn);return()=>listeners.delete(fn);}
 export const linkLive=()=>!!(S.ws&&S.ws.readyState===1&&haveRealNow());
 function wsNote(t){$('#wsNote').textContent=t;}
 /* The arm solves and moves: connected, every servo reading back, "drive the servos" on, and nothing else in
    charge (hand-guide, a backend playback, Stop, a resync, local playback). */
 export const armDriving=()=>!!(S.ws&&S.ws.readyState===1&&S.measured&&S.measured.every(v=>v!==null)&&$('#optSend').checked&&
-  !S.limp&&!resync&&!S.stopped&&!S.remotePlay&&!S.remotePending&&!S.play);
+  !S.limp&&!resync&&!S.stopped&&!S.remotePlay&&!S.remotePending&&!S.play&&!S.armRange&&!S.wizard);
 function targetMsg(){ // the Move target: the point to solve for, or the joint pose itself when qIK was set directly
   const m={type:'target',speed:+spd.value,acc:+acc.value,epoch:armEpoch};
   if(S.homeLock)m.angles=qIK.map(a=>+(a/DEG).toFixed(3));
@@ -34,7 +37,7 @@ function targetMsg(){ // the Move target: the point to solve for, or the joint p
 }
 function libAutoload(){if($('#wsPw').value){libRefresh();poseRefresh();}}
 
-function adoptMeasured(){ // start the sim from the arm's real pose so the next command doesn't swing it
+export function adoptMeasured(){ // start the sim from the arm's real pose so the next command doesn't swing it
   if(S.play)endPlay('Playback stopped: re-read the arm\'s pose.');
   for(let i=0;i<N;i++){qIK[i]=clampJ(i,S.measured[i]);qCmd[i]=qIK[i];servo[i].pos=S.measured[i]*DEG;servo[i].vel=0;}
   targetFromPose();S.homeLock=true;setDemo(false);lastSent='';dropIk();
@@ -61,7 +64,7 @@ export function setStopped(on,fromArm){ // fromArm: the backend reported it, so 
 function wsStop(msg){
   if(wsTimer)clearInterval(wsTimer);wsTimer=null;
   if(S.ws){const w=S.ws;S.ws=null;try{w.close();}catch(_){}}
-  S.measured=null;S.limp=false;calibKey='';resync=false;armEpoch=null;armClients=1;calibMsg=false;S.remoteBlocked=null;S.remotePlay=null;S.remotePending=false;S.playEndN=null;S.armFault=null;playUI();$('#calNote').textContent='';$('#btnLimp').disabled=true;$('#btnZero').disabled=true;dirBoxes.forEach(b=>b.disabled=true);
+  S.measured=null;S.limp=false;S.armRange=null;S.armConfig=S.armState=null;S.armTorque=null;calibKey='';resync=false;armEpoch=null;armClients=1;calibMsg=false;S.remoteBlocked=null;S.remotePlay=null;S.remotePending=false;S.playEndN=null;S.armFault=null;playUI();$('#calNote').textContent='';$('#btnLimp').disabled=true;$('#btnZero').disabled=true;dirBoxes.forEach(b=>b.disabled=true);
   for(let i=0;i<N;i++){LIM[i][0]=URDF_LIM[i][0];LIM[i][1]=URDF_LIM[i][1];}$('#btnLimp').setAttribute('aria-pressed','false');
   $('#recLimp').disabled=true;$('#recLimp').setAttribute('aria-pressed','false');
   $('#btnWs').textContent='Connect';$('#btnWs').setAttribute('aria-pressed','false');
@@ -108,18 +111,20 @@ function connect(){
   };
   sock.onmessage=ev=>{
     let m;try{m=JSON.parse(ev.data);}catch(_){return;}
+    if(greeted||m.type==='hello')listeners.forEach(fn=>{try{fn(m);}catch(err){console.error(err);}});
     if(m.type==='error'){
       if(WS_FATAL.includes(m.code)){if(m.code==='auth')forgetPw();wsStop(m.code==='auth'?'The backend rejected that password.':(m.message||'The backend reported an error.'));return;}
       if(m.code==='refused'&&(m.ref==='goal'||m.ref==='target'))lastSent='';   // the state says why; try again
-      else wsNote(m.message||'The arm refused that.');
+      else if(!S.wizard)wsNote(m.message||'The arm refused that.');   // (the wizard shows its own)
       return;}
     if(m.type==='hello'){if(m.protocol===WS_PROTOCOL)greeted=true;
       else wsStop(`The backend speaks protocol ${m.protocol} and this page ${WS_PROTOCOL}. Open the page from the backend (/sim) so they match.`);return;}
     if(!greeted){wsStop('This backend is older than the page. Update the backend or open the page it serves (/sim).');return;}
-    if(m.type==='config'){onConfig(m);return;}
+    if(m.type==='config'){S.armConfig=m;onConfig(m);return;}
     if(m.type!=='state'||!Array.isArray(m.angles))return;
     const first=!S.measured;
-    S.measured=m.angles.slice(0,N).map(v=>typeof v==='number'?v:null);S.measuredAt=performance.now();armTorque=m.torque;
+    S.measured=m.angles.slice(0,N).map(v=>typeof v==='number'?v:null);S.measuredAt=performance.now();armTorque=S.armTorque=m.torque;
+    S.armState=m;S.armRange=m.out_of_range||null;
     const complete=S.measured.every(v=>v!==null);
     S.remoteBlocked=m.blocked||null;
     if(armDriving()){setArmIk(m.ik||null);if(!m.ik)lastSent='';}   // no target on the arm (it ended one): send ours again

@@ -32,6 +32,7 @@ def data_dir(tmp_path, monkeypatch):
     """Calibration, home positions and the library all live in tmp_path."""
     monkeypatch.setattr(arm_model, "CALIB_FILE", str(tmp_path / "ik_calibration.json"))
     monkeypatch.setattr(arm_model, "CENTER_FILE", str(tmp_path / "center_positions.json"))
+    monkeypatch.setattr(arm_model, "RECENTER_LOG", str(tmp_path / "servo_centres_log.json"))
     for store in library.STORES:
         monkeypatch.setattr(store, "dir", str(tmp_path / store.name))
     # most tests move the arm freely, including out of the default work area (the front half):

@@ -48,6 +48,10 @@ _ATOM_ADDR_GET_STATE    = 0x04
 _RANGE_MIN    = 0
 _RANGE_MAX    = 4095
 _SAFETY_BUFFER = 50
+# never closer than this to the servo's 0/4095 point, whatever its EEPROM limits say (about 20 degrees): a
+# joint pushed past that point reads half a turn away, and the servo then drives it the wrong way round
+_SEAM_MARGIN  = 228
+_CENTRE       = 2048
 
 # Valid register ranges. Speed 0 and acceleration 0 both mean "no limit" on STS servos,
 # so they are never sent; values outside these ranges are clamped rather than wrapped.
@@ -379,14 +383,26 @@ class _Bus:
             hi = self._read_u16(servo_id, _ADDR_MAX_ANGLE_LIMIT)
             if lo is None or hi is None:
                 # don't cache a failed read; fall back for this call only
-                return (_RANGE_MIN + _SAFETY_BUFFER, _RANGE_MAX - _SAFETY_BUFFER)
+                return (_RANGE_MIN + _SEAM_MARGIN, _RANGE_MAX - _SEAM_MARGIN)
             if lo == 0 and hi == 0:
-                self._limit_cache[servo_id] = (_RANGE_MIN + _SAFETY_BUFFER,
-                                                _RANGE_MAX - _SAFETY_BUFFER)
-            else:
-                self._limit_cache[servo_id] = (lo + _SAFETY_BUFFER,
-                                                hi - _SAFETY_BUFFER)
+                lo, hi = _RANGE_MIN, _RANGE_MAX
+            self._limit_cache[servo_id] = (max(lo + _SAFETY_BUFFER, _RANGE_MIN + _SEAM_MARGIN),
+                                           min(hi - _SAFETY_BUFFER, _RANGE_MAX - _SEAM_MARGIN))
         return self._limit_cache[servo_id]
+
+    def _position_correction(self, servo_id: int) -> int | None:
+        """The servo's position correction (EEPROM 31): sign-magnitude, bit 11 = sign, -2047..2047."""
+        w = self._read_u16(servo_id, _ADDR_POSITION_CORRECTION)
+        if w is None:
+            return None
+        return -(w & 0x07FF) if w & 0x0800 else w & 0x07FF
+
+    def _eeprom_write(self, servo_id: int, address: int, data: bytes) -> bool:
+        """Unlock the EEPROM, write, lock it again. True if the servo acknowledged the write."""
+        self._write_raw(servo_id, _ADDR_LOCK, bytes([0]))
+        ok = self._write_raw(servo_id, address, data) is not None
+        self._write_raw(servo_id, _ADDR_LOCK, bytes([1]))
+        return ok
 
     def _clamp(self, servo_id: int, target: int) -> int:
         lo, hi = self._safe_limits(servo_id)
@@ -518,6 +534,31 @@ class MyCobot280:
     def servo_ping(self, servo_id: int) -> bool:
         """Check if a servo responds."""
         return self.servo(servo_id).ping()
+
+    # -- centring (writes EEPROM) -----------------------------------------------
+
+    def position_correction(self, servo_id: int) -> int | None:
+        """The servo's stored position correction in ticks (EEPROM 31), None if it didn't answer."""
+        with self._bus._lock:
+            return self._bus._position_correction(servo_id)
+
+    def recenter(self, servo_id: int) -> int | None:
+        """Make wherever the servo is now read as its centre (2048), without moving it: Feetech's own
+        "calibrate the middle" (128 written to the torque register), which the servo stores in its position
+        correction (EEPROM). Returns the position it reads afterwards, None if it didn't answer.
+        Only the reading changes: goals held elsewhere for this servo are stale afterwards."""
+        with self._bus._lock:
+            if not self._bus._eeprom_write(servo_id, _ADDR_TORQUE_ENABLE, bytes([128])):
+                return None
+        time.sleep(0.05)
+        return self.read_positions([servo_id])[0]
+
+    def set_position_correction(self, servo_id: int, value: int) -> bool:
+        """Write the position correction (ticks, -2047..2047), e.g. to undo recenter(). True if acknowledged."""
+        value = max(-2047, min(2047, int(value)))
+        word = 0x0800 | -value if value < 0 else value
+        with self._bus._lock:
+            return self._bus._eeprom_write(servo_id, _ADDR_POSITION_CORRECTION, bytes([word & 0xFF, word >> 8]))
 
     # -- streaming (used by the IK link) --------------------------------------
 

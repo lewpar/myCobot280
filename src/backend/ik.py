@@ -2,12 +2,20 @@
 the servos take there. Pure logic (no bus); used by ik_link (the `target` message on /ws/arm, which drives the
 arm) and by the solve-only socket /ws/ik (main.py), which the simulator page uses when it isn't driving the arm.
 
-Solver: task-priority damped least squares on the geometric Jacobian (position first, "flange facing down"
-in the null space), the step scaled uniformly and clamped to the joint limits. Each step goes clear of
-collisions (iterate_clear stops at the last clear step instead of walking into one). When it's stuck (short
-of the target, colliding, or with no clear route from where the servos are) it restarts from seeded poses
-(rescue): 32 fixed seeds plus two upright ones stepped clear, ranked collision-free first, then reachable,
-then closest; retried up to MAX_RETRIES times with fresh random seeds while it stays stuck on one target.
+Two engines do the numbers, chosen with MYCOBOT_IK (ENGINES; "native" by default):
+- "native": task-priority damped least squares on the geometric Jacobian (position first, "flange facing down"
+  in the null space), a few small steps per solve (ITERS), each clamped to the joint limits. About 2 ms a
+  solve on a desktop.
+- "ikpy": IKPy (https://ikpy.readthedocs.io) on a chain built from arm_model.URDF_JOINTS (make_chain), the joint
+  limits as its bounds and the attachment as a fixed last link; "facing down" is its orientation_mode "Z".
+  IKPy weighs position and orientation together, so when a facing-down answer misses the point, the position
+  alone is solved again and the closer answer wins (position first). Tens of ms a solve on a desktop.
+Neither knows about collisions, so around them:
+- iterate_clear: from a clear pose, never step into a collision: it stops at the last clear pose (native: the
+  last clear step; ikpy: the last clear pose on the way to its answer);
+- rescue: when stuck (short of the target, colliding, or with no clear route from where the servos are) it
+  restarts from seeded poses, ranked collision-free first, then reachable, then closest; retried up to
+  MAX_RETRIES times with fresh random seeds while it stays stuck on one target.
 
 Route (plan_move): straight there in joint space if that path is clear, else through raised poses (J2-J5 at 0:
 lift, turn the base, come down; also lifting the shoulder or straightening the elbow first). Every leg gets
@@ -19,17 +27,29 @@ result) use degrees and millimetres.
 import math
 import os
 import sys
+import threading
+import warnings
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 import arm_model as model  # noqa: E402
 
 N = 6
 DEG = math.pi / 180
-ITERS = 14                    # solver steps per solve
+ITERS = 14                    # native: solver steps per solve
 RESCUE_S, RETRY_S, MAX_RETRIES = 0.25, 1.0, 6
 REACHED_M, REACHED_ORI = 0.003, 3 * DEG   # what counts as "on the target" (and "facing down")
+THERE_M, THERE_ORI = 1.5e-4, 2e-3         # close enough that there's nothing left to solve
+CLEAR_STEPS = 12                          # iterate_clear: samples on the way to IKPy's answer
+IKPY_TOL = 1e-4               # IKPy's convergence tolerance: its default is several times slower for nothing we can see
 XYZ_MM = 1000                 # |x|, |y|, |z| of a target, mm
 URDF_LIM = [(lo * DEG, hi * DEG) for lo, hi in model.URDF_LIMITS_DEG]
+DOWN = [0.0, 0.0, -1.0]
+_warn_lock = threading.Lock()   # warnings.catch_warnings isn't thread-safe; solves run on several threads
+ENGINES = ("native", "ikpy")
+DEFAULT_ENGINE = os.environ.get("MYCOBOT_IK", "native").strip().lower() or "native"
+if DEFAULT_ENGINE not in ENGINES:
+    print(f"WARNING: MYCOBOT_IK={DEFAULT_ENGINE!r} isn't one of {', '.join(ENGINES)}; using native", flush=True)
+    DEFAULT_ENGINE = "native"
 
 
 def _clamp(v, lo, hi):
@@ -59,14 +79,39 @@ def _pinv(J, lam2):
             for u, v, w in zip(r0, r1, r2)]
 
 
+def make_chain(tool_m=0.0, limits=None):
+    """The arm as an IKPy chain: a fixed base, the six URDF joints (bounded by ``limits``, radians) and the
+    attachment as a fixed link along the flange normal, so the chain ends at the tool tip. (IKPy is only
+    imported when this engine is used.)"""
+    import numpy as np
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        from ikpy.chain import Chain
+        from ikpy.link import OriginLink, URDFLink
+    links = [OriginLink()]
+    for k, ((xyz, rpy), (lo, hi)) in enumerate(zip(model.URDF_JOINTS, limits or URDF_LIM)):
+        links.append(URDFLink(f"J{k + 1}", origin_translation=np.array(xyz, float), origin_orientation=np.array(rpy, float),
+                              rotation=np.array([0.0, 0.0, 1.0]), bounds=(lo, hi), use_symbolic_matrix=False))
+    links.append(URDFLink("tool tip", origin_translation=np.array([0.0, 0.0, tool_m]), origin_orientation=np.zeros(3),
+                          joint_type="fixed", use_symbolic_matrix=False))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return Chain(links, active_links_mask=[False] + [True] * N + [False], name="mycobot280")
+
+
 class Solver:
     """IK and route planning under one set of settings: the attachment (tool_m long, tool_r radius), the work
     area and the joint limits (radians; the servos' safe range once known). Keeps the rescue state between
     solves, so one Solver belongs to one stream of targets (a page, or the arm's target)."""
 
-    def __init__(self, tool_m=0.0, tool_r=model.TOOL_R_DEFAULT, area=None, limits=None):
+    def __init__(self, tool_m=0.0, tool_r=model.TOOL_R_DEFAULT, area=None, limits=None, engine=None):
+        self.engine = engine or DEFAULT_ENGINE
+        if self.engine not in ENGINES:
+            raise ValueError(f"engine must be one of {', '.join(ENGINES)}")
         self.tool_m, self.tool_r, self.area = tool_m, tool_r, area
         self.lim = [tuple(l) for l in (limits or URDF_LIM)]
+        self._ikpy_chain = None
+        self._chain_key = None
         self.reset()
 
     def configure(self, tool_m, tool_r, area, limits=None):
@@ -96,6 +141,39 @@ class Solver:
         return (fl[0] + n[0] * t, fl[1] + n[1] * t, fl[2] + n[2] * t), n
 
     # -- solving ----------------------------------------------------------------------------
+
+    def errors(self, q, target, orient):
+        """(position error m, angle from facing straight down rad, or 0 when that isn't asked for)."""
+        (px, py, pz), n = self.tcp(q)
+        return (math.sqrt((target[0] - px) ** 2 + (target[1] - py) ** 2 + (target[2] - pz) ** 2),
+                math.acos(_clamp(-n[2], -1.0, 1.0)) if orient else 0.0)
+
+    def _chain(self):
+        key = (self.tool_m, tuple(self.lim))
+        if self._chain_key != key:
+            self._ikpy_chain, self._chain_key = make_chain(self.tool_m, self.lim), key
+        return self._ikpy_chain
+
+    def _ikpy(self, q, target, orient):
+        lim = self.lim
+        x0 = [0.0] + [_clamp(v, lo + 1e-6, hi - 1e-6) for v, (lo, hi) in zip(q, lim)] + [0.0]   # inside the bounds
+        kw = {"target_orientation": DOWN, "orientation_mode": "Z"} if orient else {}
+        with _warn_lock, warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            sol = self._chain().inverse_kinematics(list(target), initial_position=x0, tol=IKPY_TOL, **kw)
+        return [_clamp(float(v), lo, hi) for v, (lo, hi) in zip(sol[1:1 + N], lim)]
+
+    def solve(self, q, target, orient):
+        """IKPy from q (radians): (its answer, errors). With orient, position still comes first: if the facing-down
+        answer misses the point, the point alone is solved too and the closer of the two is kept."""
+        q2 = self._ikpy(q, target, orient)
+        r = self.errors(q2, target, orient)
+        if orient and r[0] > 0.002:
+            qp = self._ikpy(q2, target, False)
+            rp = self.errors(qp, target, orient)
+            if rp[0] < r[0] - 0.001:
+                q2, r = qp, rp
+        return q2, r
 
     def iterate(self, q, target, iters, orient):
         """Move q (radians, in place) toward putting the TCP on target; returns (position error m,
@@ -151,7 +229,7 @@ class Solver:
         return (math.sqrt((tx - px) ** 2 + (ty - py) ** 2 + (tz - pz) ** 2),
                 math.acos(_clamp(-n[2], -1.0, 1.0)) if orient else 0.0)
 
-    def iterate_clear(self, q, target, iters, orient):
+    def _iterate_clear_native(self, q, target, iters, orient):
         """Like iterate, but q never steps from a clear pose into a collision: it stops at its last clear step
         (the solver itself knows nothing about collisions, and following a target it would happily walk the
         elbow into the base). A q that already collides just iterates."""
@@ -167,6 +245,37 @@ class Solver:
             if r[0] < 1.5e-4 and (not orient or r[1] < 2e-3):
                 break
         return r
+
+    def iterate_clear(self, q, target, orient, iters=ITERS):
+        """One solve's worth of moving q (radians, in place) toward target, never from a clear pose into a
+        collision; returns the errors. ``iters`` is the native engine's step count (IKPy solves in one go)."""
+        if self.engine == "native":
+            return self._iterate_clear_native(q, target, iters, orient)
+        return self._iterate_clear_ikpy(q, target, orient)
+
+    def _iterate_clear_ikpy(self, q, target, orient):
+        """Move q (radians, in place) to IKPy's answer and return its errors, but never from a clear pose into a
+        collision (IKPy knows nothing about them, and following a target it would happily put the elbow in the
+        base): then it walks toward the answer and stops at the last clear pose. A q that already collides just
+        takes the answer."""
+        q[:] = [_clamp(v, lo, hi) for v, (lo, hi) in zip(q, self.lim)]   # (a seed may start outside the limits)
+        r = self.errors(q, target, orient)
+        if r[0] < THERE_M and (not orient or r[1] < THERE_ORI):
+            return r                                   # already there: nothing to solve
+        q2, r2 = self.solve(q, target, orient)
+        if self.hit(q) or not self.hit(q2):
+            q[:] = q2
+            return r2
+        best = None
+        for k in range(1, CLEAR_STEPS + 1):
+            p = [a + (b - a) * k / CLEAR_STEPS for a, b in zip(q, q2)]
+            if self.hit(p):
+                break
+            best = p
+        if best is None:
+            return r
+        q[:] = best
+        return self.errors(q, target, orient)
 
     # -- route --------------------------------------------------------------------------------
 
@@ -217,9 +326,12 @@ class Solver:
         same pose again), different for each try but repeatable."""
         yaw = math.atan2(target[1], target[0])
         seeds = []
-        if not tries:
-            bends = [(0.5, 0.9, 0.9), (0.2, 1.3, 0.9), (0.9, 0.4, 1.2), (-0.3, 1.6, 1.0)]
-            for y0 in (yaw, yaw + math.pi / 2, yaw - math.pi / 2, yaw + math.pi):
+        native = self.engine == "native"
+        if not tries:   # (an IKPy seed costs tens of ms: fewer, well-spread ones for it)
+            bends = [(0.5, 0.9, 0.9), (0.2, 1.3, 0.9), (0.9, 0.4, 1.2), (-0.3, 1.6, 1.0)] if native else \
+                [(0.5, 0.9, 0.9), (-0.3, 1.6, 1.0)]
+            yaws = (yaw, yaw + math.pi / 2, yaw - math.pi / 2, yaw + math.pi) if native else (yaw, yaw + math.pi)
+            for y0 in yaws:
                 y = math.atan2(math.sin(y0), math.cos(y0))
                 for b in bends:
                     for sgn in (1, -1):
@@ -232,15 +344,20 @@ class Solver:
                 rs = (rs * 1103515245 + 12345) % 2147483648
                 return rs / 2147483648
 
-            for _ in range(24):
+            for _ in range(24 if native else 6):
                 seeds.append([yaw + (rand() - 0.5) * 1.6 if i == 0 else (lo + (hi - lo) * rand()) * 0.8
                               for i, (lo, hi) in enumerate(self.lim)])
-        # and from the arm pointing straight up (facing the target, and at zero), stepped clear of collisions for
-        # longer: what solving from the zero pose finds, and a pose the route through raised poses always reaches
+        # and from the arm pointing straight up (facing the target, and at zero), stepped clear of collisions: what
+        # solving from the zero pose finds, and a pose the route through raised poses always reaches
         starts = [] if tries else [([yaw, 0.0, 0.0, 0.0, 0.0, 0.0], True), ([0.0] * N, True)]
         found = []
         for q, upright in starts + [(s, False) for s in seeds]:
-            r = self.iterate_clear(q, target, 240, orient) if upright else self.iterate(q, target, 80, orient)
+            if upright:
+                r = self.iterate_clear(q, target, orient, iters=240)
+            elif native:
+                r = self.iterate(q, target, 80, orient)
+            else:
+                q[:], r = self.solve(q, target, orient)
             hit = bool(self.hit(q))
             move = sum(abs(a - b) for a, b in zip(q, q_cur))
             found.append({"q": q, "r": r, "trouble": 2 if hit else 0,
@@ -258,12 +375,12 @@ class Solver:
         return found[0]
 
     def solve_frame(self, q, target, orient, frm, now, rescue=True):
-        """One solve: moves q (radians, in place) toward target and returns its errors, stepping clear of
-        collisions. When q is stuck it restarts from seeded poses: RESCUE_S after the target changes, then up
+        """One solve: moves q (radians, in place) to IKPy's answer for target and returns its errors, stepping
+        clear of collisions. When q is stuck it restarts from seeded poses: RESCUE_S after the target changes, then up
         to MAX_RETRIES more times RETRY_S apart with new random seeds while it stays stuck on the same target
         (an unreachable one stops costing time). A restart wins if it's in less trouble (clear beats colliding,
         reachable beats unreachable), or as clear and closer. `now` is in seconds."""
-        r = self.iterate_clear(q, target, ITERS, orient)
+        r = self.iterate_clear(q, target, orient)
         t = self.trouble(q, frm)
         mem = self.mem
         self.pending = False
@@ -309,7 +426,7 @@ class Solver:
                     q[:] = b["q"]
             r = self.solve_frame(q, target, down, frm, now, rescue)
             # solving again from here would change nothing: q didn't move and no restart is due
-            settled = not self.pending and max(abs(a - b) for a, b in zip(q, start)) < 1e-7
+            settled = not self.pending and max(abs(a - b) for a, b in zip(q, start)) < 1e-5
         blocked = self.hit(q)
         nxt, detour = None, False
         if frm is not None and not blocked:
@@ -390,7 +507,7 @@ class Session:
                               [(lo * DEG, hi * DEG) for lo, hi in s["limits"]])
 
     def settings_msg(self):
-        return {"type": "settings", **self.settings}
+        return {"type": "settings", **self.settings, "engine": self.solver.engine}
 
     def handle(self, msg, now):
         t = msg.get("type") if isinstance(msg, dict) else None

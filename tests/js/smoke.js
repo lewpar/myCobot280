@@ -53,6 +53,9 @@ async function fetch(url, o = {}) {
 }
 let sock = null, pose = [0, 20, 20, 20, 0, 0], wsSent = [], armState = { stopped: false, fault: null, epoch: 0 }, playEndN = 0, playEndMsg = null;
 let ikSent = [], nSess = 0, armTarget = null, armIk = null, armSolving = false;
+// torque, the "won't move" reason, raw readings that differ from zero + angle (a servo past its wrap point)
+let armTorque = true, armRange = null, tickOver = {};
+const ticksOf = () => pose.map((a, j) => tickOver[j] !== undefined ? tickOver[j] : Math.round(2048 + a * cfg.dir[j] * 4096 / 360));
 function playEnd(msg) { playEndN++; playEndMsg = msg; armState.epoch++; armTarget = armIk = null; }
 function armSolve() { // the fake arm's target: solved by the real solver from where the arm is, then jumps to the next pose
   if (!armTarget || armSolving || remote) return;
@@ -69,20 +72,21 @@ function armSolve() { // the fake arm's target: solved by the real solver from w
 const CONFIG = { type: 'config', calibrated: true, zero: [2048, 2048, 2048, 2048, 2048, 2048], dir: [1, 1, 1, 1, 1, 1],
   tool_mm: 0, tool_d_mm: 20, attachment: 'custom', area: { enabled: false, center: 0, span: 180, radius_mm: 0 },
   limits: [[-168, 168], [-140, 140], [-150, 150], [-150, 150], [-155, 160], [-180, 180]], stall_guard: true };
+let cfg = { ...CONFIG };
 class FakeWS {
   constructor(url) { this.readyState = 1;
     if (/\/ws\/ik$/.test(url)) { // solve-only: every message to the real solver, in its own session
       this.ik = true; this.sid = ++nSess;
-      setTimeout(() => { this.onopen(); this.emit({ type: 'hello', protocol: 3 }); }, 5);
+      setTimeout(() => { this.onopen(); this.emit({ type: 'hello', protocol: 4 }); }, 5);
       return;
     }
     sock = this;
     pySolve('arm', { type: 'settings', area: CONFIG.area, tool_mm: CONFIG.tool_mm, tool_d_mm: CONFIG.tool_d_mm });
-    setTimeout(() => { this.onopen(); this.emit({ type: 'hello', protocol: 3 }); this.emit(CONFIG); }, 5);
+    setTimeout(() => { this.onopen(); this.emit({ type: 'hello', protocol: 4 }); this.emit(cfg); }, 5);
     this.iv = setInterval(() => {
       if (remote && Date.now() > remote.until) { remote = null; playEnd('Playback finished.'); }
       armSolve();
-      this.emit({ type: 'state', angles: pose, torque: true, stopped: armState.stopped, blocked: null,
+      this.emit({ type: 'state', angles: pose, ticks: ticksOf(), torque: armTorque, out_of_range: armRange, stopped: armState.stopped, blocked: null,
         fault: armState.fault, epoch: armState.epoch, clients: 1,
         playback: remote ? { name: remote.name, recording: remote.name, step: 0, steps: 1, phase: 'run', t: 0.4, duration: 1 } : null,
         play_end: { n: playEndN, message: playEndMsg }, ik: armTarget ? armIk : null });
@@ -100,7 +104,16 @@ class FakeWS {
     if (m.type === 'target' && m.epoch === armState.epoch) { if (!armTarget) armIk = null; armTarget = m; }
     if (m.type === 'set_area') pySolve('arm', { type: 'settings', area: { ...m, type: undefined } });
     if (m.type === 'set_tool') pySolve('arm', { type: 'settings', tool_mm: m.mm, tool_d_mm: m.d_mm });
-    if (m.type === 'resume') { armState = { stopped: false, fault: null, epoch: armState.epoch + 1 }; armTarget = armIk = null; } }
+    if (m.type === 'resume') { armState = { stopped: false, fault: null, epoch: armState.epoch + 1 }; armTarget = armIk = null; }
+    if (m.type === 'torque') { armTorque = m.on; armTarget = armIk = null; }
+    if (m.type === 'recenter') {
+      if (armTorque) { this.emit({ type: 'error', code: 'refused', ref: 'recenter', message: 'Turn torque off first' }); return; }
+      const results = m.joints.map(j => ({ joint: j, id: j + 1, ok: true, before: ticksOf()[j], after: 2048 }));
+      m.joints.forEach(j => { delete tickOver[j]; }); armRange = null; armState.epoch++;
+      setTimeout(() => this.emit({ type: 'recentered', results }), 30);
+    }
+    if (m.type === 'set_zero') { pose = pose.map(() => 0); cfg = { ...cfg, zero: cfg.zero.map(z => z + 1) }; armState.epoch++; this.emit(cfg); }
+    if (m.type === 'set_dir') { const d = cfg.dir.slice(); d[m.joint] = m.dir; cfg = { ...cfg, dir: d }; pose[m.joint] = -pose[m.joint]; armState.epoch++; this.emit(cfg); } }
   close() { this.closed = true; clearInterval(this.iv); }
 }
 
@@ -340,6 +353,88 @@ const input = (s, v) => { $(s).value = v; $(s).dispatchEvent(new w.Event('input'
   check(wsSent[0] && wsSent[0].type === 'resume', 'resume sent', JSON.stringify(wsSent[0]));
   check(goals.length && goals.every(m => m.epoch === before + 1), 'targets after resume use the new epoch', JSON.stringify(goals.map(m => m.epoch)));
   check(goals[0].angles && !goals[0].xyz, 'after re-reading the pose it holds it (a joint target)', JSON.stringify(goals[0]));
+
+  // 13b. hand-guide: the sim mirrors the real arm
+  click('#btnLimp');
+  pose = [15, 0, 0, 0, 0, 0];
+  await until(() => Math.abs(parseFloat(w.document.querySelector('.joint .val').textContent) - 15) < 0.6, 3000);
+  check(Math.abs(parseFloat(w.document.querySelector('.joint .val').textContent) - 15) < 0.6, 'hand-guide: the sim follows the arm',
+        w.document.querySelector('.joint .val').textContent);
+  click('#btnLimp');
+  await until(() => armTorque, 2000);
+
+  // 13c. what happened on the real arm: a joint past its servo's wrap point. The page sends nothing and says why
+  const why = 'J4 reads 141°, outside the -150° to 46° its servo can reach, so the arm won\'t move it.';
+  armState = { stopped: true, fault: why, epoch: armState.epoch }; armRange = why; tickOver = { 3: 3063 }; pose = [0, 0, 0, 141, 0, 0];
+  await until(() => /J4 reads 141/.test(txt('#statusText')), 3000);
+  wsSent = [];
+  input('#tx', 170); await sleep(600);
+  check(/J4 reads 141/.test(txt('#statusText')), 'status says why the arm won\'t move', txt('#statusText'));
+  check(!wsSent.some(m => m.type === 'target' || m.type === 'goal'), 'nothing sent to move it', JSON.stringify(wsSent));
+  check(!$('#btnCalib').hidden, 'the Calibrate pill appears');
+
+  // 13d. the calibration wizard fixes it, step by step
+  const title = () => txt('#wizTitle'), next = () => click('#wizNext');
+  click('#btnCalib');
+  check(!$('#wiz').hidden && title() === 'Set up the arm', 'wizard opens', title());
+  await until(() => !$('#wizNext').disabled, 2000);
+  check($('#wzReq').querySelectorAll('.wz-i.ok').length === 3, 'start: link, servos and no playback checked');
+  next();
+  check(title() === 'Hold the arm' && $('#wzTorqueOff').disabled, 'hold: torque-off waits for "I\'m holding it"');
+  $('#wzHeld').checked = true; $('#wzHeld').dispatchEvent(new w.Event('change'));
+  await until(() => !$('#wzTorqueOff').disabled, 1000);
+  click('#wzTorqueOff');
+  await until(() => !armTorque && !$('#wizNext').disabled, 3000);
+  check(wsSent.some(m => m.type === 'torque' && m.on === false) && !$('#wizNext').disabled, 'torque off sent, Next enabled');
+  pose = [0, 0, 0, 141, 0, 0]; tickOver = { 3: 3063 };
+  next();
+  check(title() === 'Pose it straight up' && $('#wzHints').children.length === 6, 'pose: six joint hints');
+  next();
+  check(title() === 'Centre the servos', 'centre step', title());
+  await until(() => $('#wzC3') && /from centre/.test(txt('#wzC3')), 2000);
+  const marked = [...w.document.querySelectorAll('#wzCentre input')].map(b => b.checked);
+  check(marked[3] && marked.filter(Boolean).length === 1, 'only the far servo (J4) is marked', JSON.stringify(marked));
+  check(txt('#wizNext') === 'Skip', 'it can be skipped', txt('#wizNext'));
+  await until(() => !$('#wzRecenter').disabled, 2000);
+  click('#wzRecenter');
+  await until(() => /J4 centred/.test(txt('#wzCentreState')), 3000);
+  check(wsSent.some(m => m.type === 'recenter' && JSON.stringify(m.joints) === '[3]'), 'recenter sent for J4');
+  check(/J4 centred/.test(txt('#wzCentreState')) && txt('#wizNext') === 'Next', 'result shown', txt('#wzCentreState'));
+  pose = [0, 0, 0, 1, 0, 0];
+  next();
+  check(title() === 'Save the zero' && $('#wizNext').disabled, 'zero: Next waits for the zero');
+  click('#wzZero');
+  await until(() => !$('#wizNext').disabled, 3000);
+  check(wsSent.some(m => m.type === 'set_zero') && !$('#wizNext').disabled, 'set_zero sent and saved');
+  next();
+  check(title() === 'Check each joint\'s direction' && /J1/.test(txt('#wzDirLead')), 'directions: starts with J1', txt('#wzDirLead'));
+  pose = [20, 0, 0, 0, 0, 0];                                    // J1 turned the right way
+  await until(() => /Right way round/.test(txt('#wzDirState')), 3000);
+  check(/Right way round/.test(txt('#wzDirState')), 'J1 counts the right way', txt('#wzDirState'));
+  pose = [0, 0, 0, 0, 0, 0];
+  await until(() => /J2/.test(txt('#wzDirLead')), 3000);
+  pose = [0, -20, 0, 0, 0, 0];                                   // J2 counts the other way
+  await until(() => wsSent.some(m => m.type === 'set_dir'), 3000);
+  check(wsSent.some(m => m.type === 'set_dir' && m.joint === 1 && m.dir === -1), 'J2 reversed', JSON.stringify(wsSent.filter(m => m.type === 'set_dir')));
+  await until(() => /reversed now/.test(txt('#wzDirState')), 3000);
+  pose = [0, 0, 0, 0, 0, 0];
+  await until(() => /J3/.test(txt('#wzDirLead')), 3000);
+  for (let k = 0; k < 4; k++) { click('#wzDirSkip'); await sleep(50); }
+  await until(() => !$('#wizNext').disabled, 2000);
+  check(!$('#wizNext').disabled && w.document.querySelectorAll('#wzDirDots .wz-dot.good').length === 2, 'the rest skipped', txt('#wzDirDots'));
+  next();
+  check(title() === 'Torque back on', 'torque step');
+  click('#wzTorqueOn');
+  await until(() => armTorque && !$('#wzResume').hidden, 3000);
+  check(!$('#wzResume').hidden, 'the arm was stopped: Resume offered');
+  click('#wzResume');
+  await until(() => !$('#wizNext').disabled, 3000);
+  next();
+  check(title() === 'All set' && /Re-centred J4/.test(txt('#wizBody')) && /Reversed J2/.test(txt('#wizBody')), 'summary', txt('#wizBody'));
+  check(!wsSent.some(m => m.type === 'target' || m.type === 'goal'), 'nothing drove the arm during the wizard',
+        JSON.stringify(wsSent.filter(m => m.type === 'target' || m.type === 'goal')).slice(0, 200));
+  click('#wizNext');
+  check($('#wiz').hidden && $('#btnCalib').hidden, 'Finish closes it');
 
   // 14. a refused command is shown but keeps the link; a refused goal is silent
   sock.emit({ type: 'error', code: 'refused', ref: 'goal', message: 'Stale goal' });

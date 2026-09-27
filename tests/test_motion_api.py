@@ -1,5 +1,6 @@
 """REST motion endpoints against the fake bus: guards, clamps, stop/resume."""
 import arm_model as model
+import main
 from conftest import H
 from helpers import colliding_pose
 
@@ -9,8 +10,14 @@ def test_health_and_servos(client):
     assert h["connected"] and h["servo_ids"] == [1, 2, 3, 4, 5, 6]
     s = client.get("/api/servos", headers=H).json()
     assert [x["id"] for x in s] == [1, 2, 3, 4, 5, 6]
-    assert s[0]["limits_min"] == 150 and s[0]["limits_max"] == 3946       # EEPROM limits minus the buffer
-    assert s[5]["limits_min"] == 50 and s[5]["limits_max"] == 4045        # J6 reports 0,0: full range
+    # EEPROM limits 100..3996 minus the buffer, but never within 228 ticks (20°) of the 0/4095 point
+    assert s[0]["limits_min"] == 228 and s[0]["limits_max"] == 3867
+    assert s[5]["limits_min"] == 228 and s[5]["limits_max"] == 3867       # J6 reports 0,0: full range
+    # tighter EEPROM limits: just the 50-tick buffer
+    client.bus.servos[2].regs[9:13] = (500).to_bytes(2, "little") + (3000).to_bytes(2, "little")
+    main.arm._bus._limit_cache.clear()
+    s = client.get("/api/servos", headers=H).json()
+    assert (s[1]["limits_min"], s[1]["limits_max"]) == (550, 2950)
 
 
 def test_no_arm(no_arm):
@@ -21,9 +28,9 @@ def test_no_arm(no_arm):
 def test_move_and_clamp(client):
     r = client.post("/api/servo/1/move", headers=H, json={"position": 2300, "speed": 3000, "accel": 100}).json()
     assert r["success"] and abs(client.bus.servos[1].pos - 2300) <= 10
-    # beyond the EEPROM limit: clamped to limit - 50
+    # beyond the safe limit: clamped to it (here the margin from the 0/4095 point)
     client.post("/api/servo/1/move", headers=H, json={"position": 4000, "speed": 4000, "accel": 254})
-    assert client.bus.servos[1].goal == 3946
+    assert client.bus.servos[1].goal == 3867
 
 
 def test_rejects_unlimited_speed_and_accel(client):

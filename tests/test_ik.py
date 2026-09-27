@@ -30,9 +30,9 @@ def area_depth(q, area):
     return d
 
 
-def run(q0, target, how, orient, out, steps=140):
+def run(q0, target, how, orient, out, steps=140, engine="native"):
     """Drive simulated servos to target from q0 ('jump' there, or 'drag' the target from where the TCP is)."""
-    s = ik.Solver(area=dict(model.DEFAULT_AREA))
+    s = ik.Solver(area=dict(model.DEFAULT_AREA), engine=engine)
     servo, q = list(q0), None
     start = model.fk([v / DEG for v in q0])["tcp"]
     for f in range(steps):
@@ -60,7 +60,9 @@ def run(q0, target, how, orient, out, steps=140):
     return {"ok": math.dist(tcp, target) < 0.003 and (not orient or ori < 3 * DEG), "collided": None}
 
 
-def test_solver_gets_there_without_collisions():
+# both engines (ik.ENGINES); IKPy on fewer targets, since each of its solves takes tens of ms
+@pytest.mark.parametrize("engine,targets", [("native", 10), ("ikpy", 4)])
+def test_solver_gets_there_without_collisions(engine, targets):
     rnd = random.Random(12345)
 
     def point():
@@ -74,13 +76,13 @@ def test_solver_gets_there_without_collisions():
                 return q
 
     out = {"cases": {}, "collided": [], "graze_mm": 0.0}
-    for _ in range(10):
+    for _ in range(targets):
         target, zero, pose = point(), [0.0] * 6, random_pose()
         for orient in (True, False):
-            if not run(zero, target, "jump", orient, out)["ok"]:
+            if not run(zero, target, "jump", orient, out, engine=engine)["ok"]:
                 continue      # only targets reachable from the zero pose
             for name, q0, how in (("zero/drag", zero, "drag"), ("pose/jump", pose, "jump"), ("pose/drag", pose, "drag")):
-                r = run(q0, target, how, orient, out)
+                r = run(q0, target, how, orient, out, engine=engine)
                 c = out["cases"].setdefault(name, {"n": 0, "ok": 0})
                 c["n"] += 1
                 c["ok"] += r["ok"]
@@ -89,7 +91,7 @@ def test_solver_gets_there_without_collisions():
     assert out["collided"] == [], out["collided"]
     assert out["graze_mm"] < 2, out["graze_mm"]
     c = out["cases"]
-    assert c["zero/drag"]["n"] >= 8 and c["zero/drag"]["ok"] == c["zero/drag"]["n"], c
+    assert c["zero/drag"]["n"] >= 0.8 * targets and c["zero/drag"]["ok"] == c["zero/drag"]["n"], c
     for k in ("pose/jump", "pose/drag"):   # the rest need a route out that the work area forbids
         assert c[k]["ok"] >= 0.8 * c[k]["n"], c
 
@@ -147,8 +149,17 @@ def test_session_settings():
     assert s.handle({"type": "nope"}, 0.0)["code"] == "bad_request"
 
 
-def test_session_limits_hold_the_solution():
+def test_engine_setting():
+    assert ik.DEFAULT_ENGINE in ik.ENGINES and ik.Solver().engine == ik.DEFAULT_ENGINE
+    with pytest.raises(ValueError):
+        ik.Solver(engine="nope")
+    assert ik.Session(dict(model.DEFAULT_CALIB)).settings_msg()["engine"] == ik.DEFAULT_ENGINE
+
+
+@pytest.mark.parametrize("engine", ik.ENGINES)
+def test_session_limits_hold_the_solution(engine, monkeypatch):
     """The solver never leaves the joint limits it's given (the servos' safe range)."""
+    monkeypatch.setattr(ik, "DEFAULT_ENGINE", engine)
     s = ik.Session(dict(model.DEFAULT_CALIB, area={**model.DEFAULT_AREA, "enabled": False}))
     s.handle({"type": "settings", "limits": [[-20, 20]] + [list(l) for l in model.URDF_LIMITS_DEG[1:]]}, 0.0)
     for k in range(10):
@@ -177,7 +188,7 @@ def test_ws_ik_solves_with_or_without_the_arm(which, request):
     c = request.getfixturevalue(which)
     cm, w = login(c)
     try:
-        assert w.receive_json() == {"type": "hello", "protocol": 3}
+        assert w.receive_json() == {"type": "hello", "protocol": 4}
         st = w.receive_json()
         assert st["type"] == "settings" and st["area"]["enabled"] is False and len(st["limits"]) == 6
         w.send_json({"type": "solve", "id": "a", "xyz": [180, -40, 110], "down": True, "from": [0] * 6})

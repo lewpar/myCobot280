@@ -226,8 +226,35 @@ const PATH_MAX=3000,pathGeo=new THREE.BufferGeometry();
 pathGeo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(PATH_MAX*3),3));
 const pathLine=new THREE.Line(pathGeo,new THREE.LineBasicMaterial({color:0x8b5cf6,transparent:true,opacity:0.9,depthTest:false}));
 pathLine.renderOrder=4;pathLine.frustumCulled=false;pathLine.visible=false;root.add(pathLine);
-function resize(){const st=$('#stage'),w=Math.max(1,st.clientWidth),h=Math.max(1,st.clientHeight);renderer.setSize(w,h);camera.aspect=w/h;camera.updateProjectionMatrix();}
+/* Calibration wizard effects: a glowing ring around one joint and an arrow showing which way is positive
+   (right-handed about the joint's axis), both drawn over the arm. updateJointFx places them each frame. */
+const fxMat=new THREE.MeshBasicMaterial({color:0xe79a00,transparent:true,opacity:0.85,depthTest:false});
+const fxArrowMat=new THREE.MeshBasicMaterial({color:0x3b82c4,transparent:true,opacity:0.95,depthTest:false});
+const halo=new THREE.Mesh(new THREE.TorusGeometry(0.036,0.0022,10,64),fxMat);
+const arrowG=new THREE.Group(),ARC=Math.PI*1.35,AR=0.05;
+{const arc=new THREE.Mesh(new THREE.TorusGeometry(AR,0.0028,8,48,ARC),fxArrowMat);arrowG.add(arc);
+ const cone=new THREE.Mesh(new THREE.ConeGeometry(0.0085,0.02,20),fxArrowMat);
+ cone.position.set(AR*Math.cos(ARC),AR*Math.sin(ARC),0);cone.rotation.z=ARC;   // cone points +Y: along the arc's tangent
+ arrowG.add(cone);}
+const fxG=new THREE.Group();fxG.add(halo);fxG.add(arrowG);fxG.visible=false;root.add(fxG);
+fxG.traverse(o=>{o.renderOrder=7;o.frustumCulled=false;});
+let fxSpec=null,fxSpin=0;
+const _zAxis=V(0,0,1);
+function setJointFx(spec){fxSpec=spec;fxG.visible=!!spec;}   // spec: {joint 0-5, arrow: bool} or null
+function updateJointFx(F,dt){ // F: fk output of the pose on screen
+  if(!fxSpec)return;
+  const j=fxSpec.joint;fxG.position.copy(F.pos[j]);fxG.quaternion.setFromUnitVectors(_zAxis,F.axis[j]);
+  const pulse=0.5+0.5*Math.sin(performance.now()*0.006);
+  fxMat.opacity=0.45+0.45*pulse;halo.scale.setScalar(1+0.08*pulse);
+  arrowG.visible=!!fxSpec.arrow;fxSpin=(fxSpin+dt*1.4)%(Math.PI*2);arrowG.rotation.z=fxSpin*0.25;
+}
+/* Shift the picture sideways by px (positive: right), e.g. so the arm isn't hidden behind the wizard panel. */
+let viewShift=0;
+function setViewShift(px){viewShift=px;resize();}
+function resize(){const st=$('#stage'),w=Math.max(1,st.clientWidth),h=Math.max(1,st.clientHeight);renderer.setSize(w,h);camera.aspect=w/h;
+  if(viewShift&&w>760)camera.setViewOffset(w,h,-viewShift,0,w,h);else camera.clearViewOffset();
+  camera.updateProjectionMatrix();}
 
 export {scene,camera,orbit,gizmo,root,drawArea,ledMats,atomDotMats,rotGroups,applyTool,
   targetMat,targetObj,dropLine,floorRing,ghost,ghostGeo,ghostDots,realLine,realGeo,realDots,
-  trail,clearTrail,pushTrail,PATH_MAX,pathGeo,pathLine,applyTheme,resize};
+  trail,clearTrail,pushTrail,PATH_MAX,pathGeo,pathLine,applyTheme,resize,setJointFx,updateJointFx,setViewShift};

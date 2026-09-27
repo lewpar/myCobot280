@@ -244,6 +244,7 @@ def health():
         "servo_count": len(servos),
         "servo_ids": servos,
         "serial_port": SERIAL_PORT,
+        "ik": ik.DEFAULT_ENGINE,
     }
 
 
@@ -522,6 +523,9 @@ def start_playback(req: PlaybackRequest):
         raise HTTPException(422, "Give either a recording or a sequence.")
     if link.stopped:
         raise HTTPException(423, "The arm is stopped. Resume it before playing.")
+    why = link.range_problem()
+    if why:
+        raise HTTPException(409, why)
     if req.recording is not None:
         r = _get(library.RECORDINGS, req.recording, "recording")
         name, steps = r["name"], [{**r, "pause": 0}]
@@ -538,7 +542,9 @@ def start_playback(req: PlaybackRequest):
                          speed=req.speed, acc=req.acc)
     try:
         link.start_playback(pb)
-    except RuntimeError:
+    except RuntimeError as e:
+        if str(e) != "stopped":
+            raise HTTPException(409, str(e))
         raise HTTPException(423, "The arm is stopped. Resume it before playing.")
     return {"success": True, "playback": pb.status()}
 

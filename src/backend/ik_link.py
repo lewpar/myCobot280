@@ -12,7 +12,7 @@ loop, so playback keeps going with no page connected, and it watches for stalled
 that stays far from its goal without moving (something in the way) stops the arm.
 
 Protocol (version PROTOCOL). After the auth message (main.py), the backend sends
-    {"type": "hello", "protocol": 3}
+    {"type": "hello", "protocol": 4}
     {"type": "config", ...}        now, and again whenever it changes (see config())
     {"type": "state", ...}         about 10 times a second (see state())
 Messages from the page:
@@ -34,6 +34,11 @@ Messages from the page:
     {"type": "set_stall_guard", "on": true|false}
     {"type": "set_area", "enabled": bool, "center": -180..180, "span": 30-360, "radius_mm": 0|100-450,
      "base_mm": 0|60-250 (keep-out around the base, below radius_mm; default 150)}
+    {"type": "recenter", "joints": [0-5, ...]} re-centre those servos where they are (torque off); answered
+                                               with {"type": "recentered", "results": [...]}
+A joint that reads well outside what its servo can reach (state.out_of_range says which and why) stops the arm
+and refuses every move until it's back in range: it has usually gone past the servo's 0/4095 point, and the
+servo would turn it the wrong way round.
 A command that can't be applied gets {"type": "error", "code": "bad_request"|"refused"|"internal",
 "ref": <its type>, "message": str}; a command that worked shows up in the next config/state.
 
@@ -53,7 +58,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 import arm_model as model  # noqa: E402
 import ik  # noqa: E402
 
-PROTOCOL = 3
+PROTOCOL = 4
 MAX_DPS = 150            # speed cap no matter what the page asks for
 GOAL_SPEED = (1, 360)    # deg/s a goal may ask for (capped to MAX_DPS on the arm)
 GOAL_ACC = (1, 2000)     # deg/s²
@@ -66,9 +71,11 @@ SOLVE_DT = 0.05          # a target is re-solved this often (seconds)
 RESEND_S = 0.2           # ...and its next pose re-sent at least this often while it's unchanged
 ARRIVED_DEG = 1.0        # state.ik.arrived: every joint this close to the solution
 STILL_DEG = 0.2          # a settled target isn't re-solved until the arm moves more than this (reading noise is ~0.1°)
+RANGE_TOL_DEG = 10.0     # a joint reading this far outside what its servo can reach isn't moved (see _range_problem)
+SEAM_JUMP = 2048         # a reading that jumps this many ticks between reads went past the servo's 0/4095 point
 IDS = model.JOINT_IDS
 COMMANDS = ("goal", "target", "torque", "stop", "resume", "set_zero", "set_dir", "set_tool", "set_area",
-            "set_stall_guard")
+            "set_stall_guard", "recenter")
 
 
 def _num(v, lo, hi):
@@ -109,6 +116,8 @@ class IKLink:
         self.stopped = False
         self.blocked = None
         self.fault = None
+        self.out_of_range = None         # why the arm can't be moved: a joint reads outside its servo's reach
+        self._recentering = False
         self.stall_guard = True
         self.player = None
         self.play_end = {"n": 0, "message": None}
@@ -134,7 +143,32 @@ class IKLink:
 
     def check_ticks(self, new_ticks):
         """Collision check for a raw-tick move from the current pose. None if clear."""
-        return model.check_tick_move(self.calib, self.arm.read_positions(IDS), new_ticks)
+        now = self.arm.read_positions(IDS)
+        return self._range_problem(now) or model.check_tick_move(self.calib, now, new_ticks)
+
+    def range_problem(self):
+        """Why the arm mustn't be moved from where it is now (read fresh), or None."""
+        return self._range_problem(self.arm.read_positions(IDS))
+
+    def _range_problem(self, ticks):
+        """A joint that reads well outside what its servo can reach with this calibration can't be trusted to
+        move: usually it has been pushed past the servo's 0/4095 point, so it reads half a turn away and the
+        servo would turn it the wrong way round, into the arm, to "get back". Those are only safe to move by
+        hand. Returns the reason, or None."""
+        with self._lock:
+            calib = dict(self.calib, zero=list(self.calib["zero"]), dir=list(self.calib["dir"]))
+            lims = self._limits
+        for j, t in enumerate(ticks):
+            if t is None:
+                continue
+            lo, hi = lims[j] if lims and lims[j][0] < lims[j][1] else model.URDF_LIMITS_DEG[j]
+            a = model.ticks_to_deg(calib, j, t)
+            if a < lo - RANGE_TOL_DEG or a > hi + RANGE_TOL_DEG:
+                return (f"J{j + 1} reads {model.near_deg(a):.0f}°, outside the {lo:.0f}° to {hi:.0f}° its servo can "
+                        f"reach, so the arm won't move it: its servo may have gone past its 0/4095 point and would "
+                        f"turn it the wrong way round. Move it back by hand (Hand-guide), or re-centre the servos "
+                        f"(Setup, Calibration wizard).")
+        return None
 
     def stop(self, fault=None):
         """Hold every servo where it is and refuse motion until resume()."""
@@ -192,6 +226,8 @@ class IKLink:
         with self._lock:
             if self.stopped:
                 raise RuntimeError("stopped")
+            if self.out_of_range:
+                raise RuntimeError(self.out_of_range)
             self.player = pb
             self.blocked = None
             self._pending_goal = None
@@ -319,6 +355,8 @@ class IKLink:
             return _error("refused", t, "A playback is running.")
         if epoch != self.epoch:
             return _error("refused", t, f"Stale {t}: re-read the pose (epoch is now {self.epoch}).")
+        if self.out_of_range:
+            return _error("refused", t, self.out_of_range)
         return None
 
     def _on_goal(self, msg):
@@ -383,6 +421,39 @@ class IKLink:
             self.config_rev += 1
             self._new_epoch_locked()
         self._save()
+
+    def _on_recenter(self, msg):
+        """Re-centre servos where they are (see arm_model.recenter), with torque off. The reply is `recentered`
+        (one result per joint); the calibration shifts with it, so angles keep their meaning, and the epoch goes
+        up (the readings changed under the page)."""
+        joints = msg.get("joints", list(range(6)))
+        if not (isinstance(joints, list) and joints and all(_int(j, 0, 5) for j in joints) and len(set(joints)) == len(joints)):
+            return _error("bad_request", "recenter", "joints must be a list of joint numbers 0-5.")
+        with self._lock:
+            if self._recentering:
+                return _error("refused", "recenter", "Already re-centring.")
+            if self.torque:
+                return _error("refused", "recenter", "Turn torque off first (Hand-guide) and hold the arm: "
+                                                     "a servo holding a goal would jump when its reading changes.")
+            if self.player is not None:
+                return _error("refused", "recenter", "A playback is running.")
+            calib = dict(self.calib, zero=list(self.calib["zero"]), dir=list(self.calib["dir"]))
+            self._recentering = True      # readings jump by up to half a turn meanwhile: not a 0/4095 crossing
+        try:
+            results = model.recenter(self.arm, calib, joints)
+            lim = self._limits_for(calib)
+        finally:
+            with self._lock:
+                self._recentering = False
+        with self._lock:
+            self.ticks = [None] * 6       # start the readings over (no jump from the old ones)
+            self.calib["zero"] = calib["zero"]
+            self._limits = lim
+            self._cmd = None
+            self.config_rev += 1
+            self._new_epoch_locked()
+        self._save()
+        return {"type": "recentered", "results": results}
 
     def _on_set_tool(self, msg):
         att = msg.get("attachment", self.calib["attachment"])
@@ -459,11 +530,13 @@ class IKLink:
     def _state_locked(self):
         return {
             "type": "state",
-            "angles": [None if a is None else round(a, 2) for a in model.pose_from_ticks(self.calib, self.ticks)],
+            "angles": [None if a is None else round(model.near_deg(a), 2) for a in model.pose_from_ticks(self.calib, self.ticks)],
+            "ticks": list(self.ticks),
             "torque": self.torque,
             "stopped": self.stopped,
             "blocked": self.blocked,
             "fault": self.fault,
+            "out_of_range": self.out_of_range,
             "playback": self.player.status() if self.player else None,
             "play_end": dict(self.play_end),
             "epoch": self.epoch,
@@ -575,7 +648,8 @@ class IKLink:
         the fastest joint's; the others get their share of it (see below)."""
         angles, dps, dps2 = goal
         current = model.pose_from_ticks(self.calib, self.ticks)
-        why = model.check_path(current, angles, self.tool_m, tool_r=self.tool_r, area=self.area)
+        why = self._range_problem(self.ticks) or model.check_path(current, angles, self.tool_m, tool_r=self.tool_r,
+                                                                  area=self.area)
         with self._lock:
             self.blocked = why
         if why:
@@ -678,7 +752,8 @@ class IKLink:
             self._play_tick()
         ticks = self.arm.read_positions(IDS)
         with self._lock:
-            self.ticks = ticks
+            prev, self.ticks = self.ticks, ticks
+        self._check_range(prev, ticks)
         fault = self._check_stall(ticks, time.monotonic())
         if fault:
             self.stop(fault)
@@ -686,6 +761,23 @@ class IKLink:
             self._refresh_limits()
             return time.monotonic() + LIMITS_EVERY_S
         return next_limits
+
+    def _check_range(self, prev, ticks):
+        """Keep out_of_range up to date, and stop the arm (if it's holding with torque) when it first goes bad."""
+        problem = None
+        with self._lock:
+            recentering = self._recentering
+        for j, (a, b) in enumerate(zip(prev, ticks)):
+            if not recentering and a is not None and b is not None and abs(b - a) >= SEAM_JUMP:
+                problem = (f"J{j + 1}'s servo went past its 0/4095 point (its reading jumped from {a} to {b}), so the "
+                           f"arm stopped. Move it back by hand (Hand-guide), or re-centre the servos (Setup, "
+                           f"Calibration wizard).")
+        problem = problem or self._range_problem(ticks)
+        with self._lock:
+            was, self.out_of_range = self.out_of_range, problem
+            stop = problem and not was and self.torque and not self.stopped
+        if stop:
+            self.stop(problem)
 
     def _loop(self):
         next_limits = 0.0

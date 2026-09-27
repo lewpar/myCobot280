@@ -19,6 +19,9 @@ export const S={
   armFault:null,          // why the backend stopped the arm (stall guard, bus error)
   play:null,simSpeeds:null,     // local playback (Player) and its per-joint speeds for the sim servos
   remotePlay:null,remotePending:false,remoteStopSent:false,playEndN:null,   // playback on the backend
+  armRange:null,          // the backend won't move the arm: a joint reads outside what its servo can reach (why)
+  armConfig:null,armState:null,armTorque:null,   // the latest config and state from /ws/arm, torque as it reports it
+  wizard:false,           // the calibration wizard is open: it poses the sim arm, and nothing drives the real one
 };
 export const qIK=new Array(N).fill(0);   // what the solver found (radians)
 export const qCmd=new Array(N).fill(0);  // what the servos are told: only collision-free poses get here

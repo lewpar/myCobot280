@@ -19,6 +19,7 @@ import threading
 ROOT = os.path.dirname(os.path.abspath(__file__))
 CALIB_FILE = os.path.join(ROOT, "ik_calibration.json")
 CENTER_FILE = os.path.join(ROOT, "center_positions.json")
+RECENTER_LOG = os.path.join(ROOT, "servo_centres_log.json")   # every re-centring, with the values to undo it
 
 JOINT_IDS = [1, 2, 3, 4, 5, 6]
 TICKS_PER_DEG = 4096 / 360
@@ -305,8 +306,59 @@ def save_calibration(c):
         os.replace(tmp, CALIB_FILE)
 
 
+def recenter(arm, calib, joints, now=None):
+    """Re-centre the servos of ``joints`` (0-5) where they are now: each reads 2048 afterwards (Feetech's
+    "calibrate the middle", stored in the servo's EEPROM), which puts its 0/4095 point half a turn away. Torque
+    must be off (the goal register keeps its number, so a torqued servo would jump). The calibration's zero and
+    the saved home positions shift by the same amount, so every angle still means the same pose; ``calib`` is
+    updated in place (the caller saves it). Every re-centring is appended to RECENTER_LOG with the old
+    corrections, so it can be undone (tools/recenter_servos.py --undo). Returns one result per joint."""
+    import time as _time
+    results = []
+    centers = load_centers()
+    for j in joints:
+        sid = JOINT_IDS[j]
+        before = arm.read_positions([sid])[0]
+        corr = arm.position_correction(sid)
+        r = {"joint": j, "id": sid, "before": before, "correction_before": corr, "after": None,
+             "correction_after": None, "ok": False}
+        results.append(r)
+        if before is None or corr is None:
+            r["message"] = f"J{j + 1} didn't answer."
+            continue
+        r["after"] = after = arm.recenter(sid)
+        r["correction_after"] = arm.position_correction(sid)
+        if after is None or abs(after - 2048) > 8:
+            r["message"] = f"J{j + 1} didn't take the new centre (it reads {after})."
+            continue
+        r["ok"] = True
+        d = after - before
+        calib["zero"][j] = (calib["zero"][j] + d) % 4096
+        if sid in centers:
+            centers[sid] = (centers[sid] + d) % 4096
+    if any(r["ok"] for r in results):
+        save_centers(centers)
+        try:
+            with open(RECENTER_LOG) as f:
+                log = json.load(f)
+        except (OSError, ValueError):
+            log = []
+        log.append({"time": now if now is not None else _time.time(), "results": results})
+        with _file_lock:
+            with open(RECENTER_LOG, "w") as f:
+                json.dump(log, f, indent=2)
+    return results
+
+
 def ticks_to_deg(c, j, ticks):
     return (ticks - c["zero"][j]) * c["dir"][j] / TICKS_PER_DEG
+
+
+def near_deg(a):
+    """The same joint angle within -180..180: how far a joint is really turned from its zero. Only differs
+    from ``a`` for a reading more than half a turn from the zero, i.e. a servo that has gone past its 0/4095
+    point (the arm model and every check keep using the reading itself)."""
+    return (a + 180.0) % 360.0 - 180.0
 
 
 def deg_to_ticks(c, j, deg):

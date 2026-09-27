@@ -40,6 +40,8 @@
       <p class="callout" id="wsNote">Connects to the FastAPI backend on the Pi. The page sends it the target with the speed and acceleration from Move; the backend solves it, moves the arm along a clear route and reads positions back. The backend also solves for the simulation, so the password is needed even without the arm.</p>
     </div>
   </div>
+  <button id="btnCalib" class="pill calib" hidden title="The arm needs calibrating: open the calibration wizard">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/><circle cx="12" cy="12" r="2"/></svg><span>Calibrate</span></button>
   <button id="btnLimp" class="pill" aria-pressed="false" disabled title="Torque off: pose the arm by hand. Hold it first, it drops without torque.">
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 13V5.5a1.5 1.5 0 0 1 3 0V12M11 11V4.5a1.5 1.5 0 0 1 3 0V11M14 11V5.5a1.5 1.5 0 0 1 3 0V13M17 9.5a1.5 1.5 0 0 1 3 0V15a6 6 0 0 1-6 6h-1.5a6 6 0 0 1-4.6-2.2L4.6 15a1.6 1.6 0 0 1 2.4-2l1 1"/></svg><span>Hand-guide</span></button>
   <button class="icon-btn" id="themeBtn" title="Theme: system" aria-label="Switch colour theme">
@@ -72,6 +74,16 @@
     <div class="hud-head" title="Amber: simulated servo · dark tick: commanded angle · green: real servo reading · thin line: zero">
       <h2>Joints</h2><span class="meta">° · URDF limits</span></div>
     <div id="joints"></div>
+  </section>
+  <section class="wiz" id="wiz" role="dialog" aria-modal="false" aria-labelledby="wizTitle" hidden>
+    <header class="wiz-head">
+      <div><div class="wiz-kicker" id="wizKicker"></div><h2 id="wizTitle"></h2></div>
+      <button id="wizClose" class="icon-btn" aria-label="Close the calibration wizard" title="Close">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </header>
+    <ol class="wiz-progress" id="wizProgress" aria-hidden="true"></ol>
+    <div class="wiz-body" id="wizBody" aria-live="polite"></div>
+    <footer class="wiz-foot"><button id="wizBack" class="ghost">Back</button><span class="spacer"></span><button id="wizNext" class="primary">Next</button></footer>
   </section>
   <div id="fail">WebGL could not start in this browser, so the 3D arm can't be drawn.</div>
 </main>
@@ -254,6 +266,8 @@
     </div>
     <div class="card" id="cardCal" data-fold="closed">
       <div class="card-head"><h2>Calibration</h2><span class="meta">needs the arm</span></div>
+      <button id="btnWizard" class="block primary">Start the calibration wizard</button>
+      <p class="note">It walks you through the steps below with the 3D model, and re-centres servos whose wrap point is in the way. Or do it by hand:</p>
       <ol class="steps-list">
         <li>Turn on <b>Hand-guide</b> (top bar) and pose the arm like the sim's zero pose.</li>
         <li>Set the zero.</li>

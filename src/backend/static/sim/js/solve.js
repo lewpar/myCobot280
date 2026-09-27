@@ -8,7 +8,7 @@ import {DEG,N,LIM,toolLen,toolR} from './kinematics.js';
 import {area} from './collision.js';
 import {$} from './util.js';
 
-const IK_PROTOCOL=3,REPLY_MS=5000,RETRY_MS=2000;
+const IK_PROTOCOL=4,REPLY_MS=5000,RETRY_MS=2000;
 let sock=null,ready=false,inFlight=null,settingsKey='',settledKey='',nextId=1,retryAt=0,badPw=null,note='';
 export let ikRes=null;   // the latest answer: the backend's result plus basis (the qIK it started from, radians) and src
 

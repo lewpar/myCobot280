@@ -1,4 +1,4 @@
-# WebSocket API (protocol 3)
+# WebSocket API (protocol 4)
 
 Two sockets, both on the backend (`ws://<pi>:8000`), both behind the arm password:
 
@@ -21,7 +21,8 @@ The docstring at the top of `ik_link.py` is the short-form reference; this file 
 - [Message framing](#message-framing)
 - [Backend → client](#backend--client): `hello`, `config`, `state`, `error`
 - [Client → backend](#client--backend): `target`, `goal`, `torque`, `stop`, `resume`, `set_zero`, `set_dir`,
-  `set_tool`, `set_area`, `set_stall_guard`
+  `set_tool`, `set_area`, `set_stall_guard`, `recenter`
+- [Joints the arm won't move](#joints-the-arm-wont-move)
 - [The epoch](#the-epoch)
 - [Errors and close codes](#errors-and-close-codes)
 - [`/ws/ik` (solve-only)](#wsik-solve-only)
@@ -73,10 +74,12 @@ and their goals and targets overwrite each other: the last one received wins.
 Sent once, right after a successful auth.
 
 ```json
-{"type": "hello", "protocol": 3}
+{"type": "hello", "protocol": 4}
 ```
 
-Protocol 3 added `target`, `state.ik` and `/ws/ik`; everything from protocol 2 is unchanged.
+Protocol 3 added `target`, `state.ik` and `/ws/ik`. Protocol 4 added `state.ticks`, `state.out_of_range`
+and `recenter`, and refuses to move a joint that reads outside what its servo can reach. Everything else
+is unchanged since protocol 2.
 
 Check `protocol` and refuse to drive the arm if it isn't one you understand.
 
@@ -120,10 +123,12 @@ About every 100 ms.
 {
   "type": "state",
   "angles": [0.12, -3.4, 10.0, 5.5, null, 0.0],
+  "ticks": [2049, 2087, 2162, 2111, null, 2048],
   "torque": true,
   "stopped": false,
   "blocked": null,
   "fault": null,
+  "out_of_range": null,
   "playback": null,
   "play_end": {"n": 0, "message": null},
   "epoch": 3,
@@ -134,11 +139,13 @@ About every 100 ms.
 
 | Field | Meaning |
 |---|---|
-| `angles` | Measured joint angles in degrees (URDF convention, 2 decimals). An entry is `null` if that servo didn't answer the last read |
+| `angles` | Measured joint angles in degrees (URDF convention, 2 decimals), within −180…180 (a joint more than half a turn from its zero reads the short way round). An entry is `null` if that servo didn't answer the last read |
+| `ticks` | The raw servo readings, 0–4095 (2048 is the servo's own centre), `null` where a servo didn't answer |
 | `torque` | Whether torque is on (as last set by this link) |
 | `stopped` | The stop state. While `true`, every motion request (WS goals, REST moves, Home All, playback) is refused until someone resumes |
 | `blocked` | `null`, or the reason the **last goal** was refused by the collision/limit/work-area check, e.g. `"the elbow (J3) would hit the table"`. Cleared by the next goal that passes, a new playback, or resume |
-| `fault` | `null`, or why the backend stopped the arm by itself (stall guard, a bus error). Cleared on resume |
+| `fault` | `null`, or why the backend stopped the arm by itself (stall guard, a bus error, a joint out of range). Cleared on resume |
+| `out_of_range` | `null`, or why the arm won't be moved at all: see [joints the arm won't move](#joints-the-arm-wont-move). Clears by itself once every joint is back in range |
 | `playback` | `null`, or the backend playback's status (below) |
 | `play_end` | `{n, message}`: `n` goes up by one each time a playback ends, `message` says why (`"Playback finished."`, `"Stopped."`, `"Playback stopped: …"`). Watch `n` to notice an end you missed between states |
 | `epoch` | See [the epoch](#the-epoch). Goals must carry this value |
@@ -220,7 +227,10 @@ actually is:
    first target), position first and "facing down" second. It never steps from a clear pose into a
    collision. When it's stuck (short of the point, colliding, or with no clear route), it restarts from
    seeded poses a quarter of a second after the point changes, then up to 6 more times a second apart with
-   new random seeds while the point stays the same. A restart can take a noticeable fraction of a second on the Pi.
+   new random seeds while the point stays the same. The numbers come from the engine set with `MYCOBOT_IK`
+   on the backend (`/api/health` says which): `native` (the default, a couple of ms a solve) or `ikpy`
+   (IKPy, tens of ms a solve and around a second a restart on a desktop, several times that on the Pi, so
+   the loop manages fewer than 20 a second there).
 2. **Plan**: straight to the solution if that joint-space path is clear, otherwise through raised poses
    (J2–J5 at 0: lift, turn the base, come down; or lift the shoulder or straighten the elbow first). If no
    route is clear, the arm isn't sent anywhere, and if the rest of its current move has stopped being clear
@@ -350,6 +360,31 @@ cylinder. Saved; discards a queued goal.
 Only the tool tip is checked against the area; the rest of the arm may cross its edges. A tip within
 60 mm of the base axis counts as inside the slice. Saved; discards a queued goal.
 
+### `recenter`
+
+```json
+{"type": "recenter", "joints": [3, 4]}
+```
+
+Re-centre the servos of those joints (0–5, default all six) where they are now: each reads 2048 afterwards.
+This is Feetech's own "calibrate the middle", stored in the servo's EEPROM. It puts the servo's wrap point
+(where its count goes from 4095 back to 0) half a turn from here, so done in the zero pose, the wrap point ends
+up behind the joint, out of its reach. The calibration's zero and the saved home positions shift with it, so
+every angle keeps its meaning. The epoch goes up, and each re-centring is logged to `servo_centres_log.json`
+(`tools/recenter_servos.py --undo` puts the last one back).
+
+Refused unless **torque is off**: the servo's goal register keeps its number, so a servo holding a goal
+would jump when its reading changes. Hold the arm (Hand-guide) first. Also refused during a playback.
+
+This is the one command with a reply on success:
+
+```json
+{"type": "recentered", "results": [
+  {"joint": 3, "id": 4, "ok": true, "before": 573, "after": 2048, "correction_before": 0, "correction_after": -1475}]}
+```
+
+A joint that didn't answer, or didn't take the new centre, has `"ok": false` and a `message`.
+
 ### `set_stall_guard`
 
 ```json
@@ -365,12 +400,30 @@ moved **0.5°** in **1 s** is taken to be blocked by something. The backend then
 `fault` (e.g. `"J3 stalled 12° short of its goal, so the arm stopped. …"`) and needs a `resume`.
 Goals sent for a target count the same way.
 
+## Joints the arm won't move
+
+Each servo counts 0–4095 over one turn and wraps round at the ends. If a joint's zero sits near that wrap point,
+part of the joint's travel lies beyond it, and a joint pushed there (by hand, or left there at power-off) reads
+half a turn away. Asked to "move back", the servo then turns the wrong way round, into the arm.
+
+So whenever a joint reads more than 10° outside its `limits`, the backend:
+
+- sets `state.out_of_range` to say which joint and why, and stops the arm (with that `fault`) if it had torque on;
+- refuses every `goal` and `target` (`refused`), REST move (409) and playback (409) until the joint is back
+  in range;
+- stops at once if a reading jumps by half a turn or more between reads (the wrap point was crossed).
+
+The way out is by hand: torque off (`torque`, Hand-guide), turn the joint back the short way, then `resume`.
+To stop it happening again, re-centre the servos in the zero pose (`recenter`, or the page's calibration
+wizard). Goals are also never sent within 228 ticks (20°) of a servo's wrap point, whatever the servo's own
+angle limits say; `config.limits` includes that margin.
+
 ## The epoch
 
 `state.epoch` goes up whenever the arm's pose has to be re-read before new goals make sense:
 
 - `resume`
-- `set_zero`, `set_dir` (the angle ↔ tick mapping changed)
+- `set_zero`, `set_dir`, `recenter` (the angle ↔ tick mapping changed)
 - the end of a backend playback (the arm moved behind the client's back)
 
 A `goal` or `target` whose `epoch` isn't the current one is refused (`refused`, `ref` its type); a queued
@@ -391,7 +444,7 @@ new starting pose (reset your target to it), and only then send goals or targets
 | `locked` | yes, close 4429 | Too many failed passwords from this IP (5 per minute) |
 | `no_arm` | yes, close 4503 | The backend couldn't open the serial port |
 | `bad_request` | no | Malformed or out-of-range command, unknown `type`, or not a JSON object |
-| `refused` | no | Valid but not allowed now: stopped, playback running, stale epoch (for `goal` and `target`), a servo not answering for `set_zero` |
+| `refused` | no | Valid but not allowed now: stopped, playback running, stale epoch, a joint out of range (for `goal` and `target`), a servo not answering for `set_zero`, torque on for `recenter` |
 | `internal` | no | The command handler raised; `message` has the exception |
 
 Fatal errors have no `ref`. Non-fatal ones have `ref` = the command's `type` (or `null` if it had none).
@@ -406,7 +459,7 @@ An exception inside the bus loop (e.g. a serial error) doesn't close the socket:
 
 The same solver and route planner, without moving anything. It doesn't need the arm (no `no_arm`), so it
 works for planning and simulation too. Log in as for `/ws/arm`; the backend then sends
-`{"type": "hello", "protocol": 3}` and the session's `settings`. Every message after that gets **exactly one
+`{"type": "hello", "protocol": 4}` and the session's `settings`. Every message after that gets **exactly one
 reply, in order**. Each connection has its own solver, settings and last solution.
 
 ### `settings`
@@ -419,7 +472,8 @@ reply, in order**. Each connection has its own solver, settings and last solutio
 
 All fields are optional: `tool_mm` 0–150 and `tool_d_mm` 1–60 (the attachment, as in `set_tool`), `area` (as in
 [`set_area`](#set_area)), `limits` (per joint `[lo, hi]` in degrees, inside the URDF limits: the solver never
-leaves them). They start as the arm's saved attachment and work area, and the servos' limits if the arm is
+leaves them). The reply also says which `engine` solves (read-only; set on the backend with `MYCOBOT_IK`).
+They start as the arm's saved attachment and work area, and the servos' limits if the arm is
 connected (the URDF limits if not). The reply is the full `settings` message, or an `error` (`ref: "settings"`).
 
 ### `solve`
@@ -451,7 +505,7 @@ something changes, as the page does.
 
 ```text
 → {"type":"auth","password":"hunter2"}
-← {"type":"hello","protocol":3}
+← {"type":"hello","protocol":4}
 ← {"type":"config","calibrated":true,"zero":[...],"dir":[...],...,"stall_guard":true}
 ← {"type":"state","angles":[0,0,0,0,0,0],"torque":true,"stopped":false,"blocked":null,...,"epoch":0,"clients":1}
 → {"type":"goal","angles":[10,20,-30,10,0,0],"speed":30,"acc":200,"epoch":0}
@@ -477,7 +531,7 @@ import asyncio, json, websockets
 async def move_to(xyz_mm, down=True):
     async with websockets.connect("ws://raspberrypi.local:8000/ws/arm") as ws:
         await ws.send(json.dumps({"type": "auth", "password": "hunter2"}))
-        assert json.loads(await ws.recv())["protocol"] == 3
+        assert json.loads(await ws.recv())["protocol"] == 4
         sent = False
         async for raw in ws:
             m = json.loads(raw)
