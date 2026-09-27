@@ -60,9 +60,17 @@ def run(q0, target, how, orient, out, steps=140, engine="native"):
     return {"ok": math.dist(tcp, target) < 0.003 and (not orient or ori < 3 * DEG), "collided": None}
 
 
-# both engines (ik.ENGINES); IKPy on fewer targets, since each of its solves takes tens of ms
-@pytest.mark.parametrize("engine,targets", [("native", 10), ("ikpy", 4)])
+def needs(engine):
+    """Skip unless the engine's library is installed (Pink is optional: it needs 64-bit Linux)."""
+    mod = {"ikpy": "ikpy", "pink": "pink"}.get(engine)
+    if mod:
+        pytest.importorskip(mod)
+
+
+# every engine (ik.ENGINES); the slower ones on fewer targets
+@pytest.mark.parametrize("engine,targets", [("native", 10), ("pink", 6), ("ikpy", 4)])
 def test_solver_gets_there_without_collisions(engine, targets):
+    needs(engine)
     rnd = random.Random(12345)
 
     def point():
@@ -159,6 +167,7 @@ def test_engine_setting():
 @pytest.mark.parametrize("engine", ik.ENGINES)
 def test_session_limits_hold_the_solution(engine, monkeypatch):
     """The solver never leaves the joint limits it's given (the servos' safe range)."""
+    needs(engine)
     monkeypatch.setattr(ik, "DEFAULT_ENGINE", engine)
     s = ik.Session(dict(model.DEFAULT_CALIB, area={**model.DEFAULT_AREA, "enabled": False}))
     s.handle({"type": "settings", "limits": [[-20, 20]] + [list(l) for l in model.URDF_LIMITS_DEG[1:]]}, 0.0)
@@ -247,3 +256,18 @@ def test_session_repeats_a_settled_answer_without_solving(monkeypatch):
     assert calls["n"] == n and again["id"] == 9 and again["angles"] == r["angles"]
     s.handle({**msg, "q": r["angles"], "from": [1] + [0] * 5}, 0.0)     # the servos moved: solved again
     assert calls["n"] == n + 1
+
+
+def test_pink_model_matches_the_kinematics():
+    """The URDF Pink solves on is arm_model's kinematics, attachment included."""
+    pin = pytest.importorskip("pinocchio")
+    import numpy as np
+    m = pin.buildModelFromXML(ik.pink_urdf(0.08, ik.URDF_LIM))
+    d, fid, rnd = m.createData(), m.getFrameId("tool_tip"), random.Random(7)
+    for _ in range(50):
+        q = [rnd.uniform(-2, 2) for _ in range(6)]
+        pin.framesForwardKinematics(m, d, np.array(q))
+        k = model.fk([v / DEG for v in q], 0.08)
+        assert math.dist(d.oMf[fid].translation, k["tcp"]) < 1e-9
+        assert math.dist(d.oMf[fid].rotation[:, 2], k["normal"]) < 1e-9
+    assert [round(v, 4) for v in m.lowerPositionLimit] == [round(lo, 4) for lo, _ in ik.URDF_LIM]

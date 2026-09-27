@@ -228,9 +228,9 @@ actually is:
    collision. When it's stuck (short of the point, colliding, or with no clear route), it restarts from
    seeded poses a quarter of a second after the point changes, then up to 6 more times a second apart with
    new random seeds while the point stays the same. The numbers come from the engine set with `MYCOBOT_IK`
-   on the backend (`/api/health` says which): `native` (the default, a couple of ms a solve) or `ikpy`
-   (IKPy, tens of ms a solve and around a second a restart on a desktop, several times that on the Pi, so
-   the loop manages fewer than 20 a second there).
+   on the backend (`/api/health` says which): `native` (the default, a couple of ms a solve), `pink` (Pink,
+   about 10 ms) or `ikpy` (IKPy, tens of ms a solve and around a second a restart on a desktop). Several times
+   that on the Pi, so with IKPy the loop manages fewer than 20 a second there.
 2. **Plan**: straight to the solution if that joint-space path is clear, otherwise through raised poses
    (J2–J5 at 0: lift, turn the base, come down; or lift the shoulder or straighten the elbow first). If no
    route is clear, the arm isn't sent anywhere, and if the rest of its current move has stopped being clear

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Start the myCobot 280 backend: REST API, the /ws/arm IK link and the simulator at /sim.
 #
-#   ./run.sh [backend] [--ik native|ikpy] [--password PW] [--port /dev/ttyX] [--host ADDR] [--http-port N] [--dev]
+#   ./run.sh [backend] [--ik native|ikpy|pink] [--password PW] [--port /dev/ttyX] [--host ADDR] [--http-port N] [--dev]
 #
 # Run in a terminal, it asks which IK solver to use and the password for this session (Enter keeps the
 # default shown); --ik / --password answer those up front, and --no-prompt skips the questions.
@@ -41,7 +41,8 @@ Usage: ./run.sh [backend] [options]
 Starts the FastAPI backend: REST API, the /ws/arm IK link and the simulator at /sim.
 
 Options:
-  --ik ENGINE       IK solver: native (fast, the default) or ikpy (IKPy, about 25x slower)
+  --ik ENGINE       IK solver: native (fast, the default), pink (Pink on Pinocchio, about 5x slower;
+                    64-bit OS only) or ikpy (IKPy, about 25x slower). Installed on first use.
   --password PW     Password for this session (the page, /ws/arm and the REST API). It shows up in
                     your shell history and the process list: prefer typing it when asked.
   --no-prompt       Don't ask; use the options, then the environment and src/backend/.env
@@ -84,6 +85,25 @@ setup_venv() {
     fi
 }
 
+# the optional IK libraries: installed the first time they're chosen (Pink needs Pinocchio, which only has
+# 64-bit wheels: on 32-bit Raspberry Pi OS it can't be installed)
+install_engine() {
+    local module packages
+    case "$1" in
+        ikpy) module=ikpy; packages="ikpy" ;;
+        pink) module=pink; packages="pin-pink daqp" ;;
+        *)    return 0 ;;
+    esac
+    "$PYTHON" -c "import $module" 2>/dev/null && return 0
+    info "Installing the $1 solver ($packages) ..."
+    if ! "$PYTHON" -m pip install -q --disable-pip-version-check $packages; then
+        [ "$1" = "pink" ] && [ "$(uname -m)" != "aarch64" ] && [ "$(uname -m)" != "x86_64" ] && \
+            die "Pink needs a 64-bit OS (this is $(uname -m)): Pinocchio has no wheels for it. Use --ik native."
+        die "Could not install the $1 solver (see above). Use --ik native."
+    fi
+    ok "Installed."
+}
+
 # the solver and the password for this session: the options, else the answers to two questions (in a
 # terminal), else whatever the environment or src/backend/.env says. Passed on to the backend in its
 # environment, so they never appear on its command line.
@@ -96,24 +116,25 @@ choose_settings() {
     if [ -z "$IK" ] && [ "$ask" = "1" ]; then
         local def=1 answer
         [ "$current" = "ikpy" ] && def=2
+        [ "$current" = "pink" ] && def=3
         echo
         echo "  Which IK solver?"
-        echo "    1) native   fast, fine on the Pi"
+        echo "    1) native   the built-in one: fast, fine on the Pi"
         echo "    2) ikpy     IKPy, about 25 times slower"
+        echo "    3) pink     Pink (on Pinocchio), about 5 times slower; needs a 64-bit OS"
         while :; do
             read -r -p "  Choose [$def]: " answer
             case "${answer:-$def}" in
                 1|native) IK=native; break ;;
                 2|ikpy)   IK=ikpy; break ;;
-                *)        echo "  Type 1 or 2." ;;
+                3|pink)   IK=pink; break ;;
+                *)        echo "  Type 1, 2 or 3." ;;
             esac
         done
     fi
     IK="${IK:-$current}"
-    case "$IK" in native|ikpy) ;; *) die "--ik must be native or ikpy, not '$IK'" ;; esac
-    if [ "$IK" = "ikpy" ] && ! "$PYTHON" -c "import ikpy" 2>/dev/null; then
-        die "IKPy isn't installed in $VENV_DIR (pip install ikpy), or use --ik native."
-    fi
+    case "$IK" in native|ikpy|pink) ;; *) die "--ik must be native, ikpy or pink, not '$IK'" ;; esac
+    install_engine "$IK"
     export MYCOBOT_IK="$IK"
 
     current="${MYCOBOT_PASSWORD:-$(env_file_value MYCOBOT_PASSWORD)}"

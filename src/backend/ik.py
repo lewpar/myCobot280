@@ -2,7 +2,7 @@
 the servos take there. Pure logic (no bus); used by ik_link (the `target` message on /ws/arm, which drives the
 arm) and by the solve-only socket /ws/ik (main.py), which the simulator page uses when it isn't driving the arm.
 
-Two engines do the numbers, chosen with MYCOBOT_IK (ENGINES; "native" by default):
+Three engines do the numbers, chosen with MYCOBOT_IK (ENGINES; "native" by default):
 - "native": task-priority damped least squares on the geometric Jacobian (position first, "flange facing down"
   in the null space), a few small steps per solve (ITERS), each clamped to the joint limits. About 2 ms a
   solve on a desktop.
@@ -10,6 +10,11 @@ Two engines do the numbers, chosen with MYCOBOT_IK (ENGINES; "native" by default
   limits as its bounds and the attachment as a fixed last link; "facing down" is its orientation_mode "Z".
   IKPy weighs position and orientation together, so when a facing-down answer misses the point, the position
   alone is solved again and the closer answer wins (position first). Tens of ms a solve on a desktop.
+- "pink": Pink (https://github.com/pink-kinematics/pink), differential IK on Pinocchio, on a model built from a
+  URDF generated from arm_model.URDF_JOINTS (pink_urdf): a frame task on the tool tip (orientation weighted
+  PINK_ORI and only its axis aimed down, like the others), the joint limits and a velocity limit that keeps
+  each step as small as native's, a QP per step (daqp). Steps like native, a few ms a solve. Needs 64-bit
+  Linux (Pinocchio has no 32-bit Arm wheels); installed on demand (run.sh).
 Neither knows about collisions, so around them:
 - iterate_clear: from a clear pose, never step into a collision: it stops at the last clear pose (native: the
   last clear step; ikpy: the last clear pose on the way to its answer);
@@ -45,7 +50,10 @@ XYZ_MM = 1000                 # |x|, |y|, |z| of a target, mm
 URDF_LIM = [(lo * DEG, hi * DEG) for lo, hi in model.URDF_LIMITS_DEG]
 DOWN = [0.0, 0.0, -1.0]
 _warn_lock = threading.Lock()   # warnings.catch_warnings isn't thread-safe; solves run on several threads
-ENGINES = ("native", "ikpy")
+ENGINES = ("native", "ikpy", "pink")
+PINK_DT = 0.1                 # pink: one step's time; with the URDF's velocity limit (PINK_VEL rad/s) the largest step
+PINK_VEL = 1.0                # ...is PINK_DT * PINK_VEL = 0.1 rad, native's too
+PINK_ORI = 0.3                # pink: orientation cost, position's is 1 (position first, softly)
 DEFAULT_ENGINE = os.environ.get("MYCOBOT_IK", "native").strip().lower() or "native"
 if DEFAULT_ENGINE not in ENGINES:
     print(f"WARNING: MYCOBOT_IK={DEFAULT_ENGINE!r} isn't one of {', '.join(ENGINES)}; using native", flush=True)
@@ -99,6 +107,22 @@ def make_chain(tool_m=0.0, limits=None):
         return Chain(links, active_links_mask=[False] + [True] * N + [False], name="mycobot280")
 
 
+def pink_urdf(tool_m=0.0, limits=None):
+    """The arm as a URDF: the six joints of arm_model.URDF_JOINTS (limits in radians, velocity PINK_VEL) and a
+    fixed "tool_tip" frame the attachment's length along the flange normal."""
+    parts, parent = ['<robot name="mycobot280"><link name="base"/>'], "base"
+    for k, ((xyz, rpy), (lo, hi)) in enumerate(zip(model.URDF_JOINTS, limits or URDF_LIM)):
+        parts.append(f'<link name="link{k + 1}"><inertial><mass value="0.1"/><inertia ixx="1e-4" iyy="1e-4" izz="1e-4" '
+                     f'ixy="0" ixz="0" iyz="0"/></inertial></link>'
+                     f'<joint name="J{k + 1}" type="revolute"><parent link="{parent}"/><child link="link{k + 1}"/>'
+                     f'<origin xyz="{xyz[0]} {xyz[1]} {xyz[2]}" rpy="{rpy[0]} {rpy[1]} {rpy[2]}"/><axis xyz="0 0 1"/>'
+                     f'<limit lower="{lo}" upper="{hi}" velocity="{PINK_VEL}" effort="1"/></joint>')
+        parent = f"link{k + 1}"
+    parts.append(f'<link name="tool_tip"/><joint name="tool" type="fixed"><parent link="{parent}"/>'
+                 f'<child link="tool_tip"/><origin xyz="0 0 {tool_m}"/></joint></robot>')
+    return "".join(parts)
+
+
 class Solver:
     """IK and route planning under one set of settings: the attachment (tool_m long, tool_r radius), the work
     area and the joint limits (radians; the servos' safe range once known). Keeps the rescue state between
@@ -112,6 +136,8 @@ class Solver:
         self.lim = [tuple(l) for l in (limits or URDF_LIM)]
         self._ikpy_chain = None
         self._chain_key = None
+        self._pink_model = None
+        self._pink_key = None
         self.reset()
 
     def configure(self, tool_m, tool_r, area, limits=None):
@@ -176,8 +202,57 @@ class Solver:
         return q2, r
 
     def iterate(self, q, target, iters, orient):
-        """Move q (radians, in place) toward putting the TCP on target; returns (position error m,
-        orientation error rad)."""
+        """Move q (radians, in place) toward putting the TCP on target, up to ``iters`` steps; returns (position
+        error m, orientation error rad). The native engine's steps, or Pink's."""
+        if self.engine == "pink":
+            return self._iterate_pink(q, target, iters, orient)
+        return self._iterate_dls(q, target, iters, orient)
+
+    def _pink(self):
+        key = (self.tool_m, tuple(self.lim))
+        if self._pink_key != key:
+            import pinocchio as pin
+            from pink.tasks import FrameTask
+            m = pin.buildModelFromXML(pink_urdf(self.tool_m, self.lim))
+            self._pink_model = (m, m.createData(), FrameTask("tool_tip", position_cost=1.0, orientation_cost=PINK_ORI),
+                                FrameTask("tool_tip", position_cost=1.0, orientation_cost=0.0))
+            self._pink_key = key
+        return self._pink_model
+
+    def _iterate_pink(self, q, target, iters, orient):
+        import numpy as np
+        import pinocchio as pin
+        import pink
+        m, data, task_down, task_free = self._pink()
+        task = task_down if orient else task_free
+        lim = self.lim
+        cfg = pink.Configuration(m, data, np.array([_clamp(v, lo, hi) for v, (lo, hi) in zip(q, lim)]))
+        tgt = np.array(target, float)
+        for _ in range(iters):
+            T = cfg.get_transform_frame_to_world("tool_tip")
+            z = T.rotation[:, 2]
+            pos_err, ori_err = float(np.linalg.norm(tgt - T.translation)), math.acos(_clamp(-z[2], -1.0, 1.0))
+            if pos_err < THERE_M and (not orient or ori_err < THERE_ORI):
+                break
+            R = T.rotation
+            if orient:   # aim only the flange axis down: turn the current orientation the least way that does it
+                axis = np.cross(z, DOWN)
+                n = np.linalg.norm(axis)
+                if n > 1e-9:
+                    R = pin.exp3(axis / n * ori_err) @ R
+                elif z[2] > 0:
+                    R = pin.exp3(np.array([1.0, 0.0, 0.0]) * math.pi) @ R
+            task.set_target(pin.SE3(R, tgt))
+            with _warn_lock, warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                v = pink.solve_ik(cfg, [task], PINK_DT, solver="daqp", safety_break=False)
+            cfg.integrate_inplace(v, PINK_DT)
+        q[:] = [_clamp(float(v), lo, hi) for v, (lo, hi) in zip(cfg.q, lim)]
+        return self.errors(q, target, orient)
+
+    def _iterate_dls(self, q, target, iters, orient):
+        """The native engine: move q (radians, in place) toward putting the TCP on target; returns (position
+        error m, orientation error rad)."""
         tx, ty, tz = target
         lim, tool = self.lim, self.tool_m
         for _ in range(iters):
@@ -229,7 +304,7 @@ class Solver:
         return (math.sqrt((tx - px) ** 2 + (ty - py) ** 2 + (tz - pz) ** 2),
                 math.acos(_clamp(-n[2], -1.0, 1.0)) if orient else 0.0)
 
-    def _iterate_clear_native(self, q, target, iters, orient):
+    def _iterate_clear_steps(self, q, target, iters, orient):
         """Like iterate, but q never steps from a clear pose into a collision: it stops at its last clear step
         (the solver itself knows nothing about collisions, and following a target it would happily walk the
         elbow into the base). A q that already collides just iterates."""
@@ -249,9 +324,9 @@ class Solver:
     def iterate_clear(self, q, target, orient, iters=ITERS):
         """One solve's worth of moving q (radians, in place) toward target, never from a clear pose into a
         collision; returns the errors. ``iters`` is the native engine's step count (IKPy solves in one go)."""
-        if self.engine == "native":
-            return self._iterate_clear_native(q, target, iters, orient)
-        return self._iterate_clear_ikpy(q, target, orient)
+        if self.engine == "ikpy":
+            return self._iterate_clear_ikpy(q, target, orient)
+        return self._iterate_clear_steps(q, target, iters, orient)   # native and pink: step by step
 
     def _iterate_clear_ikpy(self, q, target, orient):
         """Move q (radians, in place) to IKPy's answer and return its errors, but never from a clear pose into a
@@ -326,7 +401,7 @@ class Solver:
         same pose again), different for each try but repeatable."""
         yaw = math.atan2(target[1], target[0])
         seeds = []
-        native = self.engine == "native"
+        native = self.engine != "ikpy"   # (native and pink take the full set of seeds, stepped)
         if not tries:   # (an IKPy seed costs tens of ms: fewer, well-spread ones for it)
             bends = [(0.5, 0.9, 0.9), (0.2, 1.3, 0.9), (0.9, 0.4, 1.2), (-0.3, 1.6, 1.0)] if native else \
                 [(0.5, 0.9, 0.9), (-0.3, 1.6, 1.0)]

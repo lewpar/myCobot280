@@ -34,7 +34,7 @@ Register map used (STS): 9/11 min/max limit, 31 position correction, 40 torque e
 | `mycobot280.py` | Servo/ATOM library: packet building, echo-tolerant checksum-verified reads, bus lock, limits, `move`, `sync_move`, `move_all`, `hold`, `read_positions`, `sync_torque` |
 | `arm_model.py` | **Shared model**: URDF kinematics (`fk`), collision checks (`check_pose`, `check_path`, `check_tick_move`), calibration store (`ik_calibration.json`), home store (`center_positions.json`) |
 | `src/backend/main.py` | FastAPI app: password middleware, validated REST endpoints, motion guard, `/api/stop` `/api/resume`, `/ws/arm`, `/ws/ik`, `/sim` |
-| `src/backend/ik.py` | **The IK**: `Solver` (the native solver or IKPy for the numbers, `MYCOBOT_IK`; wrapped in collision-clear stepping, seeded restarts and `plan_move` routes), `parse_target`, and `Session` (one `/ws/ik` connection); pure logic |
+| `src/backend/ik.py` | **The IK**: `Solver` (the native solver, IKPy or Pink for the numbers, `MYCOBOT_IK`; wrapped in collision-clear stepping, seeded restarts and `plan_move` routes), `parse_target`, and `Session` (one `/ws/ik` connection); pure logic |
 | `src/backend/ik_link.py` | Bus loop behind `/ws/arm`: streams goals, solves an active **target** on its own thread, owns the **stop state** used by REST, runs **playback**, and the **stall guard** |
 | `src/backend/player.py` | Playback timing (phases, per-joint speeds, LED cues) and the up-front path check; pure logic, ticked by `ik_link` |
 | `src/backend/library.py` | Recordings, sequences, saved poses: validation + one JSON file each in `recordings/`, `sequences/`, `poses/` (gitignored) |
@@ -46,7 +46,7 @@ Register map used (STS): 9/11 min/max limit, 31 position correction, 40 torque e
 | `tests/` | pytest suite on a fake bus (`fakebus.py`), plus `tests/js/` node tests for the page (parity + jsdom smoke) |
 | `WEBSOCKET.md` | Reference for `/ws/arm` and `/ws/ik` (protocol 3) |
 | `run_tests.sh` | Runs every test: `./run_tests.sh [pytest args]` |
-| `run.sh` | Starts the backend: `./run.sh [--ik native\|ikpy] [--password PW] [--no-prompt] [--port /dev/ttyX] [--host A] [--http-port N] [--dev]`; sets up `venv/`, asks for the solver and password in a terminal, pre-flight checks, `exec`s uvicorn |
+| `run.sh` | Starts the backend: `./run.sh [--ik native\|ikpy\|pink] [--password PW] [--no-prompt] [--port /dev/ttyX] [--host A] [--http-port N] [--dev]`; sets up `venv/`, asks for the solver and password in a terminal, pre-flight checks, `exec`s uvicorn |
 
 ## Running
 
@@ -63,7 +63,7 @@ one up); `--ik`, `--password` or `--no-prompt` skip the questions, and without a
 reach the backend as `MYCOBOT_IK`/`MYCOBOT_PASSWORD` in its environment (never on its command line), which win over
 `.env` (`load_dotenv` doesn't override).
 Env vars: `MYCOBOT_PORT`, `MYCOBOT_BAUD`, `MYCOBOT_PASSWORD`, `MYCOBOT_CORS_ORIGINS`, `MYCOBOT_IK` (`native`, the
-default, or `ikpy`; shown in `/api/health` and `/ws/ik`'s settings).
+default, `ikpy` or `pink`; shown in `/api/health` and `/ws/ik`'s settings).
 
 ## Invariants: don't break these
 
@@ -173,7 +173,7 @@ It's deliberately conservative and approximate; it is not a substitute for watch
   is hidden behind an ⓘ button that `chrome.js` adds. Keep explanations in `.note.help`, not always-on text.
   A folded card with a non-empty `.callout.warn` shows an amber dot. The script finds everything by element id, so keep the
   ids when moving markup around. The canvas sizes to `#stage` (ResizeObserver), not the window.
-- IK (backend, `ik.py`), two engines chosen with `MYCOBOT_IK` (`Solver.engine`):
+- IK (backend, `ik.py`), three engines chosen with `MYCOBOT_IK` (`Solver.engine`):
   - **native** (default): damped least squares on the geometric Jacobian, **task priority** (position first,
     "flange facing down" in the null space), `ITERS` small steps per solve clamped to the joint limits;
     `iterate_clear` stops at the last clear step instead of walking into a collision. ~2 ms a solve on a desktop.
@@ -182,13 +182,19 @@ It's deliberately conservative and approximate; it is not a substitute for watch
     and orientation together, so `Solver.solve` re-solves the position alone when a facing-down answer misses
     and keeps the closer one; `iterate_clear` walks from a clear start toward its answer and stops at the last
     clear pose. ~50 ms a solve on a desktop.
+  - **pink**: Pink on Pinocchio, differential IK stepped like native (`_iterate_pink`, one QP per step with daqp)
+    on a model built from a generated URDF (`pink_urdf`: `URDF_JOINTS`, the limits, `PINK_VEL` so a step is at
+    most 0.1 rad like native, a fixed `tool_tip` frame). A frame task with orientation cost `PINK_ORI`, its
+    target turned only so the flange axis points down. ~10 ms a solve. Optional: not in requirements.txt
+    (Pinocchio has no 32-bit Arm wheels); run.sh installs `pin-pink daqp` when it's chosen, and its tests skip
+    without it.
   When stuck (short of the target, colliding, or with no route from the servos) `rescue` restarts from seeds
-  (native: 32 plus two upright ones, 24 random on retries; ikpy: 8 + 2, 6 random), ranked collision-free first,
+  (native and pink: 32 plus two upright ones, 24 random on retries; ikpy: 8 + 2, 6 random), ranked collision-free first,
   then reachable, then closest; up to 6 retries (`Solver.mem`; `configure` with new settings starts over). `plan_move` is straight there
   if that's clear, else through raised poses (J2–J5 at 0: lift, turn the base, come down; also lifting the
   shoulder or straightening the elbow first). `arm_model.chain` is the fast FK the checks use.
-  On a desktop a solve while dragging is ~2 ms native / ~50 ms IKPy, a rescue ~40 ms / ~0.9 s; several times
-  that on the Pi, which is why native is the default. Every answer says
+  On a desktop a solve while dragging is ~2 ms native / ~10 ms Pink / ~50 ms IKPy, a rescue ~40 ms / ~250 ms /
+  ~0.9 s; several times that on the Pi, which is why native is the default. Every answer says
   whether it's **`settled`** (solving again would change nothing), and a target already reached isn't solved
   again at all.
 - Where it runs: a `/ws/arm` **target** is re-solved every 50 ms on `IKLink`'s solver thread from the measured
@@ -213,10 +219,14 @@ It's deliberately conservative and approximate; it is not a substitute for watch
 - **Calibration wizard** (`wizard.js`, `#wiz` floating over the 3D view; opened from Setup → Calibration or the
   top bar's Calibrate pill, shown when the arm isn't calibrated or `state.out_of_range` is set): check the link →
   torque off → pose at zero (the sim glides to the zero pose; hovering a joint's hint rings it in 3D) →
-  re-centre far-off servos (`recenter`, from `state.ticks`) → `set_zero` → each joint's direction (the sim
-  wiggles it with a spinning arrow, `scene.setJointFx`; the page watches the measured angle and sends `set_dir`
-  if it went negative) → torque on (and Resume) → summary. While `S.wizard` is set, `wizardFrame` gives the sim
-  arm's pose, `armDriving()` is off, and the target, gizmo and ghost are hidden; the picture is shifted right
+  re-centre far-off servos (`recenter`, from `state.ticks`) → `set_zero` → torque on (and Resume) → which way
+  each servo turns → summary. The direction check can't be automatic (a reversed servo's reading is reversed
+  too, so numbers always agree with the model): by default the arm turns each joint `TEST_DEG` (15°) from where
+  it is and back at 15°/s with plain `goal`s (every guard applies) while the model mirrors it with a ring and
+  arrow (`scene.setJointFx`), and the user answers same way / opposite way (`set_dir` flips it). Or, by hand:
+  torque off, the model wiggles the joint, the user turns it the arrow's way, and a negative reading means
+  reversed. While `S.wizard` is set, `wizardFrame` gives the sim arm's pose, `armDriving()` is off (only the
+  direction test's goals move the arm), and the target, gizmo and ghost are hidden; the picture is shifted right
   (`scene.setViewShift`) so the arm isn't behind the panel. Closing adopts the measured pose.
 - Hand-guide mode, a backend playback, and a joint out of range (`S.armRange`): the sim mirrors the measured
   pose, unclamped (so a fold past the limits shows as it is). Stop: freeze qCmd, send `stop`.
@@ -301,7 +311,8 @@ and `tests/js` npm packages on first run). `./run_tests.sh -k playback -x` passe
 - `test_range_guard.py` (the real incident replayed: nothing moves, the way out by hand; wrap-point
   crossing; `recenter`), `test_recenter_tool.py` (the tool: dry run, write, undo). The fake bus models the
   position correction (`corr`), the EEPROM lock and the 128-to-torque "calibrate the middle".
-- `test_ik.py`: the solver as the target loop runs it, on both engines (IKPy on fewer targets) (fixed targets reached after drags and from arbitrary
+- `test_ik.py`: the solver as the target loop runs it, on every engine (Pink and IKPy on fewer targets; Pink skipped
+  if it isn't installed), and Pink's generated URDF against `arm_model.fk` (fixed targets reached after drags and from arbitrary
   poses, no collisions on the way, the up-and-over detour), `Session` validation and settings, `/ws/ik` with
   and without the arm. `test_ws.py` has the `target` tests (drives the fake arm to a point, joint target with a
   detour, blocked targets, what ends and refuses one).

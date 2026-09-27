@@ -68,13 +68,13 @@ The second one to start exits with a "port is already in use" message.
 ./run.sh              # API on :8000, docs at /docs, simulator at http://<pi>:8000/sim
 ```
 
-In a terminal it asks two things first: which IK solver to use (`native`, fast and the default, or `ikpy`)
+In a terminal it asks two things first: which IK solver to use (`native`, fast and the default, `pink` or `ikpy`)
 and the password for this session (typed twice, not shown). Press Enter to keep the default it offers: the
 password saved in `src/backend/.env`, or, with none saved, one it makes up and prints. Nothing needs to be
 set in the environment. Give the answers up front to skip the questions:
 
 ```
-./run.sh --ik ikpy                # the IKPy solver
+./run.sh --ik pink                # the Pink solver (installed on first use; 64-bit OS only)
 ./run.sh --password hunter2       # the password (it lands in your shell history: typing it when asked is safer)
 ./run.sh --no-prompt              # ask nothing: the saved settings or the defaults
 ```
@@ -269,9 +269,10 @@ The backend serves a 3D inverse-kinematics simulator at `http://<pi>:8000/sim` a
   angles and the next pose on a clear route. The page uses it when it isn't driving the arm.
 
 The IK lives on the backend only (`src/backend/ik.py`), so any client gets the same solver as the page. It has
-two engines, chosen with `MYCOBOT_IK` in `src/backend/.env`: `native` (the default, fast enough for the Pi) or
-`ikpy` ([IKPy](https://ikpy.readthedocs.io), about 25 times slower). The collision checks and route planning
-around them are the same.
+three engines, picked when `./run.sh` starts (or `--ik`): `native` (the default, fast enough for the Pi), `pink`
+([Pink](https://github.com/pink-kinematics/pink) on Pinocchio, about 5 times slower; needs a 64-bit OS) or `ikpy`
+([IKPy](https://ikpy.readthedocs.io), about 25 times slower). Pink is installed the first time it's chosen. The
+collision checks and route planning around them are the same.
 
 The page is plain HTML, CSS and native ES modules in `src/backend/static/sim/` (three.js r147 from jsDelivr through
 an import map). There is no build step: edit a file and reload. Browsers don't load modules from `file://`, so
@@ -282,8 +283,10 @@ connected.
    The chip shows the link state; **Stop** (or Esc) is always in the top-right corner.
 2. Open **Setup → Calibration → Start the calibration wizard** (or the **Calibrate** button that appears in
    the top bar when the arm needs it). It walks you through it with the 3D model: torque off while you hold
-   the arm, pose it straight up, re-centre the servos whose wrap point is in the way, save the zero, then turn
-   each joint a little so it can check (and fix) its direction.
+   the arm, pose it straight up, re-centre the servos whose wrap point is in the way, save the zero, turn torque
+   back on, then check which way each servo turns: the arm turns each joint 15° and back while the model does
+   the same, and you say whether it went the same way (it reverses the ones that didn't). You can turn the
+   joints by hand instead.
 3. If something is mounted on the flange, pick it in **Setup → Attachment** (see below).
 
 The manual controls are still in the Calibration card: **Hand-guide**, **Set zero to the arm's current pose**,

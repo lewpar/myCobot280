@@ -407,32 +407,52 @@ const input = (s, v) => { $(s).value = v; $(s).dispatchEvent(new w.Event('input'
   await until(() => !$('#wizNext').disabled, 3000);
   check(wsSent.some(m => m.type === 'set_zero') && !$('#wizNext').disabled, 'set_zero sent and saved');
   next();
-  check(title() === 'Check each joint\'s direction' && /J1/.test(txt('#wzDirLead')), 'directions: starts with J1', txt('#wzDirLead'));
-  pose = [20, 0, 0, 0, 0, 0];                                    // J1 turned the right way
-  await until(() => /Right way round/.test(txt('#wzDirState')), 3000);
-  check(/Right way round/.test(txt('#wzDirState')), 'J1 counts the right way', txt('#wzDirState'));
-  pose = [0, 0, 0, 0, 0, 0];
-  await until(() => /J2/.test(txt('#wzDirLead')), 3000);
-  pose = [0, -20, 0, 0, 0, 0];                                   // J2 counts the other way
-  await until(() => wsSent.some(m => m.type === 'set_dir'), 3000);
-  check(wsSent.some(m => m.type === 'set_dir' && m.joint === 1 && m.dir === -1), 'J2 reversed', JSON.stringify(wsSent.filter(m => m.type === 'set_dir')));
-  await until(() => /reversed now/.test(txt('#wzDirState')), 3000);
-  pose = [0, 0, 0, 0, 0, 0];
-  await until(() => /J3/.test(txt('#wzDirLead')), 3000);
-  for (let k = 0; k < 4; k++) { click('#wzDirSkip'); await sleep(50); }
-  await until(() => !$('#wizNext').disabled, 2000);
-  check(!$('#wizNext').disabled && w.document.querySelectorAll('#wzDirDots .wz-dot.good').length === 2, 'the rest skipped', txt('#wzDirDots'));
-  next();
-  check(title() === 'Torque back on', 'torque step');
+  check(title() === 'Torque back on', 'torque on before the direction test', title());
   click('#wzTorqueOn');
   await until(() => armTorque && !$('#wzResume').hidden, 3000);
   check(!$('#wzResume').hidden, 'the arm was stopped: Resume offered');
   click('#wzResume');
   await until(() => !$('#wizNext').disabled, 3000);
   next();
+  check(title() === 'Check which way each servo turns' && /J1/.test(txt('#wzDirLead')) && /press Test/.test(txt('#wzDirLead')),
+        'directions: the arm tests J1 first', txt('#wzDirLead'));
+  await until(() => !$('#wzTest').hidden, 2000);
+  wsSent = [];
+  click('#wzTest');                                              // the arm turns J1 +15° and back
+  await until(() => !$('#wzSame').hidden, 5000);
+  const g = wsSent.filter(m => m.type === 'goal');
+  check(g.length === 2 && g[0].angles[0] === 15 && g[1].angles[0] === 0 && g[0].speed <= 20 && g.every(m => m.epoch === armState.epoch),
+        'J1 turned 15° slowly and back', JSON.stringify(g));
+  check(/same way as the model/.test(txt('#wzDirState')), 'then asks which way it went', txt('#wzDirState'));
+  click('#wzSame');
+  await until(() => /J2/.test(txt('#wzDirLead')), 2000);
+  click('#wzTest');
+  await until(() => !$('#wzOpp').hidden, 5000);
+  click('#wzOpp');                                               // J2 went the other way
+  await until(() => /J3/.test(txt('#wzDirLead')), 3000);
+  check(wsSent.some(m => m.type === 'set_dir' && m.joint === 1 && m.dir === -1), 'J2 reversed', JSON.stringify(wsSent.filter(m => m.type === 'set_dir')));
+  await until(() => /J2 ↺/.test(txt('#wzDirDots')), 1000);
+  check(/J2 ↺/.test(txt('#wzDirDots')), 'J2 marked reversed', txt('#wzDirDots'));
+  click('#wzModeHand');                                          // J3 by hand instead
+  await until(() => !$('#wzTqOff').hidden, 2000);
+  check(!$('#wzTqOff').hidden && /by hand|arrow points/.test(txt('#wzDirLead')), 'by hand: asks for torque off first', txt('#wzDirState'));
+  click('#wzTqOff');
+  await until(() => !armTorque && /arrow points/.test(txt('#wzDirState')), 3000);
+  pose = [0, 0, 20, 0, 0, 0];
+  await until(() => /Right way round/.test(txt('#wzDirState')), 3000);
+  check(/Right way round/.test(txt('#wzDirState')), 'J3 turned by hand the right way', txt('#wzDirState'));
+  pose = [0, 0, 0, 0, 0, 0];
+  await until(() => /J4/.test(txt('#wzDirLead')), 3000);
+  for (let k = 0; k < 3; k++) { click('#wzDirSkip'); await sleep(50); }
+  await until(() => !$('#wzTqOn').hidden, 2000);
+  check(!$('#wzTqOn').hidden && $('#wizNext').disabled, 'done by hand: torque must come back on', txt('#wzDirState'));
+  click('#wzTqOn');
+  await until(() => !$('#wizNext').disabled, 3000);
+  check(w.document.querySelectorAll('#wzDirDots .wz-dot.good').length === 3, 'three checked, three skipped', txt('#wzDirDots'));
+  next();
   check(title() === 'All set' && /Re-centred J4/.test(txt('#wizBody')) && /Reversed J2/.test(txt('#wizBody')), 'summary', txt('#wizBody'));
-  check(!wsSent.some(m => m.type === 'target' || m.type === 'goal'), 'nothing drove the arm during the wizard',
-        JSON.stringify(wsSent.filter(m => m.type === 'target' || m.type === 'goal')).slice(0, 200));
+  check(!wsSent.some(m => m.type === 'target'), 'only the direction test moved the arm during the wizard',
+        JSON.stringify(wsSent.filter(m => m.type === 'target')).slice(0, 200));
   click('#wizNext');
   check($('#wiz').hidden && $('#btnCalib').hidden, 'Finish closes it');
 
