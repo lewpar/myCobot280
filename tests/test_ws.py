@@ -1,4 +1,6 @@
-"""The /ws/arm link: auth, hello/config/state, goals and epochs, errors, stop, stall guard."""
+"""The /ws/arm link: auth, hello/config/state, goals and epochs, targets (solved on the backend), errors, stop,
+stall guard."""
+import math
 import time
 
 import pytest
@@ -38,14 +40,15 @@ def test_ws_no_arm_close_code(no_arm):
 
 def test_ws_hello_config_then_state(client):
     with ArmWS(client) as a:
-        assert a.hello == {"type": "hello", "protocol": 2}
+        assert a.hello == {"type": "hello", "protocol": 3}
         first = a.recv()
         assert first["type"] == "config"
         assert {"calibrated", "zero", "dir", "tool_mm", "tool_d_mm", "attachment", "area", "limits",
                 "stall_guard"} <= set(first)
         m = a.ready()
         assert m["angles"] == [0.0] * 6 and m["torque"] and not m["stopped"]
-        assert {"fault", "playback", "play_end", "epoch", "clients"} <= set(m) and "zero" not in m
+        assert {"fault", "playback", "play_end", "epoch", "clients", "ik"} <= set(m) and "zero" not in m
+        assert m["ik"] is None     # no target set
         assert m["clients"] == 1
         # config is only re-sent when it changes
         for _ in range(5):
@@ -241,3 +244,123 @@ def test_joints_are_synchronised(client):
         f1, f2 = joint_deg(client.bus, 0) / 40, joint_deg(client.bus, 1) / 10
         assert 0.2 < f1 < 0.9 and abs(f1 - f2) < 0.1, (f1, f2)
         assert wait_for(lambda: abs(joint_deg(client.bus, 0) - 40) < 1 and abs(joint_deg(client.bus, 1) - 10) < 1, 5)
+
+
+def arm_pose(bus):
+    return [joint_deg(bus, j) for j in range(6)]
+
+
+def test_target_drives_the_arm_to_a_point(client):
+    with ArmWS(client) as a:
+        a.ready()
+        a.target(xyz=[180, -40, 110], down=True)
+        m = a.state(lambda m: m["ik"] and m["ik"]["arrived"], n=100)
+        ik = m["ik"]
+        assert ik["target"] == [180, -40, 110] and ik["down"] and ik["reached"] and not ik["detour"]
+        assert ik["blocked"] is None and ik["outside"] is None and ik["next"] == ik["angles"]
+        k = model.fk(arm_pose(client.bus))          # where the servos really are
+        assert math.dist(k["tcp"], (0.18, -0.04, 0.11)) < 0.004 and k["normal"][2] < -0.99
+        # a new point carries on from there
+        a.target(xyz=[160, 40, 90], down=True)
+        m = a.state(lambda m: m["ik"]["target"] == [160, 40, 90] and m["ik"]["arrived"], n=100)
+        assert math.dist(model.fk(arm_pose(client.bus))["tcp"], (0.16, 0.04, 0.09)) < 0.004
+        assert not a.errors
+
+
+def test_target_joint_pose_goes_up_and_over(client):
+    """A joint target whose straight path would hit the table gets there through raised poses, never colliding."""
+    a_pose, b_pose = [28, -84, -89, 82, 66, 113], [19, -82, 46, -83, -87, -11]
+    assert "hit" in model.check_path(a_pose, b_pose)
+    with ArmWS(client) as a:
+        a.ready()
+        a.goal(a_pose)
+        assert wait_for(lambda: max(abs(x - y) for x, y in zip(arm_pose(client.bus), a_pose)) < 1, 8)
+        a.target(angles=b_pose)
+        detour = False
+        for _ in range(300):
+            m = a.state()
+            assert not model.check_pose(m["angles"]), m["angles"]
+            detour |= bool(m["ik"] and m["ik"]["detour"])
+            if m["ik"] and m["ik"]["arrived"]:
+                break
+        assert detour and m["ik"]["arrived"] and m["ik"]["target"] is None
+        assert max(abs(x - y) for x, y in zip(arm_pose(client.bus), b_pose)) < 1
+
+
+def test_target_that_collides_is_not_driven(client):
+    with ArmWS(client) as a:
+        a.ready()
+        a.target(angles=[0, 130, 130, 0, 0, 0])      # folded into the table
+        m = a.state(lambda m: m["ik"])
+        assert m["ik"]["blocked"] and m["ik"]["next"] is None and not m["ik"]["arrived"]
+        time.sleep(0.3)
+        assert max(abs(v) for v in arm_pose(client.bus)) < 0.5
+
+
+@pytest.mark.parametrize("change, part", [
+    ({"xyz": None, "angles": None}, "either xyz"),
+    ({"xyz": [1, 2]}, "xyz"),
+    ({"down": "yes"}, "down"),
+    ({"speed": 0}, "speed"),
+    ({"acc": 9999}, "acc"),
+    ({"epoch": -1}, "epoch"),
+])
+def test_bad_targets_are_answered(client, change, part):
+    with ArmWS(client) as a:
+        m = a.ready()
+        t = {"type": "target", "xyz": [150, 0, 100], "down": False, "speed": 60, "acc": 200, "epoch": m["epoch"]}
+        a.send(**{k: v for k, v in {**t, **change}.items() if v is not None})
+        e = a.error()
+        assert (e["code"], e["ref"]) == ("bad_request", "target") and part in e["message"], e
+
+
+def test_target_ends_and_is_refused_like_a_goal(client):
+    with ArmWS(client) as a:
+        m = a.ready()
+        a.target(xyz=[180, 0, 120])
+        a.state(lambda m: m["ik"])
+        a.goal([5, 0, 0, 0, 0, 0])                     # a goal takes over
+        a.state(lambda m: m["ik"] is None)
+        assert wait_for(lambda: abs(joint_deg(client.bus, 0) - 5) < 1, 5)
+        a.target(xyz=[180, 0, 120])
+        a.state(lambda m: m["ik"])
+        a.send(type="stop")                            # stop ends it
+        m = a.state(lambda m: m["stopped"])
+        assert m["ik"] is None
+        a.target(xyz=[180, 0, 120])
+        e = a.error()
+        assert (e["code"], e["ref"]) == ("refused", "target") and "stopped" in e["message"]
+        old = m["epoch"]
+        a.send(type="resume")
+        m = a.state(lambda m: not m["stopped"])
+        a.target(xyz=[180, 0, 120], epoch=old)         # from before the resume
+        e = a.error()
+        assert e["code"] == "refused" and "Stale" in e["message"]
+        a.target(xyz=[180, 0, 120], epoch=m["epoch"])
+        a.state(lambda m: m["ik"] and m["ik"]["arrived"], n=100)
+        a.send(type="torque", on=False)                # and so does torque
+        assert a.state(lambda m: not m["torque"])["ik"] is None
+
+
+def test_a_settled_target_stops_costing_cpu(client, monkeypatch):
+    """Once the arm is at a settled solution, the target loop stops re-solving until something changes."""
+    calls = {"n": 0}
+    real = main.link._solver.step
+
+    def counting(*a, **k):
+        calls["n"] += 1
+        return real(*a, **k)
+    monkeypatch.setattr(main.link._solver, "step", counting)
+    with ArmWS(client) as a:
+        a.ready()
+        a.target(xyz=[180, -40, 110], down=True)
+        a.state(lambda m: m["ik"] and m["ik"]["arrived"] and m["ik"]["settled"], n=100)
+        a.state()
+        n = calls["n"]
+        for _ in range(8):                               # 0.8 s: about 16 solver ticks
+            m = a.state()
+        assert calls["n"] <= n + 1 and m["ik"]["arrived"]
+        a.target(xyz=[160, 40, 90], down=True)           # a new point: solving again
+        a.state(lambda m: m["ik"]["target"] == [160, 40, 90] and m["ik"]["arrived"], n=100)
+        assert calls["n"] > n + 1
+        assert math.dist(model.fk(arm_pose(client.bus))["tcp"], (0.16, 0.04, 0.09)) < 0.004

@@ -1,4 +1,4 @@
-"""A /ws/arm client for the tests: logs in, keeps the latest config and state, fills in goal epochs."""
+"""A /ws/arm client for the tests: logs in, keeps the latest config and state, fills in goal and target epochs."""
 from conftest import PASSWORD
 
 
@@ -65,3 +65,9 @@ class ArmWS:
         if epoch is None:
             epoch = (self.last or self.state())["epoch"]
         self.send(type="goal", angles=list(angles), speed=speed, acc=acc, epoch=epoch)
+
+    def target(self, xyz=None, angles=None, down=False, speed=120, acc=1000, epoch=None):
+        if epoch is None:
+            epoch = (self.last or self.state())["epoch"]
+        m = {"xyz": list(xyz), "down": down} if xyz is not None else {"angles": list(angles)}
+        self.send(type="target", speed=speed, acc=acc, epoch=epoch, **m)

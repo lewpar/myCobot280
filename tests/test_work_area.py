@@ -121,3 +121,18 @@ def test_backend_refuses_moves_out_of_the_area(data_dir, bus):
         r = client.post("/api/playback", headers=H, json={"recording": rid})
         assert r.status_code == 409 and "work area" in r.json()["detail"]
         main.link.shutdown()
+
+
+def test_target_outside_the_area_is_not_reached(data_dir, bus):
+    """A target point behind the arm: the solver says it's outside, and the tip never leaves the area."""
+    use_default_area(data_dir)
+    from conftest import main, TestClient
+    with TestClient(main.app) as client:
+        with ArmWS(client) as a:
+            a.ready()
+            a.target(xyz=[-150, -100, 100])
+            for _ in range(30):
+                m = a.state()
+                assert not model.check_pose(m["angles"], area=FRONT), m["angles"]
+            assert m["ik"]["outside"] == "would leave the work area" and not m["ik"]["reached"]
+        main.link.shutdown()

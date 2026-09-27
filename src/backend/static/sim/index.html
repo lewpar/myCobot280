@@ -36,8 +36,8 @@
       <label class="field-label" for="wsPw">Password</label>
       <div class="input-row"><input type="password" id="wsPw" placeholder="Arm password" autocomplete="current-password"><button id="btnWs" class="primary" aria-pressed="false">Connect</button></div>
       <label class="chk"><input type="checkbox" id="optRemember"> Remember the password on this device</label>
-      <label class="chk"><input type="checkbox" id="optSend" checked> Drive the servos with the solved angles</label>
-      <p class="callout" id="wsNote">Connects to the FastAPI backend on the Pi. The page streams the solved angles with the speed and acceleration from Move; the backend converts them to servo ticks and reads positions back.</p>
+      <label class="chk"><input type="checkbox" id="optSend" checked> Drive the arm to the target</label>
+      <p class="callout" id="wsNote">Connects to the FastAPI backend on the Pi. The page sends it the target with the speed and acceleration from Move; the backend solves it, moves the arm along a clear route and reads positions back. The backend also solves for the simulation, so the password is needed even without the arm.</p>
     </div>
   </div>
   <button id="btnLimp" class="pill" aria-pressed="false" disabled title="Torque off: pose the arm by hand. Hold it first, it drops without torque.">

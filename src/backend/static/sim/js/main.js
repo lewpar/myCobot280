@@ -1,15 +1,16 @@
 /* The simulator page's entry point: wires the modules up (in this order, since later ones read what earlier
    ones set up) and runs the frame loop.
 
-   Each frame: solve IK for the target into qIK (or follow the real arm in hand-guide mode and during backend
-   playback), copy qIK to qCmd only if the pose and the path to it are collision-free, move the simulated
-   servos toward qCmd with a trapezoidal velocity profile, then draw. link.js streams qCmd to the arm.
+   Each frame: take the backend's latest IK answer (solve.js: /ws/ik, or the arm's own solve while link.js
+   drives it with `target`) into qIK, or follow the real arm in hand-guide mode and during backend playback;
+   copy the next pose on the answer's clear route into qCmd; move the simulated servos toward qCmd with a
+   trapezoidal velocity profile, then draw.
 
    Modules only declare things when imported; everything that touches the page happens in their init*(). */
 import * as THREE from 'three';
 import {DEG,N,LIM,makeFK,fk} from './kinematics.js';
 import {area,outsideArea,checkPose,checkPath} from './collision.js';
-import {ikRescue,solveFrame,planMove} from './ik.js';
+import {ikRes,requestSolve,solverNote,nearPose,initSolve} from './solve.js';
 import {renderer,scene,camera,orbit,gizmo,root,rotGroups,ledMats,targetMat,targetObj,dropLine,floorRing,
   ghost,ghostGeo,ghostDots,realLine,realGeo,realDots,trail,pushTrail,pathLine,applyTheme,resize} from './scene.js';
 import {S,qIK,qCmd,servo,target,setTarget,targetFromPose,syncUI,setDemo,areaDir,haveRealNow} from './state.js';
@@ -17,7 +18,7 @@ import {initApi} from './api.js';
 import {initSettings} from './settings.js';
 import {initMotion,spd,acc} from './motion.js';
 import {initChrome,updateLinkChip,jointUI,pct} from './chrome.js';
-import {initLink} from './link.js';
+import {initLink,armDriving} from './link.js';
 import {initAtom} from './atom.js';
 import {initRecord,recTick} from './record.js';
 import {initPlay,playStep,playStop,endPlay,playNote,pathWanted} from './play.js';
@@ -31,6 +32,7 @@ initAtom();
 initRecord();
 initPlay();
 initApi();
+initSolve();
 
 // dragging the target's arrows
 gizmo.addEventListener('dragging-changed',e=>{orbit.enabled=!e.value;if(e.value){setDemo(false);S.homeLock=false;}});
@@ -50,10 +52,11 @@ renderer.domElement.addEventListener('pointerup',e=>{
 if(window.ResizeObserver)new ResizeObserver(resize).observe($('#stage'));else window.addEventListener('resize',resize);
 resize();applyTheme();
 setTarget(target.clone());
-{const b=ikRescue(qIK,target,true);if(b)for(let i=0;i<N;i++)qIK[i]=b.q[i];}
+S.ikRestart=true;   // the first solve restarts from seeded poses: the zero pose may be a poor start
 
 const servoF=makeFK(),ghostF=makeFK(),realF=makeFK();
 let ikErr={pos:0,ori:0},detour=false;
+const deg2rad=a=>a.map(v=>v*DEG);
 const clock=new THREE.Clock();
 function frame(){
   requestAnimationFrame(frame);
@@ -65,12 +68,23 @@ function frame(){
   if(S.play)playStep();
   if(S.remotePlay&&!S.homeLock&&!S.remoteStopSent){S.remoteStopSent=true;playStop();playNote('Stopping playback: the target was moved.');}
   const following=haveReal&&(S.limp||!!S.remotePlay);   // the sim mirrors the real arm
-  if(following){for(let i=0;i<N;i++)qIK[i]=qCmd[i]=measured[i]*DEG;targetFromPose();ikErr={pos:0,ori:0};}
-  else if(!S.homeLock)ikErr=solveFrame(qIK,target,orient,servo.map(s=>s.pos),S.rescue,performance.now(),!S.demo);
-  else ikErr={pos:0,ori:0};
+  // the backend solves: ask /ws/ik for the next answer, unless the arm is solving (link.js sends it the target)
+  if(!following&&!armDriving()&&!S.play){
+    const restart=S.ikRestart&&!S.homeLock;
+    if(requestSolve({xyz:S.homeLock?null:target,angles:S.homeLock?qIK:null,down:orient,q:qIK,from:servo.map(s=>s.pos),
+      rescue:!S.demo,restart})&&restart)S.ikRestart=false;
+  }
+  const r=ikRes;
+  // take the solution only if it started from the pose we still have (nothing set qIK directly meanwhile);
+  // the arm's own solve always counts
+  if(!following&&!S.homeLock&&r&&r.fresh&&r.target&&(r.src==='arm'||nearPose(r.basis,qIK,1e-6))){
+    for(let i=0;i<N;i++)qIK[i]=r.angles[i]*DEG;r.fresh=false;}
+  if(following||S.homeLock)ikErr={pos:0,ori:0};
+  else if(r&&r.target)ikErr={pos:r.pos_err_mm/1000,ori:r.ori_err_deg*DEG};
+  else ikErr=null;   // no answer yet
   // only collision-free poses reach the servos, along a clear route: straight there, or (not during a
-  // playback, which must follow its recording) through raised poses around whatever is in the way.
-  // Re-planned every frame from where the servos are, so qCmd is the next pose on the route.
+  // playback, which must follow its recording) through raised poses around whatever is in the way. The
+  // backend plans it from where the servos are with every answer, so qCmd is the next pose on the route.
   let blocked=null;detour=false;
   if(!S.stopped&&!following){
     const cur=servo.map(s=>s.pos);
@@ -78,9 +92,10 @@ function frame(){
     // from where they are now), hold them here
     if(checkPath(cur,qCmd,16,DEG))for(let i=0;i<N;i++)qCmd[i]=cur[i];
     blocked=checkPose(qIK);
-    if(!blocked){const route=S.play?(checkPath(cur,qIK)?null:[]):planMove(cur,qIK);
-      if(route){const next=route.length?route[0]:qIK;detour=route.length>0;for(let i=0;i<N;i++)qCmd[i]=next[i];}
-      else blocked=checkPath(cur,qIK);}
+    if(!blocked&&S.play){if(checkPath(cur,qIK))blocked=checkPath(cur,qIK);else for(let i=0;i<N;i++)qCmd[i]=qIK[i];}
+    else if(!blocked&&r&&nearPose(deg2rad(r.angles),qIK)){   // the answer is for this pose (else wait for one)
+      if(r.next){const next=deg2rad(r.next);detour=r.detour;for(let i=0;i<N;i++)qCmd[i]=next[i];}
+      else blocked=r.blocked||'no clear route there';}
   }
   if(S.play&&blocked)endPlay(`Playback stopped: ${blocked}.`);
   else if(S.play&&S.play.done)endPlay('Playback finished.');
@@ -112,7 +127,7 @@ function frame(){
   ghostGeo.attributes.position.needsUpdate=true;
   const gc=blocked?cssVar('--bad'):'#3b82c4';ghost.material.color.set(gc);ghostDots.material.color.set(gc);
 
-  const reachable=ikErr.pos<0.003&&(!orient||ikErr.ori<3*DEG);
+  const reachable=!!ikErr&&ikErr.pos<0.003&&(!orient||ikErr.ori<3*DEG);
   targetMat.color.set(reachable?cssVar('--amber'):cssVar('--bad'));targetMat.emissive.copy(targetMat.color);
   targetObj.scale.setScalar(1+0.12*Math.sin(performance.now()*0.004));
   const lp=dropLine.geometry.attributes.position.array;lp.set([target.x,target.y,target.z,target.x,target.y,0.0005]);
@@ -125,6 +140,7 @@ function frame(){
     $('#statusText').textContent=/close to the base/.test(outsideArea(target))?'The target is too close to the base (Setup tab, Work area)':'The target is outside the work area (Setup tab)';}
   else if(blocked||S.remoteBlocked){st.className='status bad';const why=blocked||S.remoteBlocked;
     $('#statusText').textContent=`Blocked: ${why}${blocked?'':' (checked by the arm)'}`;}
+  else if(!ikErr){st.className='status bad';$('#statusText').textContent=solverNote()||'Solving…';}
   else if(!reachable){st.className='status bad';$('#statusText').textContent=orient&&ikErr.pos<0.003?'Reachable, but not facing straight down':'Out of reach, holding the closest pose';}
   else if(moving){st.className='status';$('#statusText').textContent=detour?'Servos moving, going up and around':'Servos moving';}
   else{st.className='status ok';$('#statusText').textContent='At target';}

@@ -26,7 +26,7 @@ export function setAttachment(id,user,len,dia){ // user: picked here (tell the b
   const a=ATTACHMENTS[id]||ATTACHMENTS.none;attachment=ATTACHMENTS[id]?id:'none';
   if(len!==undefined){toolIn.value=len;toolDIn.value=Math.max(5,Math.min(60,dia||20));}
   setToolSize((a.length===null?+toolIn.value:a.length)/1000,(a.length===null?+toolDIn.value:(a.diameter||20))/2000);
-  applyTool(attachment);syncToolSliders();attRender();S.homeLock=false;S.rescue.key='';
+  applyTool(attachment);syncToolSliders();attRender();S.homeLock=false;
   uiSet('mycobot-attachment',JSON.stringify({id:attachment,len:+toolIn.value,dia:+toolDIn.value}));
   if(user){clearTimeout(toolTimer);toolTimer=setTimeout(()=>send({type:'set_tool',attachment,mm:+toolIn.value,d_mm:+toolDIn.value}),300);}
 }
@@ -46,7 +46,7 @@ export function setArea(a,user){
   $('#areaPresets').querySelectorAll('button').forEach((b,k)=>{const p=AREA_PRESETS[k][1];
     b.setAttribute('aria-pressed',area.enabled&&area.span===p.span&&(p.span>=360||area.center===p.center));});
   $('#areaMeta').textContent=!area.enabled?'off':area.span>=360?(area.radius_mm?'circle':'no side limit'):`${area.span}° slice`;
-  drawArea();S.homeLock=false;S.rescue.key='';
+  drawArea();S.homeLock=false;
   uiSet('mycobot-area',JSON.stringify(area));
   if(user){clearTimeout(areaTimer);areaTimer=setTimeout(()=>send({type:'set_area',...area}),250);}
 }

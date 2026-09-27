@@ -8,9 +8,10 @@ Control software for a **myCobot 280 Pi** (six-axis desk arm, Raspberry Pi 4 in 
 **directly over the Feetech servo bus**, bypassing Elephant Robotics' firmware and pymycobot API.
 The **FastAPI backend** is the only interface to the arm:
 
-- **FastAPI backend** (`src/backend/`), REST API + a WebSocket IK link + serves the IK simulator page.
-- **IK simulator** (`src/backend/static/sim/`, served at `/sim/`), a Three.js page that solves
-  inverse kinematics, simulates the servos, and streams joint angles to the real arm.
+- **FastAPI backend** (`src/backend/`), REST API + two WebSockets (`/ws/arm` drives the arm, `/ws/ik` only
+  solves) + serves the IK simulator page. **The inverse kinematics lives here only** (`ik.py`).
+- **IK simulator** (`src/backend/static/sim/`, served at `/sim/`), a Three.js page that sends targets to the
+  backend, shows its solutions, simulates the servos, and drives the real arm through `/ws/arm`.
 
 ## Hardware facts
 
@@ -32,8 +33,9 @@ Register map used (STS): 9/11 min/max limit, 31 position correction, 40 torque e
 |------|------|
 | `mycobot280.py` | Servo/ATOM library: packet building, echo-tolerant checksum-verified reads, bus lock, limits, `move`, `sync_move`, `move_all`, `hold`, `read_positions`, `sync_torque` |
 | `arm_model.py` | **Shared model**: URDF kinematics (`fk`), collision checks (`check_pose`, `check_path`, `check_tick_move`), calibration store (`ik_calibration.json`), home store (`center_positions.json`) |
-| `src/backend/main.py` | FastAPI app: password middleware, validated REST endpoints, motion guard, `/api/stop` `/api/resume`, `/ws/arm`, `/sim` |
-| `src/backend/ik_link.py` | Bus loop behind `/ws/arm`: streams goals, owns the **stop state** used by REST, runs **playback**, and the **stall guard** |
+| `src/backend/main.py` | FastAPI app: password middleware, validated REST endpoints, motion guard, `/api/stop` `/api/resume`, `/ws/arm`, `/ws/ik`, `/sim` |
+| `src/backend/ik.py` | **The IK**: `Solver` (damped least squares, collision-clear stepping, seeded restarts, `plan_move` routes), `parse_target`, and `Session` (one `/ws/ik` connection); pure logic |
+| `src/backend/ik_link.py` | Bus loop behind `/ws/arm`: streams goals, solves an active **target** on its own thread, owns the **stop state** used by REST, runs **playback**, and the **stall guard** |
 | `src/backend/player.py` | Playback timing (phases, per-joint speeds, LED cues) and the up-front path check; pure logic, ticked by `ik_link` |
 | `src/backend/library.py` | Recordings, sequences, saved poses: validation + one JSON file each in `recordings/`, `sequences/`, `poses/` (gitignored) |
 | `src/backend/static/sim/` | The simulator page: `index.html`, `style.css`, native ES modules in `js/` (no build step; three.js r147 from jsDelivr via an import map) |
@@ -41,6 +43,7 @@ Register map used (STS): 9/11 min/max limit, 31 position correction, 40 torque e
 | `tools/check_servo_units.py` | Times moves to measure real speed/accel register units; `--write` saves them |
 | `tools/diagnostics/` | Old bring-up scripts, not used by anything |
 | `tests/` | pytest suite on a fake bus (`fakebus.py`), plus `tests/js/` node tests for the page (parity + jsdom smoke) |
+| `WEBSOCKET.md` | Reference for `/ws/arm` and `/ws/ik` (protocol 3) |
 | `run_tests.sh` | Runs every test: `./run_tests.sh [pytest args]` |
 | `run.sh` | Starts the backend: `./run.sh [--port /dev/ttyX] [--host A] [--http-port N] [--dev]`; sets up `venv/`, pre-flight checks, `exec`s uvicorn |
 
@@ -65,7 +68,8 @@ Env vars: `MYCOBOT_PORT`, `MYCOBOT_BAUD`, `MYCOBOT_PASSWORD`, `MYCOBOT_CORS_ORIG
 3. **Every motion path goes through the guards**: stop state → collision check (`arm_model`) → clamp to
    EEPROM limits minus 50 ticks → register-range clamp. That applies to REST moves, Home All, IK goals
    and playback (which sends every goal through `_send_goal`). New motion code must do the same (see
-   `_guard_motion` in `main.py`, `_send_goal` in `ik_link.py`). REST moves are refused (409) during playback.
+   `_guard_motion` in `main.py`, `_send_goal` in `ik_link.py`; a `target`'s solver thread only queues goals
+   for the bus loop, which sends them through `_send_goal`). REST moves are refused (409) during playback.
 4. **Three things exist twice** and must stay identical, enforced by `tests/test_page.py`:
    the kinematics and collision model (`arm_model.py`: `URDF_JOINTS`, `URDF_LIMITS_DEG`, the collision
    constants, `check_pose` ↔ `sim/js/kinematics.js` `JOINTS` and `sim/js/collision.js` `COLLISION`,
@@ -75,14 +79,15 @@ Env vars: `MYCOBOT_PORT`, `MYCOBOT_BAUD`, `MYCOBOT_PASSWORD`, `MYCOBOT_CORS_ORIG
    (`DEFAULT_AREA`, `_outside_area` ↔ `collision.js` `DEFAULT_AREA`, `outsideArea`). Change both, run the tests.
 5. **Speed 0 and acceleration 0 mean "unlimited" on STS servos.** Never send them. Valid: speed 1–4000,
    accel 1–254 (`SPEED_*`, `ACCEL_*` in `mycobot280.py`). The API rejects out-of-range values (422).
-6. **Password on everything.** REST: header `X-Arm-Password`. `/ws/arm`: first message
+6. **Password on everything.** REST: header `X-Arm-Password`. `/ws/arm` and `/ws/ik`: first message
    `{"type":"auth","password":...}` (browsers can't set WS headers).
    Compare with `hmac.compare_digest`. Failed attempts are rate-limited (5/min per IP → 429).
 7. **Re-enabling torque must first set goal = present position** (see `IKLink._set_torque`), or the arm
    jumps to whatever stale goal the servo holds.
 8. **After any calibration change or resume, the page re-reads the real pose before sending goals.** The
    backend enforces it with an **epoch** (`IKLink._new_epoch_locked`): it goes up on resume, `set_zero`,
-   `set_dir` and the end of a backend playback, and goals carrying an older epoch are refused. The page takes
+   `set_dir` and the end of a backend playback, goals and targets carrying an older epoch are refused, and an
+   active target ends. The page takes
    the new epoch only in the state it adopts the pose from. Anything new that re-maps angles or moves the arm
    behind the page's back must bump the epoch too.
 9. **Anything outside the IK loop that changes servo goals calls `link.forget_goal()`** (REST moves go
@@ -134,7 +139,8 @@ It's deliberately conservative and approximate; it is not a substitute for watch
 - No framework, no build step: `index.html` has the markup and an import map (`three`, `three/addons/`
   → jsDelivr, r147); `js/main.js` is the entry point. Modules, by job:
   `kinematics.js` (`JOINTS`, `fk`, `LIM`, attachment size), `collision.js` (`checkPose`, `checkPath`, work area,
-  recording pre-check), `ik.js` (solver), `player.js` (`Player`): pure, imported directly by the parity tests.
+  recording pre-check), `player.js` (`Player`): pure, imported directly by the parity tests. `solve.js` is the
+  client of the backend's solver (`/ws/ik`, or the arm's `state.ik` while driving); there is no IK in the page.
   `scene.js` (every three.js object; throws if WebGL fails, which shows `#fail`), `state.js` (shared state),
   `api.js` (REST + password), `link.js` (`/ws/arm`, Stop/Resume, hand-guide, calibration), `settings.js`
   (attachment + work area), `motion.js`, `atom.js`, `record.js`, `play.js` (one per tab), `chrome.js`
@@ -142,7 +148,7 @@ It's deliberately conservative and approximate; it is not a substitute for watch
 - **Modules don't touch the page when imported**; each has an `init*()` that `main.js` calls in order. Keep it
   that way: the modules import each other in cycles, which is only safe because nothing runs at import time.
 - **Shared mutable state lives in `S`** (`state.js`: `stopped`, `homeLock`, `measured`, `limp`, `play`,
-  `remotePlay`, …) because an imported `let` can't be assigned from another module. `toolLen`/`toolR` and
+  `remotePlay`, `ikRestart`, …) because an imported `let` can't be assigned from another module. `toolLen`/`toolR` and
   `area` are live `let` exports changed only through `setToolSize` / `setAreaModel`. Everything else is private
   to its module. `qIK`, `qCmd`, `servo`, `target` and `LIM` are shared arrays/vectors, mutated in place.
 - Browsers won't load modules from `file://`: use the backend (or any static server). The backend sends the
@@ -155,20 +161,37 @@ It's deliberately conservative and approximate; it is not a substitute for watch
   is hidden behind an ⓘ button that `chrome.js` adds. Keep explanations in `.note.help`, not always-on text.
   A folded card with a non-empty `.callout.warn` shows an amber dot. The script finds everything by element id, so keep the
   ids when moving markup around. The canvas sizes to `#stage` (ResizeObserver), not the window.
-- IK: damped least squares on the geometric Jacobian, **task priority** (position first, "flange
-  facing down" in the null space), step scaled uniformly, joint limits clamped. Each frame `ik.solveFrame`
-  steps it **clear of collisions** (`ikIterateClear`: it stops at the last clear step instead of walking into
-  one) and, when stuck (short of the target, colliding, or with no route from the servos), runs `ikRescue`:
-  32 seeded restarts plus two upright seeds stepped clear (what solving from the zero pose finds), ranked
-  collision-free first, then reachable, then closest; retried up to 6 times with fresh random seeds
-  (`S.rescue` holds the state; `S.rescue.key=''` starts over after a setting change).
-- `qIK` = solver output; `qCmd` = what the servos are told. **Only collision-free poses reach qCmd, along a
-  clear route**: `ik.planMove(servos, qIK)` is straight there if that's clear, else through raised poses (J2–J5
-  at 0: lift, turn the base, come down; also lifting the shoulder or straightening the elbow first). It's
-  re-planned every frame, so qCmd is the next pose on the route ("going up and around" in the status bar).
-  Local playback never detours (it must follow its recording). Each frame the rest of the servos' current
-  move is re-checked finely (every 1°) and they hold where they are if it's no longer clear. The simulated
-  servos use a trapezoidal velocity profile toward qCmd, synchronised like the real ones.
+- IK (backend, `ik.py`; ported from the page, which no longer has it): damped least squares on the geometric
+  Jacobian, **task priority** (position first, "flange facing down" in the null space), step scaled uniformly,
+  joint limits clamped. Each solve (`Solver.solve_frame`, 14 iterations) steps it **clear of collisions**
+  (`iterate_clear`: it stops at the last clear step instead of walking into one) and, when stuck (short of
+  the target, colliding, or with no route from the servos), runs `rescue`: 32 seeded restarts plus two upright
+  seeds stepped clear, ranked collision-free first, then reachable, then closest; retried up to 6 times with
+  fresh random seeds (`Solver.mem`; `configure` with new settings starts over). `plan_move` is straight there
+  if that's clear, else through raised poses (J2–J5 at 0: lift, turn the base, come down; also lifting the
+  shoulder or straightening the elbow first). `arm_model.chain` is the fast FK both it and `check_pose` use.
+  A solve is ~2 ms on a desktop, a rescue ~40 ms (several times that on the Pi); most of it is `iterate`'s
+  small matrix algebra (written out: `_dot`, `_pinv`, `Jo - (Jo Pp) Jp`) and `check_pose` (`_seg_dist`
+  written out too). Every answer says whether it's **`settled`** (solving again would change nothing).
+- Where it runs: a `/ws/arm` **target** is re-solved every 50 ms on `IKLink`'s solver thread from the measured
+  pose, and the next pose on the route is queued as a goal (re-sent when it changes or every 0.2 s). It skips
+  the solve while the last answer is settled and nothing moved (`STILL_DEG`). The page, when not driving, sends
+  `/ws/ik` **solve** requests (one in flight; `q` = qIK, `from` = its simulated servos), each answered with the
+  solution and the next pose on the route; it doesn't repeat a request whose answer was settled, and
+  `ik.Session` answers a repeated settled request from its last reply. `solve.js` reconnects on its own, but never
+  retries a password the backend rejected (it would count towards the lockout).
+- `qIK` = the backend's solution (taken only if it started from the qIK the page still has); `qCmd` = what the
+  servos are told. **Only collision-free poses reach qCmd, along a clear route**: the answer's `next`
+  ("going up and around" in the status bar when it's a detour), used only when the answer is for the current
+  qIK. When qIK is set directly (`homeLock`: jog, saved pose, zero, playback) the page asks for a route to that
+  joint pose (`angles`) instead. Local playback never detours and doesn't ask (it must follow its recording).
+  Each frame the rest of the servos' current move is re-checked finely (every 1°) and they hold where they
+  are if it's no longer clear. The simulated servos use a trapezoidal velocity profile toward qCmd,
+  synchronised like the real ones.
+- Driving the arm (`link.armDriving()`: connected, all servos reading, "drive the arm" on, not hand-guide,
+  stopped, resyncing or playing): `link.js` sends the Move target as `target` every 100 ms when it changes
+  (`xyz` + `down`, or `angles` under `homeLock`) and each state's `ik` becomes the page's answer; it sends no
+  `goal`s and no `/ws/ik` solves. A state with `ik: null` (the backend ended the target) makes it send again.
 - Hand-guide mode: torque off, qIK/qCmd follow the measured pose. Stop: freeze qCmd, send `stop`.
 - ATOM LED panel: talks to `/api/atom/*` over REST (not the WebSocket), with the backend host from
   the WS address field and the password field. Requests go one at a time; a 401/429 drops the rest of the
@@ -198,22 +221,29 @@ It's deliberately conservative and approximate; it is not a substitute for watch
 
 ## Protocols
 
-**`/ws/arm` (protocol 2, full reference in the `ik_link.py` docstring).** The page sends `auth` first; the
+**`/ws/arm` (protocol 3; full reference in `WEBSOCKET.md`, short form in the `ik_link.py` docstring).** The page sends `auth` first; the
 backend answers `hello {protocol}`, then `config` (now and whenever it changes), then `state` about 10 times a second.
 Page → backend: `goal {angles[6] deg, speed 1-360 deg/s (capped at 150), acc 1-2000 deg/s², epoch}` (turns
-torque on if it was off), `torque {on}`, `stop`, `resume`, `set_zero`, `set_dir {joint 0-5, dir ±1}`,
+torque on if it was off; ends a target), `target {xyz[3] mm + down | angles[6], speed, acc, epoch}` (solved and
+driven until a goal, stop, torque, playback, new epoch or the last client leaving ends it), `torque {on}`, `stop`, `resume`, `set_zero`, `set_dir {joint 0-5, dir ±1}`,
 `set_tool {attachment, mm 0-150, d_mm 1-60}` (a known attachment keeps its own size), `set_stall_guard {on}`,
 `set_area {enabled, center -180..180, span 30..360, radius_mm 0|100..450, base_mm 0|60..250}`. Booleans must be JSON booleans and
 numbers finite (NaN/Infinity are rejected at the socket).
 Backend → page: `config {calibrated, zero, dir, tool_mm, tool_d_mm, attachment, area, limits[6][lo,hi],
 stall_guard}`; `state {angles[6]|null, torque, stopped, blocked, fault, playback{name, recording, step, steps,
-phase, t, duration, loop, rate, timed}|null, play_end{n, message}, epoch, clients}`;
+phase, t, duration, loop, rate, timed}|null, play_end{n, message}, epoch, clients, ik}`, where `ik` is null or
+`{target, down, angles, next, detour, reached, pos_err_mm, ori_err_deg, blocked, outside, arrived}`;
 `error {code, ref, message}`. Fatal codes (the socket closes): `auth` (4401), `locked` (4429), `no_arm` (4503).
 Non-fatal, answering one command (`ref` = its type): `bad_request` (malformed or out of range), `refused`
 (valid but not now: stopped, playback running, stale epoch, a servo not answering for `set_zero`),
 `internal` (the handler raised). Success has no reply; it shows up in the next config/state.
 An exception in the bus loop stops the arm with a `fault` instead of killing the loop.
-Several pages may connect (`clients`); their goals simply overwrite each other, last one wins.
+Several pages may connect (`clients`); their goals and targets simply overwrite each other, last one wins.
+
+**`/ws/ik` (solve-only, no arm needed).** Same auth; then `hello`, `settings`. Every message gets one reply in
+order: `settings {tool_mm, tool_d_mm, area, limits}` → `settings`; `solve {id?, xyz + down | angles, q?, from?,
+rescue?, restart?}` → `ik {id, …the fields of state.ik except arrived}`; else `error`. One `ik.Session` per
+connection; at most 2 solves run at once (`IK_SLOTS`), in threads.
 
 **REST** (all under `/api`, all need the header): `auth`, `health`, `safety`, `stop`, `resume`,
 `servos[?rescan=true]`, `servos/status`, `servos/home` (GET/POST), `servos/center_all`,
@@ -240,11 +270,15 @@ and `tests/js` npm packages on first run). `./run_tests.sh -k playback -x` passe
   `test_attachments.py` (tool collision rules, choosing one over WS, playback refused with the tool on),
   `test_motion_api.py`, `test_ws.py` (auth and close codes, hello/config/state, goal validation and epochs, error replies, bad input and bus errors not killing the link, stop/resume, torque-on hold, stall guard); `tests/wsclient.py` is the test client,
   `test_library.py`, `test_player.py` (timing with a simulated clock), `test_playback.py` (on the fake arm).
-- `test_page.py` runs node: `checkPose` vs `check_pose` on 10,000 poses (0 mismatches), `tests/js/solver.js`
-  (the page's per-frame solving on fixed targets: reached after drags and from arbitrary poses, detours, no
-  collisions on the way), `Player` vs
+- `test_ik.py`: the solver as the target loop runs it (fixed targets reached after drags and from arbitrary
+  poses, no collisions on the way, the up-and-over detour), `Session` validation and settings, `/ws/ik` with
+  and without the arm. `test_ws.py` has the `target` tests (drives the fake arm to a point, joint target with a
+  detour, blocked targets, what ends and refuses one).
+- `test_page.py` runs node: `checkPose` vs `check_pose` on 10,000 poses (0 mismatches), `Player` vs
   `Playback` goal-for-goal, and `tests/js/smoke.js` (jsdom, fake WebGL/WebSocket/backend) through record,
-  save, edit, trim, import/export, waypoints, sequences, local and backend playback, poses, jog, faults.
+  save, edit, trim, import/export, waypoints, sequences, local and backend playback, poses, jog, faults, and
+  driving the arm by target. Its fake `/ws/ik` (and the fake arm's target) run the real solver through
+  `tests/js/ik_stdio.py` (`PYTHON` is set by `test_page.py`).
   `tests/js/page.js` bundles the page's modules with esbuild (a test-only dependency) so node and jsdom can
   run them; `tests/js/three-shim.js` swaps in a WebGLRenderer that draws nothing. `test_sim_files.py` checks
   `/sim/` is served (redirect, no password, `no-cache`, modules as JavaScript, every relative import exists).
@@ -268,12 +302,16 @@ and `tests/js` npm packages on first run). `./run_tests.sh -k playback -x` passe
 - The ATOM firmware change (parser rewrite) has only been host-tested, not flashed.
 - Synchronised joint speeds on the real servos (does the arm follow the straight joint-space line?), the
   ATOM head spheres against the real head, and the 150 mm base keep-out against how you actually work.
+- Solving on the Pi: CPU use of the target loop (20 solves/s) and `/ws/ik`, rescue times, and whether it
+  delays the bus loop (both share the GIL).
 - Playback with per-joint speeds (timed mode), and the stall guard thresholds (`STALL_DEG` 6°, `STALL_S`
   1 s in `ik_link.py`) against real load: gravity sag must stay under 6° or it will false-trip.
 
 ## Known limitations / ideas
 
 - REST moves work in raw ticks and can fight the IK stream if both are used at once.
+- The page can't solve without the backend (and the password): opened from a plain static server it shows
+  the scene, but dragging the target doesn't move the model.
 - Plain HTTP: the password stops casual use, not traffic capture. HTTPS would need a reverse proxy.
 - The collision path check assumes straight joint-space motion. The servos are synchronised to follow it,
   but with a shared acceleration their ramps differ slightly, and discrete samples can clip an edge (the

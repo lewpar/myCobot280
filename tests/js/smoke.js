@@ -1,6 +1,18 @@
-// jsdom smoke test of the simulator page against a fake backend (REST + /ws/arm).
-// Exits non-zero on the first failed check. Run by tests/test_page.py.
+// jsdom smoke test of the simulator page against a fake backend (REST, /ws/arm and /ws/ik). The IK is the real
+// backend solver (ik.py), run through ik_stdio.py. Exits non-zero on a failed check. Run by tests/test_page.py.
+const path = require('path');
+const { spawn } = require('child_process');
 const { loadPage } = require('./page');
+
+// ---- the backend's solver, one JSON line each way ----
+const py = spawn(process.env.PYTHON || 'python3', [path.join(__dirname, 'ik_stdio.py')], { stdio: ['pipe', 'pipe', 'inherit'] });
+let pyBuf = '';
+const pyWait = [];
+py.stdout.on('data', d => {
+  pyBuf += d;
+  for (let k; (k = pyBuf.indexOf('\n')) >= 0; pyBuf = pyBuf.slice(k + 1)) pyWait.shift()(JSON.parse(pyBuf.slice(0, k)));
+});
+const pySolve = (sid, m) => new Promise(r => { pyWait.push(r); py.stdin.write(JSON.stringify({ _s: sid, ...m }) + '\n'); });
 
 // ---- fake backend ----
 const db = { recordings: {}, sequences: {}, poses: {} }, calls = [];
@@ -40,25 +52,56 @@ async function fetch(url, o = {}) {
   }
 }
 let sock = null, pose = [0, 20, 20, 20, 0, 0], wsSent = [], armState = { stopped: false, fault: null, epoch: 0 }, playEndN = 0, playEndMsg = null;
-function playEnd(msg) { playEndN++; playEndMsg = msg; armState.epoch++; }
+let ikSent = [], nSess = 0, armTarget = null, armIk = null, armSolving = false;
+function playEnd(msg) { playEndN++; playEndMsg = msg; armState.epoch++; armTarget = armIk = null; }
+function armSolve() { // the fake arm's target: solved by the real solver from where the arm is, then jumps to the next pose
+  if (!armTarget || armSolving || remote) return;
+  armSolving = true;
+  const t = armTarget;
+  pySolve('arm', { type: 'solve', ...(t.xyz ? { xyz: t.xyz, down: t.down } : { angles: t.angles }), from: pose }).then(r => {
+    armSolving = false;
+    if (!armTarget || armTarget.epoch !== t.epoch) return;   // ended meanwhile (a re-sent target carries on)
+    delete r._s; delete r.type; delete r.id;
+    if (r.next) pose = r.next.slice();
+    armIk = { ...r, arrived: !!r.next && !r.detour };
+  });
+}
 const CONFIG = { type: 'config', calibrated: true, zero: [2048, 2048, 2048, 2048, 2048, 2048], dir: [1, 1, 1, 1, 1, 1],
   tool_mm: 0, tool_d_mm: 20, attachment: 'custom', area: { enabled: false, center: 0, span: 180, radius_mm: 0 },
   limits: [[-168, 168], [-140, 140], [-150, 150], [-150, 150], [-155, 160], [-180, 180]], stall_guard: true };
 class FakeWS {
-  constructor() { sock = this; this.readyState = 1;
-    setTimeout(() => { this.onopen(); this.emit({ type: 'hello', protocol: 2 }); this.emit(CONFIG); }, 5);
+  constructor(url) { this.readyState = 1;
+    if (/\/ws\/ik$/.test(url)) { // solve-only: every message to the real solver, in its own session
+      this.ik = true; this.sid = ++nSess;
+      setTimeout(() => { this.onopen(); this.emit({ type: 'hello', protocol: 3 }); }, 5);
+      return;
+    }
+    sock = this;
+    pySolve('arm', { type: 'settings', area: CONFIG.area, tool_mm: CONFIG.tool_mm, tool_d_mm: CONFIG.tool_d_mm });
+    setTimeout(() => { this.onopen(); this.emit({ type: 'hello', protocol: 3 }); this.emit(CONFIG); }, 5);
     this.iv = setInterval(() => {
       if (remote && Date.now() > remote.until) { remote = null; playEnd('Playback finished.'); }
+      armSolve();
       this.emit({ type: 'state', angles: pose, torque: true, stopped: armState.stopped, blocked: null,
         fault: armState.fault, epoch: armState.epoch, clients: 1,
         playback: remote ? { name: remote.name, recording: remote.name, step: 0, steps: 1, phase: 'run', t: 0.4, duration: 1 } : null,
-        play_end: { n: playEndN, message: playEndMsg } });
+        play_end: { n: playEndN, message: playEndMsg }, ik: armTarget ? armIk : null });
     }, 100); }
   emit(m) { this.onmessage({ data: JSON.stringify(m) }); }
-  send(m) { m = JSON.parse(m); wsSent.push(m);
-    if (m.type === 'goal' && m.epoch === armState.epoch) pose = m.angles.slice();
-    if (m.type === 'resume') armState = { stopped: false, fault: null, epoch: armState.epoch + 1 }; }
-  close() { clearInterval(this.iv); }
+  send(m) { m = JSON.parse(m);
+    if (this.ik) {
+      if (m.type === 'auth') return;
+      ikSent.push(m);
+      pySolve(this.sid, m).then(r => { if (!this.closed) { delete r._s; this.emit(r); } });
+      return;
+    }
+    wsSent.push(m);
+    if (m.type === 'goal' && m.epoch === armState.epoch) { armTarget = armIk = null; pose = m.angles.slice(); }
+    if (m.type === 'target' && m.epoch === armState.epoch) { if (!armTarget) armIk = null; armTarget = m; }
+    if (m.type === 'set_area') pySolve('arm', { type: 'settings', area: { ...m, type: undefined } });
+    if (m.type === 'set_tool') pySolve('arm', { type: 'settings', tool_mm: m.mm, tool_d_mm: m.d_mm });
+    if (m.type === 'resume') { armState = { stopped: false, fault: null, epoch: armState.epoch + 1 }; armTarget = armIk = null; } }
+  close() { this.closed = true; clearInterval(this.iv); }
 }
 
 // ---- harness ----
@@ -74,8 +117,15 @@ const input = (s, v) => { $(s).value = v; $(s).dispatchEvent(new w.Event('input'
 
 (async () => {
   ({ w, errors } = await loadPage({ fetch, WebSocket: FakeWS }));
-  $('#wsPw').value = 'pw';
   await sleep(200);
+  check(/password/.test(txt('#statusText')) && !ikSent.length, 'no password: says the backend solves, sends nothing', txt('#statusText'));
+  $('#wsPw').value = 'pw';
+  await until(() => /At target/.test(txt('#statusText')), 5000);
+  check(ikSent.some(m => m.type === 'settings') && ikSent.some(m => m.type === 'solve' && m.xyz && m.restart),
+        'solves on the backend (/ws/ik), restarting the first time', JSON.stringify(ikSent.slice(0, 2)));
+  check(/At target/.test(txt('#statusText')), 'reaches the starting target', txt('#statusText'));
+  { await sleep(300); const n0 = ikSent.length; await sleep(700);
+    check(ikSent.length - n0 <= 1, 'idle at the target: stops asking the solver', `${ikSent.length - n0} solves in 0.7 s`); }
 
   // 1. record in the simulation, painting an LED on the way
   click('#tabbtn-record');
@@ -235,16 +285,32 @@ const input = (s, v) => { $(s).value = v; $(s).dispatchEvent(new w.Event('input'
   click('#tabbtn-play');
   click([...$('#recList').children].find(b => /Imported/.test(b.textContent)));
   await until(() => !$('#recPlay').disabled);
-  check(txt('#playWhere') === 'on the arm', 'Play targets the arm when connected');
+  check(txt('#playWhere') === 'on the arm', 'Play targets the arm when connected', txt('#playWhere') + ' / ' + txt('#linkText') + ' / ' + txt('#wsNote') + ' / ' + txt('#statusText'));
   wsSent = [];
   click('#recPlay');
   await until(() => remote);
   const pb = calls.filter(c => c[1] === '/playback').at(-1)[2];
   check(pb.recording && pb.timed === true && pb.speed <= 150, 'POST /api/playback', JSON.stringify(pb));
   await until(() => /Stop playback/.test(txt('#recPlay')));
-  await until(() => txt('#playNote') === 'Playback finished.', 5000);
+  await sleep(300);
+  check(remote && !wsSent.some(m => m.type === 'goal' || m.type === 'target'), 'no goals or targets sent during backend playback', JSON.stringify(wsSent.slice(0, 3)));
+  await until(() => !remote && !/Stop playback/.test(txt('#recPlay')), 5000);   // (the note may still say so from before)
+  await sleep(300);
   check(txt('#playNote') === 'Playback finished.', 'backend playback end reported', txt('#playNote'));
-  check(!wsSent.some(m => m.type === 'goal'), 'no goals streamed during backend playback', JSON.stringify(wsSent.slice(0, 3)));
+
+  // 11a. driving: the Move target goes to the arm as a point, which the arm solves and moves to
+  click('#tabbtn-motion');
+  wsSent = [];
+  input('#tx', 180); input('#ty', -40); input('#tz', 110);
+  await until(() => armIk && armIk.target && armIk.target[0] === 180 && armIk.arrived, 5000);
+  const tg = wsSent.filter(m => m.type === 'target').at(-1);
+  check(tg && tg.xyz && tg.xyz[0] === 180 && Number.isInteger(tg.epoch) && !wsSent.some(m => m.type === 'goal'),
+        'target sent as a point, no goals', JSON.stringify(wsSent.map(m => m.type + (m.xyz ? ' xyz ' + m.xyz : m.angles ? ' ang' : ''))));
+  check(armIk && armIk.reached && armIk.arrived, 'the arm solved and got there', JSON.stringify(armIk));
+  await until(() => /At target/.test(txt('#statusText')), 3000);
+  check(/At target/.test(txt('#statusText')), 'the page shows the arm\'s solution', txt('#statusText'));
+  const nIk = ikSent.length; await sleep(500);
+  check(ikSent.length === nIk, 'no /ws/ik solving while the arm solves', `${nIk} -> ${ikSent.length}`);
 
   // 11b. the backend's saved attachment wins on connect; picking one tells the backend
   click('#tabbtn-setup');
@@ -266,13 +332,14 @@ const input = (s, v) => { $(s).value = v; $(s).dispatchEvent(new w.Event('input'
   check(txt('#statusText').includes('J2 stalled'), 'fault shown in the status bar', txt('#statusText'));
 
   // 13. goals carry the epoch: resuming bumps it, the page re-reads the pose and only sends the new one
-  check(wsSent.filter(m => m.type === 'goal').every(m => Number.isInteger(m.epoch)), 'goals carry an epoch');
+  check(wsSent.filter(m => m.type === 'target').every(m => Number.isInteger(m.epoch)), 'targets carry an epoch');
   const before = armState.epoch; wsSent = [];
   click('#btnStop');
-  await until(() => wsSent.some(m => m.type === 'goal'), 3000);
-  const goals = wsSent.filter(m => m.type === 'goal');
+  await until(() => wsSent.some(m => m.type === 'target'), 3000);
+  const goals = wsSent.filter(m => m.type === 'target');
   check(wsSent[0] && wsSent[0].type === 'resume', 'resume sent', JSON.stringify(wsSent[0]));
-  check(goals.length && goals.every(m => m.epoch === before + 1), 'goals after resume use the new epoch', JSON.stringify(goals.map(m => m.epoch)));
+  check(goals.length && goals.every(m => m.epoch === before + 1), 'targets after resume use the new epoch', JSON.stringify(goals.map(m => m.epoch)));
+  check(goals[0].angles && !goals[0].xyz, 'after re-reading the pose it holds it (a joint target)', JSON.stringify(goals[0]));
 
   // 14. a refused command is shown but keeps the link; a refused goal is silent
   sock.emit({ type: 'error', code: 'refused', ref: 'goal', message: 'Stale goal' });

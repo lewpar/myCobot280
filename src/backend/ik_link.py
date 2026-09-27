@@ -1,8 +1,10 @@
 """Live link between the IK simulator page and the arm, served at /ws/arm (see main.py).
 
-The page streams joint angles (degrees, URDF convention); this module checks each pose and the path
-to it for collisions, turns the angles into servo ticks with the saved calibration, sends all six
-goals in one sync-write packet, and streams the measured angles back about 10 times a second.
+A client either streams joint angles (`goal`, degrees, URDF convention) or sets a `target`: a point for
+the tool tip, which this module solves for (ik.py) and drives the arm to along a clear route, re-solving
+about 20 times a second on its own thread. Either way every goal is checked for collisions (the pose and
+the path to it), turned into servo ticks with the saved calibration and sent to all six servos in one
+sync-write packet, and the measured angles are streamed back about 10 times a second.
 
 It also owns the stop state: while stopped, every motion request (from the page, the REST API or
 "home all") is refused until someone resumes. It runs recording playback (player.py) in the same
@@ -10,13 +12,19 @@ loop, so playback keeps going with no page connected, and it watches for stalled
 that stays far from its goal without moving (something in the way) stops the arm.
 
 Protocol (version PROTOCOL). After the auth message (main.py), the backend sends
-    {"type": "hello", "protocol": 2}
+    {"type": "hello", "protocol": 3}
     {"type": "config", ...}        now, and again whenever it changes (see config())
     {"type": "state", ...}         about 10 times a second (see state())
 Messages from the page:
     {"type": "goal", "angles": [deg x6], "speed": 1-360 deg/s, "acc": 1-2000 deg/s², "epoch": n}
                                                epoch = the latest state's; speed is capped at MAX_DPS.
-                                               A goal turns torque on if it was off.
+                                               A goal turns torque on if it was off, and ends a target.
+    {"type": "target", "xyz": [mm x3], "down": bool, "speed": ..., "acc": ..., "epoch": n}
+    {"type": "target", "angles": [deg x6], "speed": ..., "acc": ..., "epoch": n}
+                                               Go there and stay (until a goal, stop, torque, a playback or a
+                                               new epoch ends it): xyz is solved for the tool tip (down = flange
+                                               facing straight down); angles only gets the route. state.ik says
+                                               how it's going.
     {"type": "torque", "on": true|false}
     {"type": "stop"} / {"type": "resume"}
     {"type": "set_zero"}                       current pose becomes the kinematic zero
@@ -43,8 +51,9 @@ import traceback
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 import arm_model as model  # noqa: E402
+import ik  # noqa: E402
 
-PROTOCOL = 2
+PROTOCOL = 3
 MAX_DPS = 150            # speed cap no matter what the page asks for
 GOAL_SPEED = (1, 360)    # deg/s a goal may ask for (capped to MAX_DPS on the arm)
 GOAL_ACC = (1, 2000)     # deg/s²
@@ -53,8 +62,12 @@ STALL_DEG = 6.0          # a joint this far from its goal...
 STALL_S = 1.0            # ...that hasn't moved STALL_MOVE_DEG for this long is stalled
 STALL_MOVE_DEG = 0.5
 LIMITS_EVERY_S = 1.0     # how often the loop re-reads the servo limits (they're cached once read)
+SOLVE_DT = 0.05          # a target is re-solved this often (seconds)
+RESEND_S = 0.2           # ...and its next pose re-sent at least this often while it's unchanged
+ARRIVED_DEG = 1.0        # state.ik.arrived: every joint this close to the solution
+STILL_DEG = 0.2          # a settled target isn't re-solved until the arm moves more than this (reading noise is ~0.1°)
 IDS = model.JOINT_IDS
-COMMANDS = ("goal", "torque", "stop", "resume", "set_zero", "set_dir", "set_tool", "set_area",
+COMMANDS = ("goal", "target", "torque", "stop", "resume", "set_zero", "set_dir", "set_tool", "set_area",
             "set_stall_guard")
 
 
@@ -79,6 +92,13 @@ class IKLink:
         self._clients = 0
         self._thread = None
         self._pending_goal = None        # (angles, speed, acc, epoch)
+        self._target = None              # the active target: parse_target's dict + speed, acc, epoch
+        self._ik = None                  # the last solve for it (state.ik)
+        self._ik_q = None                # its solution (radians), where the next solve starts
+        self._last_next = None           # (pose queued for the servos, when)
+        self._solved = None              # (what was solved: target and settings, from where, the result)
+        self._solver = ik.Solver()
+        self._solve_thread = None
         self._pending_torque = None
         self._pending_zero = False
         self.epoch = 0                   # see the module docstring
@@ -121,6 +141,7 @@ class IKLink:
         with self._lock:
             self.stopped = True
             self._pending_goal = None
+            self._clear_target_locked()
             if fault:
                 self.fault = fault
             self._end_play_locked(fault or "Stopped.")
@@ -135,24 +156,34 @@ class IKLink:
             self.fault = None
             self._new_epoch_locked()
 
+    def solver_defaults(self):
+        """(calibration copy, joint limits in degrees or None) for a solve-only session (/ws/ik)."""
+        with self._lock:
+            return dict(self.calib, area=dict(self.calib["area"])), (
+                [list(l) for l in self._limits] if self._limits else None)
+
     def forget_goal(self):
         """Something other than this loop (a REST move, torque via REST) changed the servos' goals."""
         with self._lock:
             self._cmd = None
 
     def shutdown(self):
-        """End the bus loop (the app is closing)."""
+        """End the bus loop and the solver (the app is closing)."""
         with self._lock:
             self._quit = True
             self.player = None
-        t = self._thread
-        if t and t.is_alive() and t is not threading.current_thread():
-            t.join(timeout=2)
+        for t in (self._thread, self._solve_thread):
+            if t and t.is_alive() and t is not threading.current_thread():
+                t.join(timeout=2)
 
     def _new_epoch_locked(self):
         """The page must re-read the pose: goals computed before now are refused."""
         self.epoch += 1
         self._pending_goal = None
+        self._clear_target_locked()
+
+    def _clear_target_locked(self):
+        self._target = self._ik = self._ik_q = self._last_next = self._solved = None
 
     # -- playback --------------------------------------------------------------------
 
@@ -164,6 +195,7 @@ class IKLink:
             self.player = pb
             self.blocked = None
             self._pending_goal = None
+            self._clear_target_locked()
         self._ensure_thread()
 
     def stop_playback(self, message="Playback stopped."):
@@ -252,6 +284,7 @@ class IKLink:
             self._clients = max(0, self._clients - 1)
             if self._clients == 0:
                 self._pending_goal = None   # nobody is driving: servos just hold their last goal
+                self._clear_target_locked()
 
     def handle(self, msg):
         """Apply one message from a page. Returns an error message to send back, or None."""
@@ -271,24 +304,46 @@ class IKLink:
     def _on_resume(self, msg):
         self.resume()
 
+    def _motion_error(self, t, msg):
+        """What's wrong with a goal or target's speed, acc and epoch, or why it can't run now (lock held)."""
+        speed, acc, epoch = (msg.get(k) for k in ("speed", "acc", "epoch"))
+        if not _num(speed, *GOAL_SPEED):
+            return _error("bad_request", t, f"speed must be {GOAL_SPEED[0]}-{GOAL_SPEED[1]} deg/s.")
+        if not _num(acc, *GOAL_ACC):
+            return _error("bad_request", t, f"acc must be {GOAL_ACC[0]}-{GOAL_ACC[1]} deg/s².")
+        if not _int(epoch, 0, 2 ** 53):
+            return _error("bad_request", t, "epoch must be the epoch from the latest state.")
+        if self.stopped:
+            return _error("refused", t, "The arm is stopped. Resume first.")
+        if self.player is not None:
+            return _error("refused", t, "A playback is running.")
+        if epoch != self.epoch:
+            return _error("refused", t, f"Stale {t}: re-read the pose (epoch is now {self.epoch}).")
+        return None
+
     def _on_goal(self, msg):
-        a, speed, acc, epoch = (msg.get(k) for k in ("angles", "speed", "acc", "epoch"))
+        a = msg.get("angles")
         if not (isinstance(a, list) and len(a) == 6 and all(_num(v, -360, 360) for v in a)):
             return _error("bad_request", "goal", "angles must be 6 joint angles in degrees.")
-        if not _num(speed, *GOAL_SPEED):
-            return _error("bad_request", "goal", f"speed must be {GOAL_SPEED[0]}-{GOAL_SPEED[1]} deg/s.")
-        if not _num(acc, *GOAL_ACC):
-            return _error("bad_request", "goal", f"acc must be {GOAL_ACC[0]}-{GOAL_ACC[1]} deg/s².")
-        if not _int(epoch, 0, 2 ** 53):
-            return _error("bad_request", "goal", "epoch must be the epoch from the latest state.")
         with self._lock:
-            if self.stopped:
-                return _error("refused", "goal", "The arm is stopped. Resume first.")
-            if self.player is not None:
-                return _error("refused", "goal", "A playback is running.")
-            if epoch != self.epoch:
-                return _error("refused", "goal", f"Stale goal: re-read the pose (epoch is now {self.epoch}).")
-            self._pending_goal = ([float(v) for v in a], float(speed), float(acc), epoch)
+            err = self._motion_error("goal", msg)
+            if err:
+                return err
+            self._clear_target_locked()
+            self._pending_goal = ([float(v) for v in a], float(msg["speed"]), float(msg["acc"]), msg["epoch"])
+
+    def _on_target(self, msg):
+        tgt, why = ik.parse_target(msg)
+        if why:
+            return _error("bad_request", "target", why)
+        with self._lock:
+            err = self._motion_error("target", msg)
+            if err:
+                return err
+            if self._target is None:     # a new stream of targets: solve from where the arm is
+                self._ik_q = self._last_next = None
+            self._target = dict(tgt, speed=float(msg["speed"]), acc=float(msg["acc"]), epoch=msg["epoch"])
+        self._ensure_solve_thread()
 
     def _on_torque(self, msg):
         on = msg.get("on")
@@ -298,6 +353,7 @@ class IKLink:
         with self._lock:
             self._pending_torque = on
             self._pending_goal = None
+            self._clear_target_locked()
 
     def _on_set_zero(self, msg):
         self._stop_play_for("set_zero")
@@ -412,7 +468,77 @@ class IKLink:
             "play_end": dict(self.play_end),
             "epoch": self.epoch,
             "clients": self._clients,
+            "ik": dict(self._ik) if self._ik else None,
         }
+
+    # -- target: solving on its own thread (a rescue can take a while; the bus loop mustn't wait) -----------
+
+    def _ensure_solve_thread(self):
+        with self._lock:
+            if self._solve_thread is None or not self._solve_thread.is_alive():
+                self._solve_thread = threading.Thread(target=self._solve_loop, daemon=True)
+                self._solve_thread.start()
+
+    def _solve_loop(self):
+        while True:
+            t0 = time.monotonic()
+            with self._lock:
+                if self._quit or self._target is None:
+                    self._solve_thread = None
+                    return
+            try:
+                self._solve_once(t0)
+            except Exception as e:
+                self._fail(e)
+            time.sleep(max(0.005, SOLVE_DT - (time.monotonic() - t0)))
+
+    def _solve_once(self, now):
+        """Solve for the target from where the arm is, and queue the next pose on the route to it as a goal
+        (the bus loop sends it through _send_goal, with every guard, like any other goal)."""
+        with self._lock:
+            tgt = self._target
+            if tgt is None:
+                return
+            cur = model.pose_from_ticks(self.calib, self.ticks)
+            q = self._ik_q
+            lim = None
+            if self._limits:
+                lim = [(lo * ik.DEG, hi * ik.DEG) if lo < hi else u for (lo, hi), u in zip(self._limits, ik.URDF_LIM)]
+            settings = (self.tool_m, self.tool_r, dict(self.area), lim)
+        if any(a is None for a in cur):
+            return
+        what = (repr((tgt["xyz"], tgt["angles"], tgt["down"])), repr(settings))
+        done = self._solved
+        hold = solved = None
+        if (done and done[0] == what and done[2]["settled"]
+                and max(abs(a - b) for a, b in zip(cur, done[1])) <= STILL_DEG):
+            res = dict(done[2])   # nothing has changed since a settled answer: solving again would repeat it
+        else:
+            self._solver.configure(*settings)
+            frm = [a * ik.DEG for a in cur]
+            q, res = self._solver.step(q, frm, now, xyz=tgt["xyz"], down=tgt["down"], angles=tgt["angles"])
+            solved = (what, cur, res)
+            last = self._last_next
+            if res["next"] is None and last and self._solver.path(frm, [a * ik.DEG for a in last[0]], every=ik.DEG):
+                hold = cur    # no route now, and the rest of the servos' current move isn't clear: stop where they are
+        res["arrived"] = (res["next"] is not None and not res["detour"]
+                          and all(abs(a - b) <= ARRIVED_DEG for a, b in zip(cur, res["angles"])))
+        with self._lock:
+            cur_t = self._target
+            if cur_t is None or cur_t["epoch"] != tgt["epoch"]:
+                return    # ended while solving
+            self._ik_q, self._ik = q, res
+            if solved:
+                self._solved = solved
+            if self.stopped or self.player is not None:
+                return
+            nxt = hold or res["next"]
+            if nxt is None:
+                return
+            last = self._last_next
+            if last is None or max(abs(a - b) for a, b in zip(nxt, last[0])) > 0.01 or now - last[1] >= RESEND_S:
+                self._pending_goal = (list(nxt), cur_t["speed"], cur_t["acc"], cur_t["epoch"])
+                self._last_next = (list(nxt), now)
 
     # -- bus loop --------------------------------------------------------------------
 

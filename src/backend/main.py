@@ -6,6 +6,7 @@ import os
 import secrets
 import sys
 import time
+import threading
 import traceback
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
@@ -25,9 +26,10 @@ from pydantic import BaseModel, Field
 
 import arm_model as model
 import library
+import ik
 import player
 from mycobot280 import MyCobot280, SPEED_MIN, SPEED_MAX, ACCEL_MIN, ACCEL_MAX
-from ik_link import IKLink
+from ik_link import IKLink, PROTOCOL
 
 SERIAL_PORT = os.environ.get("MYCOBOT_PORT", "/dev/ttyAMA0")
 SERIAL_BAUD = int(os.environ.get("MYCOBOT_BAUD", "1000000"))
@@ -634,7 +636,7 @@ app.mount("/sim", _SimFiles(directory=os.path.join(os.path.dirname(__file__), "s
 # ---------------------------------------------------------------------------
 
 # Close codes: 4401 wrong password, 4429 locked out, 4503 no arm, 1011 backend error.
-# Protocol: see the docstring at the top of ik_link.py.
+# Protocol: see the docstring at the top of ik_link.py, and WEBSOCKET.md.
 
 def _reject_constant(name):
     raise ValueError(f"{name} is not valid JSON")
@@ -672,13 +674,13 @@ def _handle(msg):
         return {"type": "error", "code": "internal", "ref": msg.get("type"), "message": f"{type(e).__name__}: {e}"}
 
 
-@app.websocket("/ws/arm")
-async def ws_arm(ws: WebSocket):
+async def _ws_login(ws: WebSocket) -> bool:
+    """Accept the socket and check the auth message (the first one, within 5 s). False if refused (closed)."""
     await ws.accept()
     ip = ws.client.host if ws.client else "?"
     if _locked_out(ip):
         await _ws_refuse(ws, "locked", "Too many wrong passwords. Wait a minute and try again.", 4429)
-        return
+        return False
     try:
         first = await asyncio.wait_for(_receive_json(ws), timeout=5)
     except (asyncio.TimeoutError, WebSocketDisconnect):
@@ -687,6 +689,13 @@ async def ws_arm(ws: WebSocket):
             and _password_ok(first["password"])):
         await _record_failure(ip)
         await _ws_refuse(ws, "auth", "Wrong or missing password.", 4401)
+        return False
+    return True
+
+
+@app.websocket("/ws/arm")
+async def ws_arm(ws: WebSocket):
+    if not await _ws_login(ws):
         return
     if link is None:
         await _ws_refuse(ws, "no_arm", f"Robot not connected on {SERIAL_PORT}", 4503)
@@ -730,6 +739,42 @@ async def ws_arm(ws: WebSocket):
         pass
     finally:
         link.remove_client()
+
+
+# ---------------------------------------------------------------------------
+# Solve-only IK (no arm needed): the page uses it when it isn't driving the arm
+# ---------------------------------------------------------------------------
+# Every message gets exactly one reply, in order: settings -> settings, solve -> ik (or error).
+# Each connection has its own solver (ik.Session). Solving is CPU work in a thread, at most
+# IK_SLOTS at a time across all connections, so the bus loop keeps getting a look in.
+
+IK_SLOTS = threading.BoundedSemaphore(2)
+
+
+def _ik_handle(session, msg):
+    with IK_SLOTS:
+        try:
+            return session.handle(msg, time.monotonic())
+        except Exception as e:
+            traceback.print_exc()
+            return {"type": "error", "code": "internal", "ref": msg.get("type") if msg else None,
+                    "message": f"{type(e).__name__}: {e}"}
+
+
+@app.websocket("/ws/ik")
+async def ws_ik(ws: WebSocket):
+    if not await _ws_login(ws):
+        return
+    calib, limits = link.solver_defaults() if link else (None, None)
+    session = ik.Session(calib, limits)
+    try:
+        await ws.send_json({"type": "hello", "protocol": PROTOCOL})
+        await ws.send_json(session.settings_msg())
+        while True:
+            reply = await asyncio.to_thread(_ik_handle, session, await _receive_json(ws))
+            await ws.send_json(reply)
+    except (WebSocketDisconnect, RuntimeError):
+        pass
 
 
 if __name__ == "__main__":

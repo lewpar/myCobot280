@@ -103,33 +103,55 @@ def _rotz(q):
 _FIXED = [_origin(x, r) for x, r in URDF_JOINTS]
 
 
+# each fixed joint origin as a flat 3x4 (rotation rows, then the translation column)
+_FIXED34 = [(f[0][0], f[0][1], f[0][2], f[0][3], f[1][0], f[1][1], f[1][2], f[1][3], f[2][0], f[2][1], f[2][2], f[2][3])
+            for f in _FIXED]
+
+
+def chain(q_rad):
+    """Forward kinematics, written out for speed (the IK solver calls it thousands of times a second).
+    Returns (joint origins, joint axes, flange position, flange normal); joint i turns about axes[i]."""
+    a, b, c, x, d, e, f, y, g, h, i, z = 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0
+    pos, axes = [], []
+    for (m00, m01, m02, m03, m10, m11, m12, m13, m20, m21, m22, m23), q in zip(_FIXED34, q_rad):
+        # T = T * fixed
+        a, b, c, x = (a * m00 + b * m10 + c * m20, a * m01 + b * m11 + c * m21, a * m02 + b * m12 + c * m22,
+                      a * m03 + b * m13 + c * m23 + x)
+        d, e, f, y = (d * m00 + e * m10 + f * m20, d * m01 + e * m11 + f * m21, d * m02 + e * m12 + f * m22,
+                      d * m03 + e * m13 + f * m23 + y)
+        g, h, i, z = (g * m00 + h * m10 + i * m20, g * m01 + h * m11 + i * m21, g * m02 + h * m12 + i * m22,
+                      g * m03 + h * m13 + i * m23 + z)
+        pos.append((x, y, z))
+        axes.append((c, f, i))
+        # T = T * rotz(q): only the first two columns change
+        cq, sq = math.cos(q), math.sin(q)
+        a, b = a * cq + b * sq, b * cq - a * sq
+        d, e = d * cq + e * sq, e * cq - d * sq
+        g, h = g * cq + h * sq, h * cq - g * sq
+    return pos, axes, (x, y, z), (c, f, i)
+
+
 def fk(q_deg, tool_m=0.0):
     """Joint origins, flange centre, tool tip and flange normal in the base frame."""
-    t = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]
-    joints = []
-    for fixed, q in zip(_FIXED, q_deg):
-        t = _mul(t, fixed)
-        joints.append((t[0][3], t[1][3], t[2][3]))
-        t = _mul(t, _rotz(math.radians(q)))
-    flange = (t[0][3], t[1][3], t[2][3])
-    normal = (t[0][2], t[1][2], t[2][2])
-    tcp = tuple(f + n * tool_m for f, n in zip(flange, normal))
+    joints, _, flange, normal = chain([math.radians(q) for q in q_deg])
+    tcp = (flange[0] + normal[0] * tool_m, flange[1] + normal[1] * tool_m, flange[2] + normal[2] * tool_m)
     return {"joints": joints, "flange": flange, "tcp": tcp, "normal": normal}
 
 
 # ---- collision checks ----------------------------------------------------------------------------
 
 def _mid(a, b, f=0.5):
-    return tuple(x + (y - x) * f for x, y in zip(a, b))
+    return (a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f)
 
 
 def _seg_dist(p, a, b):
-    ab = [y - x for x, y in zip(a, b)]
-    ap = [y - x for x, y in zip(a, p)]
-    L = sum(v * v for v in ab)
-    f = 0.0 if L == 0 else max(0.0, min(1.0, sum(u * v for u, v in zip(ap, ab)) / L))
-    c = [x + v * f for x, v in zip(a, ab)]
-    return math.dist(p, c)
+    """Distance from point p to the segment a-b. Written out (no lists or generators): check_pose calls it
+    a dozen times a pose, and the IK solver calls check_pose at every step."""
+    ax, ay, az = a
+    dx, dy, dz = b[0] - ax, b[1] - ay, b[2] - az
+    L = dx * dx + dy * dy + dz * dz
+    f = 0.0 if L == 0 else max(0.0, min(1.0, ((p[0] - ax) * dx + (p[1] - ay) * dy + (p[2] - az) * dz) / L))
+    return math.dist(p, (ax + dx * f, ay + dy * f, az + dz * f))
 
 
 def clean_area(a):

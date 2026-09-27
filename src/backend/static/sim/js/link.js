@@ -1,10 +1,13 @@
-/* Real arm link: the WebSocket to the backend's /ws/arm (protocol 2, see ik_link.py), plus the controls
-   that act on the arm through it: Stop/Resume, hand-guide mode (top bar) and calibration (Setup tab).
-   The backend sends hello, then config (now and on every change) and state about 10 times a second; the
-   page streams qCmd as goals, carrying the epoch of the state it last re-read the pose from. */
+/* Real arm link: the WebSocket to the backend's /ws/arm (protocol 3, see ik_link.py and WEBSOCKET.md), plus
+   the controls that act on the arm through it: Stop/Resume, hand-guide mode (top bar) and calibration (Setup
+   tab). The backend sends hello, then config (now and on every change) and state about 10 times a second.
+   While driving, the page sends the Move target as `target` (the tool-tip point, or the joint pose when qIK
+   was set directly), carrying the epoch of the state it last re-read the pose from; the backend solves it,
+   plans the route and moves the arm, and each state's `ik` goes to solve.js. */
 import {DEG,JOINTS,N,LIM,URDF_LIM,ATTACHMENTS,clampJ} from './kinematics.js';
 import {area} from './collision.js';
-import {S,qIK,qCmd,servo,setDemo,targetFromPose,haveRealNow} from './state.js';
+import {S,qIK,qCmd,servo,target,setDemo,targetFromPose,haveRealNow} from './state.js';
+import {setArmIk,dropIk} from './solve.js';
 import {attachment,setAttachment,setArea} from './settings.js';
 import {spd,acc,poseRefresh} from './motion.js';
 import {endPlay,playNote,playUI,libRefresh} from './play.js';
@@ -12,20 +15,29 @@ import {storePw,forgetPw} from './api.js';
 import {showConn} from './chrome.js';
 import {$} from './util.js';
 
-const WS_PROTOCOL=2,WS_FATAL=['auth','locked','no_arm'];   // errors with these codes end the link
+const WS_PROTOCOL=3,WS_FATAL=['auth','locked','no_arm'];   // errors with these codes end the link
 let wsTimer=null,lastSent='',armTorque=null,calibKey='',resync=false,armEpoch=null,armClients=1,calibMsg=false;
 let dirBoxes=[];
 
 export function send(o){if(S.ws&&S.ws.readyState===1)S.ws.send(JSON.stringify(o));}
 export const linkLive=()=>!!(S.ws&&S.ws.readyState===1&&haveRealNow());
 function wsNote(t){$('#wsNote').textContent=t;}
-const anglesDeg=()=>qCmd.map(a=>+(a/DEG).toFixed(2));
+/* The arm solves and moves: connected, every servo reading back, "drive the servos" on, and nothing else in
+   charge (hand-guide, a backend playback, Stop, a resync, local playback). */
+export const armDriving=()=>!!(S.ws&&S.ws.readyState===1&&S.measured&&S.measured.every(v=>v!==null)&&$('#optSend').checked&&
+  !S.limp&&!resync&&!S.stopped&&!S.remotePlay&&!S.remotePending&&!S.play);
+function targetMsg(){ // the Move target: the point to solve for, or the joint pose itself when qIK was set directly
+  const m={type:'target',speed:+spd.value,acc:+acc.value,epoch:armEpoch};
+  if(S.homeLock)m.angles=qIK.map(a=>+(a/DEG).toFixed(3));
+  else{m.xyz=[target.x,target.y,target.z].map(v=>+(v*1000).toFixed(1));m.down=$('#optDown').checked;}
+  return JSON.stringify(m);
+}
 function libAutoload(){if($('#wsPw').value){libRefresh();poseRefresh();}}
 
 function adoptMeasured(){ // start the sim from the arm's real pose so the next command doesn't swing it
   if(S.play)endPlay('Playback stopped: re-read the arm\'s pose.');
   for(let i=0;i<N;i++){qIK[i]=clampJ(i,S.measured[i]);qCmd[i]=qIK[i];servo[i].pos=S.measured[i]*DEG;servo[i].vel=0;}
-  targetFromPose();S.homeLock=true;setDemo(false);lastSent='';
+  targetFromPose();S.homeLock=true;setDemo(false);lastSent='';dropIk();
 }
 export function setLimp(on){
   S.limp=on;$('#btnLimp').setAttribute('aria-pressed',on);$('#recLimp').setAttribute('aria-pressed',on);
@@ -33,7 +45,7 @@ export function setLimp(on){
   if(on){setDemo(false);send({type:'torque',on:false});wsNote('Torque is off. Move the arm by hand and the sim follows it.');}
   else{ // hold where the arm is now: adopt the measured pose as the new goal before torque comes back
     if(S.measured&&S.measured.every(v=>v!==null)){for(let i=0;i<N;i++){qIK[i]=qCmd[i]=S.measured[i]*DEG;servo[i].pos=qIK[i];servo[i].vel=0;}targetFromPose();}
-    S.homeLock=true;send({type:'torque',on:true});wsNote('Torque is on. The arm holds its pose until you set a new target.');}
+    S.homeLock=true;lastSent='';send({type:'torque',on:true});wsNote('Torque is on. The arm holds its pose until you set a new target.');}
 }
 export function setStopped(on,fromArm){ // fromArm: the backend reported it, so don't send it back
   if(on===S.stopped)return;
@@ -67,9 +79,9 @@ function connect(){
   sock.onopen=()=>{opened=true;lastSent='';$('#btnLimp').disabled=false;$('#recLimp').disabled=false;
     sock.send(JSON.stringify({type:'auth',password:pw}));storePw(pw);
     wsNote('Connected. Waiting for servo readings before sending anything.');libAutoload();
-    wsTimer=setInterval(()=>{
-      if(sock.readyState!==1||S.limp||resync||S.stopped||S.remotePlay||S.remotePending||!$('#optSend').checked||!S.measured)return;
-      const msg=JSON.stringify({type:'goal',angles:anglesDeg(),speed:+spd.value,acc:+acc.value,epoch:armEpoch});
+    wsTimer=setInterval(()=>{   // a target stays set on the arm, so it's only sent when it changes
+      if(sock!==S.ws||!armDriving()){lastSent='';return;}
+      const msg=targetMsg();
       if(msg!==lastSent){sock.send(msg);lastSent=msg;}
     },100);};
   // settings: sent once after hello, then whenever they change
@@ -98,7 +110,8 @@ function connect(){
     let m;try{m=JSON.parse(ev.data);}catch(_){return;}
     if(m.type==='error'){
       if(WS_FATAL.includes(m.code)){if(m.code==='auth')forgetPw();wsStop(m.code==='auth'?'The backend rejected that password.':(m.message||'The backend reported an error.'));return;}
-      if(!(m.code==='refused'&&m.ref==='goal'))wsNote(m.message||'The arm refused that.');   // a refused goal: the state says why
+      if(m.code==='refused'&&(m.ref==='goal'||m.ref==='target'))lastSent='';   // the state says why; try again
+      else wsNote(m.message||'The arm refused that.');
       return;}
     if(m.type==='hello'){if(m.protocol===WS_PROTOCOL)greeted=true;
       else wsStop(`The backend speaks protocol ${m.protocol} and this page ${WS_PROTOCOL}. Open the page from the backend (/sim) so they match.`);return;}
@@ -109,6 +122,7 @@ function connect(){
     S.measured=m.angles.slice(0,N).map(v=>typeof v==='number'?v:null);S.measuredAt=performance.now();armTorque=m.torque;
     const complete=S.measured.every(v=>v!==null);
     S.remoteBlocked=m.blocked||null;
+    if(armDriving()){setArmIk(m.ik||null);if(!m.ik)lastSent='';}   // no target on the arm (it ended one): send ours again
     S.armFault=m.fault||null;
     { // playback running on the backend: the page follows the arm and sends nothing
       const was=S.remotePlay;S.remotePlay=m.playback||null;

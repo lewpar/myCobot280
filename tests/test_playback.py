@@ -130,3 +130,18 @@ def test_ws_goals_ignored_during_playback(client):
         assert "playback" in a.error()["message"]
         assert joint_deg(client.bus, 0) > -2
         client.post("/api/playback/stop", headers=H)
+
+
+def test_targets_refused_during_playback(client):
+    rid = save(client, "Hold", frames_line(0, 0, 5, 3))
+    with ArmWS(client) as a:
+        a.ready()
+        a.target(xyz=[180, 0, 120])
+        a.state(lambda m: m["ik"])
+        play(client, recording=rid)
+        m = a.state(lambda m: m["playback"])
+        assert m["ik"] is None                         # the playback took over
+        a.target(xyz=[150, 50, 100], epoch=m["epoch"])
+        e = a.error()
+        assert (e["code"], e["ref"]) == ("refused", "target") and "playback" in e["message"]
+        client.post("/api/playback/stop", headers=H)

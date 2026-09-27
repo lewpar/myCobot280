@@ -246,13 +246,21 @@ arm link doesn't have to be connected. Brightness is capped at half the NeoPixel
 
 ## IK simulator and live link
 
-The backend serves a 3D inverse-kinematics simulator at `http://<pi>:8000/sim` and a WebSocket at
-`/ws/arm` that streams joint angles to the servos (one sync-write packet per update) and measured
-positions back (~10 Hz).
+The backend serves a 3D inverse-kinematics simulator at `http://<pi>:8000/sim` and two WebSockets
+(protocol reference: [WEBSOCKET.md](WEBSOCKET.md)):
+
+- `/ws/arm` drives the arm. Send it a `target` (a point for the tool tip, in mm) and the backend solves the
+  inverse kinematics, plans a collision-free route and moves the arm there; or stream joint angles as `goal`s.
+  It sends the measured pose back about 10 times a second.
+- `/ws/ik` only solves (it doesn't need the arm): send a point and where the servos are, get back the joint
+  angles and the next pose on a clear route. The page uses it when it isn't driving the arm.
+
+The IK lives on the backend only (`src/backend/ik.py`), so any client gets the same solver as the page.
 
 The page is plain HTML, CSS and native ES modules in `src/backend/static/sim/` (three.js r147 from jsDelivr through
 an import map). There is no build step: edit a file and reload. Browsers don't load modules from `file://`, so
-open it through the backend (or any static server, e.g. `python3 -m http.server` in that folder, for offline use).
+open it through the backend. It needs the backend (and the password) to solve targets, even when no arm is
+connected.
 
 1. `./run.sh backend`, open `http://<pi>:8000/sim`, click the connection chip in the top bar, enter the password and press **Connect**.
    The chip shows the link state; **Stop** (or Esc) is always in the top-right corner.

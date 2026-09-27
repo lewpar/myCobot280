@@ -7,10 +7,10 @@ const SIM = path.join(__dirname, '..', '..', 'src', 'backend', 'static', 'sim');
 const JSDIR = path.join(SIM, 'js');
 const NODE_MODULES = path.join(__dirname, 'node_modules');
 
-// Kinematics, IK and collision plus the Player class.
+// Kinematics and collision plus the Player class.
 function pureBlocks() {
   const code = esbuild.buildSync({
-    stdin: { contents: ['kinematics', 'collision', 'ik', 'player'].map(m => `export * from './${m}.js';`).join('\n'),
+    stdin: { contents: ['kinematics', 'collision', 'player'].map(m => `export * from './${m}.js';`).join('\n'),
              resolveDir: JSDIR, sourcefile: 'pure.js' },
     bundle: true, format: 'cjs', platform: 'node', write: false, nodePaths: [NODE_MODULES], logLevel: 'silent',
   }).outputFiles[0].text;
