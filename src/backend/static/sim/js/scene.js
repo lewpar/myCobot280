@@ -4,7 +4,7 @@
 import * as THREE from 'three';
 import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
 import {TransformControls} from 'three/addons/controls/TransformControls.js';
-import {DEG,N,FIX,toolLen,toolR} from './kinematics.js';
+import {DEG,N,FIX,toolLen,toolR,makeFK,fk} from './kinematics.js';
 import {COLLISION,area} from './collision.js';
 import {$,cssVar,V} from './util.js';
 
@@ -248,6 +248,169 @@ function updateJointFx(F,dt){ // F: fk output of the pose on screen
   fxMat.opacity=0.45+0.45*pulse;halo.scale.setScalar(1+0.08*pulse);
   arrowG.visible=!!fxSpec.arrow;fxSpin=(fxSpin+dt*1.4)%(Math.PI*2);arrowG.rotation.z=fxSpin*0.25;
 }
+/* ---------- Motion Studio sandbox: the same scene from another camera, into another canvas, with the arm in
+   the sandbox's own pose and none of the main view's overlays (target, ghost, real arm, trail, path). Only
+   one of the two views is drawn each frame. ---------- */
+const sandPathGeo=new THREE.BufferGeometry();
+sandPathGeo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(PATH_MAX*3),3));
+const sandPath=new THREE.Line(sandPathGeo,new THREE.LineBasicMaterial({color:0x8b5cf6,transparent:true,opacity:0.9,depthTest:false}));
+sandPath.renderOrder=4;sandPath.frustumCulled=false;sandPath.visible=false;root.add(sandPath);
+const sandMark=new THREE.Mesh(new THREE.SphereGeometry(0.008,20,14),new THREE.MeshStandardMaterial({color:0xe79a00,emissive:0xe79a00,emissiveIntensity:0.6}));
+sandMark.visible=false;root.add(sandMark);
+let sand=null,sandPathOn=false,sandMarkAt=null;
+function makeSandbox(el){
+  const r=new THREE.WebGLRenderer({antialias:true});
+  r.setPixelRatio(Math.min(devicePixelRatio,2));r.shadowMap.enabled=true;r.shadowMap.type=THREE.PCFSoftShadowMap;r.outputEncoding=THREE.sRGBEncoding;
+  el.appendChild(r.domElement);
+  const cam=new THREE.PerspectiveCamera(38,1,0.005,20);cam.position.set(0.55,0.42,0.62);
+  const orb=new OrbitControls(cam,r.domElement);orb.target.set(0,0.18,0);orb.enableDamping=true;orb.minDistance=0.2;orb.maxDistance=3;orb.maxPolarAngle=Math.PI*0.495;
+  const fit=()=>{const w=Math.max(1,el.clientWidth),h=Math.max(1,el.clientHeight);r.setSize(w,h);cam.aspect=w/h;cam.updateProjectionMatrix();};
+  if(window.ResizeObserver)new ResizeObserver(fit).observe(el);else window.addEventListener('resize',fit);
+  // arrows on the selected point (a Move to point block): drag them to move it; onMove/onDrag are the Studio's
+  const giz=new TransformControls(cam,r.domElement);giz.setSize(0.7);giz.setSpace('local');giz.enabled=false;scene.add(giz);
+  fit();sand={renderer:r,camera:cam,orbit:orb,fit,gizmo:giz,onMove:null,onDrag:null,dragging:false};
+  giz.addEventListener('dragging-changed',e=>{orb.enabled=!e.value;sand.dragging=e.value;if(sand.onDrag)sand.onDrag(e.value);});
+  giz.addEventListener('objectChange',()=>{sandMark.position.z=Math.max(0.003,sandMark.position.z);   // not below the table
+    if(sand.onMove)sand.onMove(sandMark.position.clone());});
+  return sand;
+}
+function setSandPath(points){ // base-frame Vector3s, or null
+  sandPathOn=!!(points&&points.length>1);if(!sandPathOn)return;
+  const a=sandPathGeo.attributes.position.array,n=Math.min(points.length,PATH_MAX);
+  for(let k=0;k<n;k++)a.set([points[k].x,points[k].y,points[k].z],k*3);
+  sandPathGeo.setDrawRange(0,n);sandPathGeo.attributes.position.needsUpdate=true;
+}
+function setSandMark(p){sandMarkAt=p?p.clone():null;}
+const sandGizmo=()=>sand&&sand.gizmo;   // (for tests)
+/* rings round each joint, to turn it by dragging in the sandbox (a selected pose block); the Studio picks one
+   with pickSandJoint and marks the one under the pointer or being dragged with setSandJoints */
+const ringMats=[],rings=[],ringF=makeFK();
+for(let j=0;j<N;j++){
+  const m=new THREE.MeshBasicMaterial({color:0x3b82c4,transparent:true,opacity:0.55,depthTest:false});
+  const r=new THREE.Mesh(new THREE.TorusGeometry(j===0?0.05:0.04,0.0045,10,56),m);
+  r.renderOrder=8;r.visible=false;r.userData.joint=j;root.add(r);rings.push(r);ringMats.push(m);
+}
+let ringsOn=false,ringHot=-1;
+const _zA=V(0,0,1);
+function setSandJoints(on,hot=-1){ringsOn=on;ringHot=hot;}
+function placeRings(q){fk(q,ringF);rings.forEach((r,j)=>{r.position.copy(ringF.pos[j]);r.quaternion.setFromUnitVectors(_zA,ringF.axis[j]);r.updateMatrixWorld();});}
+/* which ring (joint number) is under the sandbox canvas point (clientX, clientY), or -1; with the joint's centre
+   and axis, for turning it: {joint, centre, axis} (base frame) */
+const _ray=new THREE.Raycaster(),_ndc=new THREE.Vector2();
+function pickSandJoint(x,y,q){
+  if(!sand||!ringsOn)return null;
+  placeRings(q);rings.forEach(r=>{r.visible=true;});
+  const rc=sand.renderer.domElement.getBoundingClientRect();
+  _ndc.set((x-rc.left)/rc.width*2-1,-(y-rc.top)/rc.height*2+1);_ray.setFromCamera(_ndc,sand.camera);
+  const hit=_ray.intersectObjects(rings,false)[0];rings.forEach(r=>{r.visible=false;});
+  if(!hit)return null;
+  const j=hit.object.userData.joint;
+  return {joint:j,centre:ringF.pos[j].clone(),axis:ringF.axis[j].clone()};
+}
+/* a base-frame point on the sandbox canvas, in client pixels (for measuring a drag round a joint) */
+function sandToScreen(p){
+  const v=p.clone().applyMatrix4(root.matrixWorld).project(sand.camera),rc=sand.renderer.domElement.getBoundingClientRect();
+  return {x:rc.left+(v.x+1)/2*rc.width,y:rc.top+(1-v.y)/2*rc.height};
+}
+const sandCamPos=()=>{const p=sand.camera.position.clone();return root.worldToLocal(p);};   // the camera, base frame
+const MAIN_ONLY=()=>[targetObj,dropLine,floorRing,ghost,ghostDots,realLine,realDots,trail,pathLine,gizmo,fxG];
+function renderSandbox(q,led){ // q: radians; led: [r,g,b] for the ATOM while previewing, or null
+  if(!sand)return;
+  const hidden=MAIN_ONLY().map(o=>[o,o.visible]),rot=rotGroups.map(g=>g.rotation.z);
+  hidden.forEach(([o])=>{o.visible=false;});
+  rotGroups.forEach((g,i)=>{g.rotation.z=q[i];});
+  if(ringsOn){placeRings(q);rings.forEach((r,j)=>{r.visible=true;ringMats[j].color.set(j===ringHot?0xe79a00:0x3b82c4);ringMats[j].opacity=j===ringHot?0.95:0.5;});}
+  sandPath.visible=sandPathOn;sandMark.visible=!!sandMarkAt;
+  if(sandMarkAt&&!sand.dragging)sandMark.position.copy(sandMarkAt);   // (while dragging, the arrows move it)
+  const giz=sand.gizmo;
+  if(sandMarkAt){if(giz.object!==sandMark)giz.attach(sandMark);giz.enabled=true;}
+  else if(giz.object){giz.detach();giz.enabled=false;}
+  giz.visible=!!sandMarkAt;
+  const dots=led?atomDotMats.map(m=>[m,m.color.clone(),m.emissive.clone(),m.emissiveIntensity]):null;
+  if(led){const [r,g,b]=led,on=r+g+b>0;atomDotMats.forEach(m=>{m.color.setRGB(on?r/255*0.4:0.05,on?g/255*0.4:0.05,on?b/255*0.4:0.05);
+    m.emissive.setRGB(r/255,g/255,b/255);m.emissiveIntensity=on?1.2:0;});}
+  sand.orbit.update();sand.renderer.render(scene,sand.camera);
+  if(dots)dots.forEach(([m,c,e,i])=>{m.color.copy(c);m.emissive.copy(e);m.emissiveIntensity=i;});
+  sandPath.visible=sandMark.visible=false;giz.visible=false;rings.forEach(r=>{r.visible=false;});   // (none of it in the main view)
+  rotGroups.forEach((g,i)=>{g.rotation.z=rot[i];});hidden.forEach(([o,v])=>{o.visible=v;});
+}
+
+/* ---------- Obstacles (the Workspace view): drawn in every view; the Workspace edits them ---------- */
+const obstG=new THREE.Group();root.add(obstG);
+const OGEO={box:new THREE.BoxGeometry(1,1,1),cylinder:new THREE.CylinderGeometry(0.5,0.5,1,48).rotateX(Math.PI/2),sphere:new THREE.SphereGeometry(0.5,40,24)};
+const OEDGE={box:new THREE.EdgesGeometry(OGEO.box),cylinder:new THREE.EdgesGeometry(OGEO.cylinder,30),sphere:null};
+const obstMeshes=new Map();   // obstacle id -> mesh
+/* make the meshes match the obstacles (base frame, mm and degrees); sel: the selected one's id; hits: ids the
+   arm touches, drawn red */
+function setObstacleMeshes(obs,sel=null,hits=new Set()){
+  const keep=new Set(obs.map(o=>o.id));
+  for(const [id,m] of obstMeshes)if(!keep.has(id)){obstG.remove(m);obstMeshes.delete(id);}
+  for(const o of obs){
+    let m=obstMeshes.get(o.id);
+    if(!m||m.userData.shape!==o.shape){
+      if(m)obstG.remove(m);
+      m=new THREE.Mesh(OGEO[o.shape],new THREE.MeshStandardMaterial({roughness:0.55,metalness:0.05,transparent:true,opacity:0.8}));
+      m.castShadow=m.receiveShadow=true;m.userData={id:o.id,shape:o.shape};
+      if(OEDGE[o.shape]){const e=new THREE.LineSegments(OEDGE[o.shape],new THREE.LineBasicMaterial({color:0x000000,transparent:true,opacity:0.25}));m.add(e);}
+      obstG.add(m);obstMeshes.set(o.id,m);
+    }
+    m.position.set(o.pos[0]/1000,o.pos[1]/1000,o.pos[2]/1000);
+    m.rotation.set(o.rot[0]*DEG,o.rot[1]*DEG,o.rot[2]*DEG);   // Euler XYZ, as the collision check
+    m.scale.set(o.size[0]/1000,(o.shape==='box'?o.size[1]:o.size[0])/1000,(o.shape==='sphere'?o.size[0]:o.size[2])/1000);
+    const hit=hits.has(o.id),on=o.id===sel;
+    m.material.color.set(o.color);m.material.emissive.set(hit?0xc8402c:on?0xe79a00:0x000000);m.material.emissiveIntensity=hit?0.55:on?0.25:0;
+  }
+}
+const obstacleMesh=id=>obstMeshes.get(id)||null;
+
+/* the Workspace's own view: another canvas and camera on the same scene, the arm in a reference pose, a finer
+   grid (1 cm), and move/rotate/size handles on the selected obstacle */
+const workGrid=new THREE.GridHelper(1.2,120,0x9aa3ab,0xc9d0d6);workGrid.position.y=0.0006;workGrid.material.transparent=true;workGrid.material.opacity=0.5;
+workGrid.visible=false;scene.add(workGrid);
+let work=null;
+function makeWorkView(el){
+  const r=new THREE.WebGLRenderer({antialias:true});
+  r.setPixelRatio(Math.min(devicePixelRatio,2));r.shadowMap.enabled=true;r.shadowMap.type=THREE.PCFSoftShadowMap;r.outputEncoding=THREE.sRGBEncoding;
+  el.appendChild(r.domElement);
+  const cam=new THREE.PerspectiveCamera(38,1,0.005,20);cam.position.set(0.75,0.65,0.8);
+  const orb=new OrbitControls(cam,r.domElement);orb.target.set(0.12,0.08,0);orb.enableDamping=true;orb.minDistance=0.15;orb.maxDistance=4;orb.maxPolarAngle=Math.PI*0.495;
+  const fit=()=>{const w=Math.max(1,el.clientWidth),h=Math.max(1,el.clientHeight);r.setSize(w,h);cam.aspect=w/h;cam.updateProjectionMatrix();};
+  if(window.ResizeObserver)new ResizeObserver(fit).observe(el);else window.addEventListener('resize',fit);
+  const giz=new TransformControls(cam,r.domElement);giz.setSize(0.8);giz.setSpace('local');giz.enabled=false;giz.visible=false;scene.add(giz);
+  work={renderer:r,camera:cam,orbit:orb,fit,gizmo:giz,dragging:false,onChange:null,onDrag:null};
+  giz.addEventListener('dragging-changed',e=>{orb.enabled=!e.value;work.dragging=e.value;if(work.onDrag)work.onDrag(e.value);});
+  giz.addEventListener('objectChange',()=>{if(work.onChange&&giz.object)work.onChange(giz.object);});
+  fit();return work;
+}
+function setWorkGizmo(id,mode,snap){ // the handles on this obstacle (or none), in 'translate' | 'rotate' | 'scale' mode
+  if(!work)return;const g=work.gizmo,m=id&&obstMeshes.get(id);
+  if(!m){if(g.object)g.detach();g.enabled=false;return;}
+  if(g.object!==m)g.attach(m);g.enabled=true;g.setMode(mode);g.setSpace(mode==='translate'?'world':'local');
+  g.setTranslationSnap(snap?0.01:null);g.setRotationSnap(snap?15*DEG:null);g.setScaleSnap(snap?0.01:null);
+}
+function pickObstacle(x,y){ // the obstacle id under a Workspace canvas point, or null
+  if(!work)return null;
+  const rc=work.renderer.domElement.getBoundingClientRect();
+  _ndc.set((x-rc.left)/rc.width*2-1,-(y-rc.top)/rc.height*2+1);_ray.setFromCamera(_ndc,work.camera);
+  const hit=_ray.intersectObjects([...obstMeshes.values()],false)[0];
+  return hit?hit.object.userData.id:null;
+}
+const workGizmo=()=>work&&work.gizmo;   // (for tests)
+function workToScreen(p){ // a base-frame point on the Workspace canvas, in client pixels
+  const v=p.clone().applyMatrix4(root.matrixWorld).project(work.camera),rc=work.renderer.domElement.getBoundingClientRect();
+  return {x:rc.left+(v.x+1)/2*rc.width,y:rc.top+(1-v.y)/2*rc.height};
+}
+function renderWorkView(q){ // q: the arm's reference pose (radians)
+  if(!work)return;
+  const hidden=[...MAIN_ONLY(),sandPath,sandMark,...(sand?[sand.gizmo]:[])].map(o=>[o,o.visible]),rot=rotGroups.map(g=>g.rotation.z);
+  hidden.forEach(([o])=>{o.visible=false;});
+  rotGroups.forEach((g,i)=>{g.rotation.z=q[i];});
+  workGrid.visible=true;work.gizmo.visible=!!work.gizmo.object;
+  work.orbit.update();work.renderer.render(scene,work.camera);
+  workGrid.visible=false;work.gizmo.visible=false;
+  rotGroups.forEach((g,i)=>{g.rotation.z=rot[i];});hidden.forEach(([o,v])=>{o.visible=v;});
+}
+
 /* Shift the picture sideways by px (positive: right), e.g. so the arm isn't hidden behind the wizard panel. */
 let viewShift=0;
 function setViewShift(px){viewShift=px;resize();}
@@ -257,4 +420,6 @@ function resize(){const st=$('#stage'),w=Math.max(1,st.clientWidth),h=Math.max(1
 
 export {scene,camera,orbit,gizmo,root,drawArea,ledMats,atomDotMats,rotGroups,applyTool,
   targetMat,targetObj,dropLine,floorRing,ghost,ghostGeo,ghostDots,realLine,realGeo,realDots,
-  trail,clearTrail,pushTrail,PATH_MAX,pathGeo,pathLine,applyTheme,resize,setJointFx,updateJointFx,setViewShift};
+  trail,clearTrail,pushTrail,PATH_MAX,pathGeo,pathLine,applyTheme,resize,setJointFx,updateJointFx,setViewShift,
+  makeSandbox,renderSandbox,setSandPath,setSandMark,sandGizmo,setSandJoints,pickSandJoint,sandToScreen,sandCamPos,
+  setObstacleMeshes,obstacleMesh,makeWorkView,setWorkGizmo,pickObstacle,renderWorkView,workGizmo,workToScreen};

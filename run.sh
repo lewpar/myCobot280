@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Start the myCobot 280 backend: REST API, the /ws/arm IK link and the simulator at /sim.
+# Start the myCobot 280 backend: REST API, the /ws/arm IK link and the webapp at the root (/).
 #
-#   ./run.sh [backend] [--ik native|ikpy|pink] [--password PW] [--port /dev/ttyX] [--host ADDR] [--http-port N] [--dev]
+#   ./run.sh [backend] [--sim] [--ik native|ikpy|pink] [--password PW] [--port /dev/ttyX] [--host ADDR] [--http-port N] [--dev]
 #
 # Run in a terminal, it asks which IK solver to use and the password for this session (Enter keeps the
 # default shown); --ik / --password answer those up front, and --no-prompt skips the questions.
@@ -19,6 +19,7 @@ ENV_FILE="$BACKEND_DIR/.env"
 HOST="${MYCOBOT_HOST:-0.0.0.0}"
 HTTP_PORT="${MYCOBOT_HTTP_PORT:-8000}"
 DEV="${MYCOBOT_DEV:-0}"
+SIM="${MYCOBOT_SIM:-0}"   # --sim: a simulated arm instead of the serial port
 IK=""            # --ik
 PASSWORD=""      # --password
 PASSWORD_SET=0
@@ -38,9 +39,11 @@ usage() {
     cat <<EOF
 Usage: ./run.sh [backend] [options]
 
-Starts the FastAPI backend: REST API, the /ws/arm IK link and the simulator at /sim.
+Starts the FastAPI backend: REST API, the /ws/arm IK link and the webapp at the root (/).
 
 Options:
+  --sim             A simulated arm instead of the real one: try the page on any computer. Nothing moves
+                    for real; its calibration is kept in sim_data/, apart from the real arm's.
   --ik ENGINE       IK solver: native (fast, the default), pink (Pink on Pinocchio, about 5x slower;
                     64-bit OS only) or ikpy (IKPy, about 25x slower). Installed on first use.
   --password PW     Password for this session (the page, /ws/arm and the REST API). It shows up in
@@ -160,17 +163,39 @@ choose_settings() {
     echo
 }
 
+# no arm on the serial port and someone at the keyboard: offer the simulated one
+offer_sim() {
+    [ "$SIM" = "1" ] && return 0
+    local serial="${MYCOBOT_PORT:-$(env_file_value MYCOBOT_PORT)}"
+    serial="${serial:-/dev/ttyAMA0}"
+    [ "$serial" = "sim" ] && { SIM=1; return 0; }
+    [ -e "$serial" ] && return 0
+    [ "$PROMPT" = "1" ] && [ -t 0 ] && [ -t 1 ] || return 0
+    local answer
+    echo
+    read -r -p "  There's no arm on $serial. Start with a simulated arm instead? [Y/n] " answer
+    case "${answer:-y}" in y|Y|yes|Yes) SIM=1 ;; esac
+}
+
 preflight() {
     local serial="${MYCOBOT_PORT:-$(env_file_value MYCOBOT_PORT)}"
     serial="${serial:-/dev/ttyAMA0}"
-    echo "  Serial port   ${BOLD}$serial${NC}"
+    if [ "$SIM" = "1" ]; then
+        export MYCOBOT_SIM=1
+        echo "  Arm           ${BOLD}simulated${NC} (nothing moves for real; calibration in sim_data/)"
+        serial=""
+    else
+        echo "  Serial port   ${BOLD}$serial${NC}"
+    fi
     echo "  IK solver     ${BOLD}$MYCOBOT_IK${NC}"
     if [ "$PASSWORD_SET" = "1" ]; then
         echo "  Password      ${BOLD}set for this session${NC}"
     elif [ -n "${MYCOBOT_PASSWORD:-$(env_file_value MYCOBOT_PASSWORD)}" ]; then
         echo "  Password      ${BOLD}the saved one${NC} (src/backend/.env or MYCOBOT_PASSWORD)"
     fi
-    if [ ! -e "$serial" ]; then
+    if [ -z "$serial" ]; then
+        :
+    elif [ ! -e "$serial" ]; then
         warn "$serial does not exist. The backend will start without the arm (REST calls answer 503)."
     elif [ ! -r "$serial" ] || [ ! -w "$serial" ]; then
         warn "No permission to open $serial. Add yourself to its group and log in again: sudo usermod -aG $(stat -c %G "$serial") $USER"
@@ -200,7 +225,7 @@ print_urls() {
     fi
     echo
     for a in "${addrs[@]}"; do
-        echo "  Simulator     ${BOLD}http://$a:$HTTP_PORT/sim/${NC}"
+        echo "  Webapp        ${BOLD}http://$a:$HTTP_PORT/${NC}"
     done
     echo "  API docs      http://${addrs[0]}:$HTTP_PORT/docs"
     echo
@@ -215,6 +240,7 @@ while [ $# -gt 0 ]; do
         --password)     [ $# -ge 2 ] || die "--password needs a value"; PASSWORD="$2"; PASSWORD_SET=1; shift 2 ;;
         --password=*)   PASSWORD="${1#*=}"; PASSWORD_SET=1; shift ;;
         --no-prompt|-y) PROMPT=0; shift ;;
+        --sim|--simulated) SIM=1; shift ;;
         --port)         [ $# -ge 2 ] || die "--port needs a path"; export MYCOBOT_PORT="$2"; shift 2 ;;
         --port=*)       export MYCOBOT_PORT="${1#*=}"; shift ;;
         --host)         [ $# -ge 2 ] || die "--host needs an address"; HOST="$2"; shift 2 ;;
@@ -226,10 +252,12 @@ while [ $# -gt 0 ]; do
         *)              usage >&2; echo >&2; die "Unknown option: $1" ;;
     esac
 done
+case "$SIM" in 1|true|yes|on|TRUE|YES) SIM=1 ;; *) SIM=0 ;; esac
 [[ "$HTTP_PORT" =~ ^[0-9]+$ ]] || die "--http-port must be a number, not '$HTTP_PORT'"
 
 echo "${BOLD}myCobot 280 backend${NC}"
 setup_venv
+offer_sim
 choose_settings
 preflight
 print_urls

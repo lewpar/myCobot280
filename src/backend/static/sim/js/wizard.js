@@ -19,6 +19,7 @@ import {camera,orbit,setJointFx,setViewShift} from './scene.js';
 import {S} from './state.js';
 import {send,onArm,setLimp,setStopped,adoptMeasured} from './link.js';
 import {showConn} from './chrome.js';
+import {toast} from './toast.js';
 import {$} from './util.js';
 
 const TPD=4096/360;
@@ -63,16 +64,14 @@ const STEPS=[
       return rows.every(r=>r[0]);},
     pose:'measured'},
   {id:'hold',title:'Hold the arm',
-    body:()=>`<p class="wz-lead">Torque goes off so you can move the arm by hand. <b>Support it first</b>: the upper arm
-      and wrist drop as soon as the servos let go.</p>
-      <label class="chk wz-chk"><input type="checkbox" id="wzHeld"> I'm holding the arm</label>
-      <button id="wzTorqueOff" class="block primary" disabled>Turn torque off</button>
+    body:()=>`<p class="wz-lead">Next, torque goes off so you can move the arm by hand. <b>Support it first</b>: the upper
+      arm and wrist drop as soon as the servos let go. Tick the box once you're holding it and torque goes off.</p>
+      <label class="chk wz-chk wz-held"><input type="checkbox" id="wzHeld"> I'm holding the arm</label>
       <p class="wz-state" id="wzHoldState"></p>`,
-    enter(){$('#wzHeld').checked=W.held;
-      $('#wzHeld').addEventListener('change',e=>{W.held=e.target.checked;});
-      $('#wzTorqueOff').addEventListener('click',()=>{setLimp(true);});},
-    tick(){const off=S.armTorque===false;$('#wzTorqueOff').disabled=!W.held||off;
-      $('#wzHoldState').innerHTML=off?`${ok(true)}Torque is off. The model follows your arm now.`:'';
+    enter(){$('#wzHeld').checked=W.held||S.armTorque===false;
+      $('#wzHeld').addEventListener('change',e=>{W.held=e.target.checked;if(W.held&&S.armTorque!==false)setLimp(true);});},
+    tick(){const off=S.armTorque===false;$('#wzHeld').disabled=off;
+      $('#wzHoldState').innerHTML=off?`${ok(true)}Torque is off. The model follows your arm now.`:W.held?'Turning torque off…':'';
       return off;},
     pose:'measured'},
   {id:'pose',title:'Pose it straight up',
@@ -312,6 +311,8 @@ export function closeWizard(){
   const s=STEPS[step];if(s.leave)s.leave();
   S.wizard=false;setJointFx(null);$('#wiz').hidden=true;document.body.classList.remove('wiz-open');cam=null;setViewShift(0);
   if(complete(S.measured))adoptMeasured();   // start from where the arm really is: nothing moves on closing
+  if(step===STEPS.length-1)toast('The arm is calibrated','good');
+  window.dispatchEvent(new Event('mycobot:wizard-closed'));
 }
 export const wizardStatus=()=>`Calibration: ${STEPS[step].title.toLowerCase()}`;
 

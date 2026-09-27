@@ -10,6 +10,8 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path[:0] = [ROOT, os.path.join(ROOT, "src", "backend")]
 import arm_model as model  # noqa: E402
 import ik  # noqa: E402
+import library  # noqa: E402
+import program  # noqa: E402
 
 sessions = {}
 try:
@@ -18,7 +20,13 @@ try:
         sid = msg.pop("_s", 0)
         if sid not in sessions:
             sessions[sid] = ik.Session(json.loads(json.dumps(model.DEFAULT_CALIB)))
-        reply = sessions[sid].handle(msg, time.monotonic())
+        if msg.get("type") == "compile":   # the fake backend's /api/programs/compile
+            try:
+                reply = {"type": "compiled", **program.compile_program(library.clean_blocks(msg["blocks"]))}
+            except library.Invalid as e:
+                reply = {"type": "error", "message": str(e)}
+        else:
+            reply = sessions[sid].handle(msg, time.monotonic())
         sys.stdout.write(json.dumps({"_s": sid, **reply}) + "\n")
         sys.stdout.flush()
 except (BrokenPipeError, KeyboardInterrupt):   # the test finished and closed the pipe

@@ -309,10 +309,15 @@ class _Bus:
 
     Every method starting with ``_`` expects the caller to hold ``_lock``."""
 
-    def __init__(self, port: str, baud: int = 1_000_000, timeout: float = 0.02):
+    def __init__(self, port: str, baud: int = 1_000_000, timeout: float = 0.02, transport=None):
+        self._lock = threading.Lock()
+        self._reply_timeout = timeout
+        self._limit_cache: dict[int, tuple[int, int]] = {}
+        if transport is not None:   # anything with serial.Serial's read/write/in_waiting (simbus.SimBus)
+            self._ser = transport
+            return
         if serial is None:
             raise ImportError("pyserial is required: pip install pyserial")
-        self._lock = threading.Lock()
         # short read timeout: replies arrive within ~1 ms at 1 Mbaud, so we poll instead of sleeping.
         # exclusive=True takes an advisory lock on the port, so a second program using this library
         # (a tool while the backend runs, say) fails to open it instead of garbling the bus.
@@ -323,8 +328,6 @@ class _Bus:
                 raise RuntimeError(f"{port} is already in use by another program (is the backend "
                                    f"already running?)") from e
             raise
-        self._reply_timeout = timeout
-        self._limit_cache: dict[int, tuple[int, int]] = {}
 
     # -- raw I/O -------------------------------------------------------------
 
@@ -459,8 +462,10 @@ class MyCobot280:
     >>> arm.atom.color = (255, 0, 0)
     """
 
-    def __init__(self, port: str, baud: int = 1_000_000):
-        self._bus = _Bus(port, baud)
+    def __init__(self, port: str, baud: int = 1_000_000, transport=None):
+        """``transport``: a stand-in for the serial port (simbus.SimBus for the simulated arm); ``port`` is
+        then only a name."""
+        self._bus = _Bus(port, baud, transport=transport)
         self._servo_ids: list[int] = []
         self._atom = _Atom(self._bus)
         self.scan()

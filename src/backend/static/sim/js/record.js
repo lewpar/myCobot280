@@ -1,14 +1,13 @@
 /* Record tab: samples the pose at 10 Hz (the real arm when it reads back, otherwise the sim) into
    [t, deg x6] frames, logs ATOM panel changes as LED cues, trims still ends, and saves via /api/recordings.
-   Waypoints make a minimum-jerk recording through poses added one at a time. */
+   (Motions built from poses, what the Waypoints card used to do, are the Motion Studio's job: studio.js.) */
 import * as THREE from 'three';
-import {checkFrames} from './collision.js';
-import {S,haveRealNow,recPose,tcpText} from './state.js';
+import {S,haveRealNow,recPose} from './state.js';
 import {setLimp} from './link.js';
-import {goPose} from './motion.js';
 import {busyPlaying,libRefresh,selectItem} from './play.js';
 import {api} from './api.js';
-import {$,item,r2,fmtDur} from './util.js';
+import {toast} from './toast.js';
+import {$,r2,fmtDur} from './util.js';
 
 const REC_DT=100,REC_MAX=36000;
 let rec=null,take=null;                    // rec: while recording; take: {frames, events} waiting to be saved
@@ -33,7 +32,6 @@ function recTrim(f,ev){ // drop the still time before the first and after the la
 }
 export function recUI(){
   const b=$('#recBtn');b.setAttribute('aria-pressed',!!rec);$('#recBtnText').textContent=rec?'Stop recording':'Record';b.disabled=busyPlaying();
-  $('#wpMake').disabled=wps.length<2||!!rec;
 }
 function recStart(){
   if(busyPlaying())return;
@@ -60,30 +58,11 @@ async function recSave(){
   $('#recSaveBtn').disabled=true;
   try{
     const r=await api('POST','/recordings',{name,frames:take.frames,events:take.events,return_zero:$('#recZero').checked});
-    take=null;$('#recSave').hidden=true;recNote(`Saved "${r.name}". Find it in the Play tab.`);
+    take=null;$('#recSave').hidden=true;recNote(`Saved "${r.name}". Find it in the Play tab.`);toast(`Saved "${r.name}"`,'good');
     await libRefresh();selectItem({kind:'rec',id:r.id});
   }catch(e){recNote(e.message+' The recording is kept here; try saving again.');}
   finally{$('#recSaveBtn').disabled=false;}
 }
-
-/* ---- waypoints: a smooth (minimum-jerk) move between poses you add one at a time ---- */
-const wps=[];
-function wpRender(){
-  const box=$('#wpList');box.textContent='';
-  wps.forEach((q,k)=>box.appendChild(item(`Point ${k+1}`,tcpText(q),null,()=>goPose(q,$('#recNote')),()=>{wps.splice(k,1);wpRender();})));
-  $('#wpMeta').textContent=`${wps.length} point${wps.length===1?'':'s'}`;recUI();
-}
-function wpFrames(){
-  const v=+$('#wpSpeed').value,pause=$('#wpPause').value/10,out=[[0,...wps[0]]];let t=0;
-  for(let i=1;i<wps.length;i++){
-    const a=wps[i-1],b=wps[i],dur=Math.max(0.3,1.875*Math.max(...a.map((x,j)=>Math.abs(b[j]-x)))/v),n=Math.max(2,Math.ceil(dur*10));
-    for(let k=1;k<=n;k++){const u=k/n,m=u*u*u*(10-15*u+6*u*u);out.push([+(t+dur*u).toFixed(3),...a.map((x,j)=>r2(x+(b[j]-x)*m))]);}
-    t+=dur;
-    if(pause>0&&i<wps.length-1){t+=pause;out.push([+t.toFixed(3),...b]);}
-  }
-  return out;
-}
-function wpSliders(){$('#wpSpeedv').textContent=$('#wpSpeed').value+'°/s';$('#wpPausev').textContent=($('#wpPause').value/10).toFixed(1)+' s';}
 
 export function initRecord(){
   $('#recBtn').addEventListener('click',()=>rec?recStop():recStart());
@@ -91,13 +70,4 @@ export function initRecord(){
   $('#recSaveBtn').addEventListener('click',recSave);
   $('#recName').addEventListener('keydown',e=>{if(e.key==='Enter')recSave();});
   $('#recDiscard').addEventListener('click',()=>{take=null;$('#recSave').hidden=true;recNote('Discarded.');});
-  $('#wpSpeed').addEventListener('input',wpSliders);$('#wpPause').addEventListener('input',wpSliders);wpSliders();
-  $('#wpAdd').addEventListener('click',()=>{wps.push(recPose().map(r2));wpRender();recNote(`Added point ${wps.length}${haveRealNow()?' from the real arm':' from the simulation'}.`);});
-  $('#wpClear').addEventListener('click',()=>{if(wps.length&&confirm('Clear every waypoint?')){wps.length=0;wpRender();}});
-  $('#wpMake').addEventListener('click',()=>{
-    const f=wpFrames(),bad=checkFrames(f);
-    if(bad){recNote(`That path isn't clear at ${bad[0].toFixed(1)} s: ${bad[1]}. Move or remove a point.`);return;}
-    offerSave(f,[],`Made a ${fmtDur(f[f.length-1][0])} recording through ${wps.length} points. Give it a name and save it.`);
-  });
-  wpRender();
 }

@@ -14,6 +14,7 @@ model so it can refuse poses before sending them; the backend checks again befor
 import json
 import math
 import os
+import re
 import threading
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -132,6 +133,52 @@ def chain(q_rad):
     return pos, axes, (x, y, z), (c, f, i)
 
 
+def joint_frames(q_rad):
+    """Each joint's frame after its own rotation, as (rotation rows, origin): what the page's rotGroups[k] is."""
+    a, b, c, x, d, e, f, y, g, h, i, z = 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0
+    out = []
+    for (m00, m01, m02, m03, m10, m11, m12, m13, m20, m21, m22, m23), q in zip(_FIXED34, q_rad):
+        a, b, c, x = (a * m00 + b * m10 + c * m20, a * m01 + b * m11 + c * m21, a * m02 + b * m12 + c * m22,
+                      a * m03 + b * m13 + c * m23 + x)
+        d, e, f, y = (d * m00 + e * m10 + f * m20, d * m01 + e * m11 + f * m21, d * m02 + e * m12 + f * m22,
+                      d * m03 + e * m13 + f * m23 + y)
+        g, h, i, z = (g * m00 + h * m10 + i * m20, g * m01 + h * m11 + i * m21, g * m02 + h * m12 + i * m22,
+                      g * m03 + h * m13 + i * m23 + z)
+        cq, sq = math.cos(q), math.sin(q)
+        a, b = a * cq + b * sq, b * cq - a * sq
+        d, e = d * cq + e * sq, e * cq - d * sq
+        g, h = g * cq + h * sq, h * cq - g * sq
+        out.append((((a, b, c), (d, e, f), (g, h, i)), (x, y, z)))
+    return out
+
+
+def _body_parts():
+    """The body as points in each joint's own frame: [(name, joint, radius, local points, local centre, reach)]."""
+    zero = joint_frames([0.0] * 6)
+
+    def to_local(j, p):   # inverse of the joint's zero-pose frame: R^T (p - t)
+        (R, t) = zero[j]
+        v = [p[k] - t[k] for k in range(3)]
+        return tuple(R[0][k] * v[0] + R[1][k] * v[1] + R[2][k] * v[2] for k in range(3))
+
+    parts = []
+    for name, j, r, pts in BODY_LINKS:
+        samples = []
+        for p0, p1 in zip(pts, pts[1:]):
+            n = max(1, math.ceil(math.dist(p0, p1) / BODY_STEP))
+            samples += [_mid(p0, p1, k / n) for k in range(n)]
+        samples.append(pts[-1])
+        parts.append((name, j, r, samples))
+    for name, j, c, ax, r, length in BODY_HOUSINGS:
+        parts.append((name, j, r, [tuple(c[k] + ax[k] * length / 2 * s for k in range(3)) for s in (-1, 0, 1)]))
+    out = []
+    for name, j, r, pts in parts:
+        loc = [to_local(j, p) for p in pts]
+        cen = tuple(sum(p[k] for p in loc) / len(loc) for k in range(3))
+        out.append((name, j, r, loc, cen, max(math.dist(p, cen) for p in loc) + r))
+    return out
+
+
 def fk(q_deg, tool_m=0.0):
     """Joint origins, flange centre, tool tip and flange normal in the base frame."""
     joints, _, flange, normal = chain([math.radians(q) for q in q_deg])
@@ -155,18 +202,163 @@ def _seg_dist(p, a, b):
     return math.dist(p, (ax + dx * f, ay + dy * f, az + dz * f))
 
 
+# ---- obstacles (the page's Workspace view): boxes, cylinders and spheres the whole arm keeps clear of ------------
+# They live in the work area dict (area["obstacles"]), so they reach every check the area does, but unlike the
+# area's own limits they apply even with the area switched off. Keep in sync with collision.js.
+OBST_MARGIN = 0.01       # clearance kept from an obstacle, on top of each part's radius
+OBST_MAX = 50
+OBST_SHAPES = ("box", "cylinder", "sphere")
+# The arm's body as the page draws it, checked against obstacles (the kinematic line alone is up to ~70 mm off
+# the real links: the upper arm runs beside J2-J3, not along it). Base frame, metres, at the zero pose; each part
+# moves with joint `j` (0-based). Keep in sync with BODY_LINKS / BODY_HOUSINGS in kinematics.js (test_page.py).
+# The column (J1-J2, and the J2 servo on it) only turns about itself: a shape there is flagged by the page.
+BODY_LINKS = (   # (name, joint, radius, polyline): the round tubes between the servos
+    ("the upper arm", 1, 0.023, ((0, -0.035, 0.1386), (0, -0.068, 0.1386), (0, -0.068, 0.249), (0, -0.031, 0.249))),
+    ("the forearm", 2, 0.021, ((0, -0.031, 0.249), (0, 0, 0.249), (0, 0, 0.345), (0, -0.029, 0.345))),
+    ("the wrist", 3, 0.020, ((0, -0.029, 0.345), (0, -0.0636, 0.345), (0, -0.0636, 0.381))),
+    ("the wrist", 4, 0.019, ((0, -0.0636, 0.381), (0, -0.0636, 0.4181))),
+)
+BODY_HOUSINGS = (   # (name, joint, centre, axis, radius, length): the servos
+    ("the elbow", 1, (0, -0.031, 0.249), (0, 1, 0), 0.028, 0.032),
+    ("J4", 2, (0, -0.029, 0.345), (0, 1, 0), 0.024, 0.028),
+    ("the wrist", 3, (0, -0.0636, 0.381), (0, 0, 1), 0.0205, 0.014),
+    ("J6", 4, (0.023, -0.0636, 0.4181), (1, 0, 0), 0.021, 0.034),
+)
+BODY_STEP = 0.015   # points along a tube this far apart
+BODY = None         # _body_parts(), built at the end of the module
+_OBST_ID = re.compile(r"^[A-Za-z0-9_-]{1,24}$")
+_HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def euler_xyz(rx, ry, rz):
+    """Rotation matrix rows for Euler angles (radians) in three.js's "XYZ" order, so the page and this agree."""
+    a, b, c, d, e, f = math.cos(rx), math.sin(rx), math.cos(ry), math.sin(ry), math.cos(rz), math.sin(rz)
+    ae, af, be, bf = a * e, a * f, b * e, b * f
+    return ((c * e, -c * f, d), (af + be * d, ae - bf * d, -b * c), (bf - ae * d, be + af * d, a * c))
+
+
+def clean_obstacles(obs):
+    """A list of obstacles, checked and normalised (sizes and positions in mm, rotations in degrees), or None.
+    Each: {"id", "name", "shape": box|cylinder|sphere, "pos": [x, y, z] (centre), "size": [x, y, z],
+    "rot": [x, y, z], "color": "#rrggbb"}; a cylinder's axis is its local z and its diameter size[0], a
+    sphere's diameter size[0]."""
+    if not isinstance(obs, list) or len(obs) > OBST_MAX:
+        return None
+    out, seen = [], set()
+    fin = lambda v, lo, hi: isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and lo <= v <= hi
+    for o in obs:
+        if not isinstance(o, dict) or o.get("shape") not in OBST_SHAPES:
+            return None
+        oid, name, pos, size, rot = o.get("id"), o.get("name", ""), o.get("pos"), o.get("size"), o.get("rot", [0, 0, 0])
+        if not (isinstance(oid, str) and _OBST_ID.match(oid)) or oid in seen or not isinstance(name, str) or len(name) > 40:
+            return None
+        if not all(isinstance(v, list) and len(v) == 3 for v in (pos, size, rot)):
+            return None
+        if not (all(fin(v, -1000, 1000) for v in pos) and all(fin(v, -1e6, 1e6) for v in size) and all(fin(v, -360, 360) for v in rot)):
+            return None
+        size = [float(v) for v in size]
+        if o["shape"] == "cylinder":      # (the sizes a shape doesn't use follow the ones it does)
+            size[1] = size[0]
+        elif o["shape"] == "sphere":
+            size = [size[0]] * 3
+        if not all(5 <= v <= 1000 for v in size):
+            return None
+        color = o.get("color", "#8a94a6")
+        if not (isinstance(color, str) and _HEX.match(color)):
+            return None
+        seen.add(oid)
+        out.append({"id": oid, "name": name.strip() or o["shape"].capitalize(), "shape": o["shape"],
+                    "pos": [round(float(v), 1) for v in pos], "size": [round(v, 1) for v in size],
+                    "rot": [round(float(v), 2) for v in rot], "color": color.lower()})
+    return out
+
+
+def _prep_obstacle(o):
+    """(name, shape, centre (m), rotation rows, shape sizes (m), bounding radius) for the checks."""
+    c = tuple(v / 1000 for v in o["pos"])
+    R = euler_xyz(*(math.radians(v) for v in o["rot"]))
+    sx, sy, sz = (v / 2000 for v in o["size"])
+    if o["shape"] == "box":
+        dims, bound = (sx, sy, sz), math.sqrt(sx * sx + sy * sy + sz * sz)
+    elif o["shape"] == "cylinder":
+        dims, bound = (sx, sz), math.hypot(sx, sz)
+    else:
+        dims, bound = (sx,), sx
+    return (o["name"], o["shape"], c, R, dims, bound)
+
+
+_prep_cache = {}
+
+
+def _prepared(obs):
+    key = tuple((o["shape"], *o["pos"], *o["size"], *o["rot"], o["name"]) for o in obs)
+    got = _prep_cache.get(key)
+    if got is None:
+        if len(_prep_cache) > 64:
+            _prep_cache.clear()
+        got = _prep_cache[key] = [_prep_obstacle(o) for o in obs]
+    return got
+
+
+def obstacle_distance(p, prep):
+    """Signed distance (m) from point p to a prepared obstacle: negative inside."""
+    _, shape, c, R, dims, _ = prep
+    dx, dy, dz = p[0] - c[0], p[1] - c[1], p[2] - c[2]
+    # into the obstacle's own frame: R transposed
+    lx = R[0][0] * dx + R[1][0] * dy + R[2][0] * dz
+    ly = R[0][1] * dx + R[1][1] * dy + R[2][1] * dz
+    lz = R[0][2] * dx + R[1][2] * dy + R[2][2] * dz
+    if shape == "box":
+        qx, qy, qz = abs(lx) - dims[0], abs(ly) - dims[1], abs(lz) - dims[2]
+        out = math.sqrt(max(qx, 0.0) ** 2 + max(qy, 0.0) ** 2 + max(qz, 0.0) ** 2)
+        return out + min(max(qx, qy, qz), 0.0)
+    if shape == "cylinder":
+        rad, ax = math.hypot(lx, ly) - dims[0], abs(lz) - dims[1]
+        return math.hypot(max(rad, 0.0), max(ax, 0.0)) + min(max(rad, ax), 0.0)
+    return math.sqrt(lx * lx + ly * ly + lz * lz) - dims[0]
+
+
+def _apply(frame, p):
+    R, t = frame
+    return (R[0][0] * p[0] + R[0][1] * p[1] + R[0][2] * p[2] + t[0], R[1][0] * p[0] + R[1][1] * p[1] + R[1][2] * p[2] + t[1],
+            R[2][0] * p[0] + R[2][1] * p[1] + R[2][2] * p[2] + t[2])
+
+
+def _hits_obstacle(obs, q_deg, extra):
+    """The first "<part> would hit <obstacle>", or None. The body (BODY_*) at pose q_deg, and extra: [(name, point,
+    radius)] (the ATOM, the attachment, the flange)."""
+    frames = joint_frames([math.radians(v) for v in q_deg])
+    for prep in _prepared(obs):
+        name, _, c, _, _, bound = prep
+        for part, j, r, loc, cen, reach in BODY:
+            if math.dist(_apply(frames[j], cen), c) > bound + reach + OBST_MARGIN:
+                continue                              # nowhere near: skip its points
+            for p in loc:
+                if obstacle_distance(_apply(frames[j], p), prep) < r + OBST_MARGIN:
+                    return f"{part} would hit {name}"
+        for part, p, r in extra:
+            if math.dist(p, c) <= bound + r + OBST_MARGIN and obstacle_distance(p, prep) < r + OBST_MARGIN:
+                return f"{part} would hit {name}"
+    return None
+
+
 def clean_area(a):
-    """A valid work area dict, or None if ``a`` isn't one."""
+    """A valid work area dict, or None if ``a`` isn't one. Its obstacles (if it has the key) are cleaned too."""
     try:
         out = {"enabled": bool(a["enabled"]), "center": float(a["center"]), "span": float(a["span"]),
                "radius_mm": float(a.get("radius_mm", 0)), "base_mm": float(a.get("base_mm", DEFAULT_AREA["base_mm"]))}
     except (KeyError, TypeError, ValueError):
         return None
+    if "obstacles" in a:
+        obs = clean_obstacles(a["obstacles"])
+        if obs is None:
+            return None
+        out["obstacles"] = obs
     ok = (-180 <= out["center"] <= 180 and 30 <= out["span"] <= 360
           and (out["radius_mm"] == 0 or 100 <= out["radius_mm"] <= 450)
           and (out["base_mm"] == 0 or 60 <= out["base_mm"] <= 250)
           and (out["radius_mm"] == 0 or out["base_mm"] < out["radius_mm"]))
-    return out if ok and all(math.isfinite(v) for k, v in out.items() if k != "enabled") else None
+    return out if ok and all(math.isfinite(v) for k, v in out.items() if k not in ("enabled", "obstacles")) else None
 
 
 def _outside_area(p, area):
@@ -185,7 +377,8 @@ def _outside_area(p, area):
 
 def check_pose(q_deg, tool_m=0.0, tool_r=TOOL_R_DEFAULT, area=None):
     """None if the pose is clear, otherwise a short reason. The attachment is ``tool_m`` long with
-    radius ``tool_r`` (metres); ``area`` is a work area dict (see DEFAULT_AREA) or None for no limit."""
+    radius ``tool_r`` (metres); ``area`` is a work area dict (see DEFAULT_AREA) or None for no limit. Its
+    obstacles are checked whether or not the area is enabled."""
     for j, (q, (lo, hi)) in enumerate(zip(q_deg, URDF_LIMITS_DEG)):
         if not lo - 0.5 <= q <= hi + 0.5:
             return f"J{j + 1} would pass its {lo}..{hi} degree limit"
@@ -227,6 +420,12 @@ def check_pose(q_deg, tool_m=0.0, tool_r=TOOL_R_DEFAULT, area=None):
             return "the attachment would hit the upper arm"
         if _seg_dist(p, j[2], j[3]) < FOREARM_R + tool_r:
             return "the attachment would hit the forearm"
+    if area and area.get("obstacles"):
+        extra = ([("the flange", k["flange"], 0.02)] + [("the ATOM", p, r) for p, r in atom]
+                 + [("the attachment", p, tool_r) for p in tool])
+        why = _hits_obstacle(area["obstacles"], q_deg, extra)
+        if why:
+            return why
     if tool and k["tcp"][2] - r_floor < TCP_MIN_Z:
         return "the attachment's tip would go below the table"
     if k["tcp"][2] < TCP_MIN_Z:
@@ -380,3 +579,6 @@ def check_tick_move(c, current_ticks, new_ticks):
     q0 = pose_from_ticks(c, current_ticks)
     q1 = pose_from_ticks(c, [n if n is not None else t for n, t in zip(new_ticks, current_ticks)])
     return check_path(q0, q1, c["tool_mm"] / 1000, tool_r=c["tool_d_mm"] / 2000, area=c["area"])
+
+
+BODY = _body_parts()

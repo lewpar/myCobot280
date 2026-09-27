@@ -15,7 +15,7 @@ py.stdout.on('data', d => {
 const pySolve = (sid, m) => new Promise(r => { pyWait.push(r); py.stdin.write(JSON.stringify({ _s: sid, ...m }) + '\n'); });
 
 // ---- fake backend ----
-const db = { recordings: {}, sequences: {}, poses: {} }, calls = [];
+const db = { recordings: {}, sequences: {}, poses: {}, programs: {}, obstacles: [] }, calls = [];
 let n = 0, remote = null;
 const id = () => String(++n).padStart(12, '0');
 const summary = r => ({ id: r.id, name: r.name, created: r.created, return_zero: !!r.return_zero,
@@ -28,13 +28,22 @@ async function fetch(url, o = {}) {
   const [, coll, key] = p.split('/');
   if (coll === 'playback') {
     if (key === 'stop') { remote = null; playEnd('Playback stopped.'); return res(200, {}); }
-    remote = { name: body.recording ? db.recordings[body.recording].name : db.sequences[body.sequence].name, until: Date.now() + 800, body };
+    remote = { name: body.program ? db.programs[body.program].name : body.recording ? db.recordings[body.recording].name : db.sequences[body.sequence].name, until: Date.now() + 800, body };
     return res(200, { success: true });
   }
+  if (coll === 'obstacles') {                         // the Workspace's shapes
+    if (m === 'PUT') db.obstacles = JSON.parse(JSON.stringify(body.obstacles));
+    return res(200, { obstacles: db.obstacles });
+  }
+  if (coll === 'programs' && key === 'compile') {   // the real compiler, through ik_stdio.py
+    const r = await pySolve('compile', { type: 'compile', blocks: body.blocks });
+    return r.type === 'error' ? res(422, { detail: r.message }) : res(200, r);
+  }
+  if (coll === 'programs' && m !== 'GET' && m !== 'DELETE') body.blocks = JSON.parse(JSON.stringify(body.blocks));
   const store = db[coll];
   if (!store) return res(404, { detail: 'nope' });
   if (!key) {
-    if (m === 'GET') return res(200, Object.values(store).map(x => coll === 'recordings' ? summary(x) : x));
+    if (m === 'GET') return res(200, Object.values(store).map(x => coll === 'recordings' ? summary(x) : coll === 'programs' ? { ...x, blocks: x.blocks.length } : x));
     const x = { id: id(), created: Date.now() / 1000, ...body };
     if (coll === 'recordings' && x.frames.some(f => f.length !== 7)) return res(422, { detail: 'bad frames' });
     store[x.id] = x; return res(200, coll === 'recordings' ? summary(x) : x);
@@ -82,7 +91,10 @@ class FakeWS {
     }
     sock = this;
     pySolve('arm', { type: 'settings', area: CONFIG.area, tool_mm: CONFIG.tool_mm, tool_d_mm: CONFIG.tool_d_mm });
-    setTimeout(() => { this.onopen(); this.emit({ type: 'hello', protocol: 4 }); this.emit(cfg); }, 5);
+    setTimeout(() => {
+      this.onopen();                                   // (the page sends its auth message from onopen)
+      if (this.badPw) { this.emit({ type: 'error', code: 'auth', message: 'Wrong or missing password.' }); this.close(); this.onclose(); return; }
+      this.emit({ type: 'hello', protocol: 4 }); this.emit(cfg); }, 5);
     this.iv = setInterval(() => {
       if (remote && Date.now() > remote.until) { remote = null; playEnd('Playback finished.'); }
       armSolve();
@@ -100,6 +112,7 @@ class FakeWS {
       return;
     }
     wsSent.push(m);
+    if (m.type === 'auth') this.badPw = m.password !== 'pw';
     if (m.type === 'goal' && m.epoch === armState.epoch) { armTarget = armIk = null; pose = m.angles.slice(); }
     if (m.type === 'target' && m.epoch === armState.epoch) { if (!armTarget) armIk = null; armTarget = m; }
     if (m.type === 'set_area') pySolve('arm', { type: 'settings', area: { ...m, type: undefined } });
@@ -131,6 +144,16 @@ const input = (s, v) => { $(s).value = v; $(s).dispatchEvent(new w.Event('input'
 (async () => {
   ({ w, errors } = await loadPage({ fetch, WebSocket: FakeWS }));
   await sleep(200);
+  check(!$('#landing').hidden && $('#landForm').hidden === false, 'opens on the connect screen');
+  click('#landSim');                                              // the simulator first, without the arm
+  await until(() => $('#landing').hidden, 2000);
+  check($('#landing').hidden && $('#calAsk').hidden, 'without the arm: straight to the scene, no calibration question');
+  await until(() => !$('#tour').hidden, 2000);
+  check(!$('#tour').hidden && txt('#tourStep') === '1 of 6' && txt('#tourTitle') === 'Three views', 'the first time, a tour starts', txt('#tourStep'));
+  click('#tourNext');
+  check(txt('#tourStep') === '2 of 6' && txt('#tourTitle') === 'The connection', 'the tour steps on');
+  click('#tourSkip');
+  check($('#tour').hidden && w.localStorage.getItem('mycobot-tour') === 'done', 'skipped, and remembered');
   check(/password/.test(txt('#statusText')) && !ikSent.length, 'no password: says the backend solves, sends nothing', txt('#statusText'));
   $('#wsPw').value = 'pw';
   await until(() => /At target/.test(txt('#statusText')), 5000);
@@ -203,17 +226,191 @@ const input = (s, v) => { $(s).value = v; $(s).dispatchEvent(new w.Event('input'
   await until(() => Object.values(db.recordings).some(r => r.name === 'Imported'));
   check(/Imported/.test(txt('#playNote')), 'import', txt('#playNote'));
 
-  // 7. waypoints
-  click('#tabbtn-record');
-  input('#tx', 40); input('#ty', -190); input('#tz', 100); await sleep(1500); click('#wpAdd');
-  input('#tx', 120); input('#ty', -150); await sleep(1200); click('#wpAdd');
-  check(txt('#wpMeta') === '2 points' && !$('#wpMake').disabled, 'two waypoints added');
-  click('#wpMake');
-  check(!$('#recSave').hidden && /through 2 points/.test(txt('#recNote')), 'waypoints make a take', txt('#recNote'));
-  $('#recName').value = 'Points'; click('#recSaveBtn');
-  await until(() => Object.values(db.recordings).some(r => r.name === 'Points'));
-  const pts = Object.values(db.recordings).find(r => r.name === 'Points').frames;
-  check(pts.length > 5 && pts.every((f, k) => !k || f[0] > pts[k - 1][0]), 'waypoint recording is smooth and timed');
+  // 7. Motion Studio: blocks, compiled by the real backend code, previewed in the sandbox, saved, reopened
+  const blk = type => [...w.document.querySelectorAll('#stProg .blk')].filter(e => e.classList.contains('blk-' + type));
+  const inputOn = (el, v) => { el.value = v; el.dispatchEvent(new w.Event('input', { bubbles: true })); };
+  const compiledOk = () => /\d s ·/.test(txt('#stState'));
+  click('#viewStudio');
+  check(w.document.body.classList.contains('studio') && !$('#studio').hidden && $('#stPalette').children.length === 6, 'Studio opens with six block types');
+  check(blk('home').length === 1 && $('#stName').value === 'Untitled motion', 'a new motion starts at zero');
+  click($('#stPalette').querySelector('.pal-pose'));
+  check(blk('pose').length === 1 && blk('pose')[0].classList.contains('sel') && blk('pose')[0].querySelectorAll('input[type=range]').length === 7,
+        'Move to pose: added, selected, six joint sliders and a speed');
+  inputOn(blk('pose')[0].querySelector('input[data-j="0"]'), 40);
+  inputOn(blk('pose')[0].querySelector('input[data-j="1"]'), 20);
+  click($('#stPalette').querySelector('.pal-wait'));
+  click($('#stPalette').querySelector('.pal-led'));
+  click($('#stPalette').querySelector('.pal-repeat'));
+  click($('#stPalette').querySelector('.pal-point'));             // the repeat is selected: into it
+  const rep = blk('repeat')[0];
+  check(rep && rep.querySelector('.binner .blk-point'), 'a block added to a selected repeat goes inside it');
+  click($('#stPalette').querySelector('.pal-home'));
+  await until(compiledOk, 5000);
+  check(compiledOk(), 'compiled on the backend: no problems', txt('#stState'));
+  check(!$('#stPlay').disabled && !$('#stRun'), 'Preview on; no Run button in the Studio (motions play from the Play tab)');
+  click('#stPlay');
+  await sleep(700);
+  check(+$('#stTime').value > 0.3 && w.document.querySelector('#stProg .blk.running'), 'preview plays and marks the running block', $('#stTime').value);
+  click('#stStop');
+  // a point out of reach is marked, and the program can't run
+  const pt = blk('point')[0];
+  click(pt.querySelector('.bhead'));
+  inputOn(blk('point')[0].querySelector('input[data-k="0"]'), 900);
+  await until(() => blk('point')[0].classList.contains('bad'), 5000);
+  check(/reach/.test(blk('point')[0].querySelector('.bprob').textContent) && $('#stPlay').disabled === false, 'an unreachable point is marked', txt('#stState'));
+  inputOn(blk('point')[0].querySelector('input[data-k="0"]'), 170);
+  await until(() => !w.document.querySelector('#stProg .blk.bad') && compiledOk(), 5000);
+  check(!w.document.querySelector('#stProg .blk.bad'), 'fixed again', [...w.document.querySelectorAll('#stProg .bprob')].map(e => e.textContent).join(' | ') + ' ' + JSON.stringify(blk('point')[0] && [...blk('point')[0].querySelectorAll('input[data-k]')].map(i => i.value)));
+  // reorder, copy, delete
+  const order0 = [...w.document.querySelectorAll('#stProg > .blk')].map(e => e.dataset.id);
+  click(blk('wait')[0].querySelector('[data-act="up"]'));
+  const after = [...w.document.querySelectorAll('#stProg > .blk')].map(e => e.dataset.id);
+  check(after[1] === order0[2] && after[2] === order0[1], 'move up reorders', JSON.stringify([order0, after]));
+  click(blk('led')[0].querySelector('[data-act="copy"]'));
+  check(blk('led').length === 2, 'duplicate');
+  click(blk('led')[1].querySelector('[data-act="del"]'));
+  check(blk('led').length === 1, 'delete');
+  // save, start again, reopen
+  $('#stName').value = 'Pick demo'; $('#stName').dispatchEvent(new w.Event('input'));
+  click('#stSave');
+  await until(() => Object.values(db.programs).some(p => p.name === 'Pick demo'), 3000);
+  const saved2 = Object.values(db.programs).find(p => p.name === 'Pick demo');
+  check(saved2 && saved2.blocks.length === 5 && saved2.blocks[4].type === 'repeat' && saved2.blocks[4].blocks.map(b => b.type).join() === 'point,home',
+        'saved with its blocks', JSON.stringify(saved2 && saved2.blocks.map(b => b.type)));
+  await until(() => [...$('#stTabs').children].some(t => t.textContent === 'Pick demo' && t.classList.contains('on')), 3000);
+  check([...$('#stTabs').children].some(t => t.textContent === 'Pick demo' && t.classList.contains('on')), 'its tab, highlighted', txt('#stTabs'));
+  click([...$('#stTabs').children].find(t => t.classList.contains('st-new')));
+  check(blk('pose').length === 0 && $('#stName').value === 'Untitled motion', '+ New starts another motion');
+  click(blk('home')[0].querySelector('.bhead'));
+  click($('#stPalette').querySelector('.pal-wait'));
+  $('#stName').value = 'Second'; $('#stName').dispatchEvent(new w.Event('input'));
+  click('#stSave');
+  await until(() => Object.values(db.programs).some(p => p.name === 'Second'), 3000);
+  await until(() => $('#stTabs').children.length === 3, 3000);
+  check(Object.keys(db.programs).length === 2 && $('#stTabs').children.length === 3, 'two motions saved, a tab each (+ New)', txt('#stTabs'));
+  click([...$('#stTabs').children].find(t => t.textContent === 'Pick demo'));
+  await until(() => $('#stName').value === 'Pick demo', 3000);
+  check(blk('pose').length === 1 && blk('point').length === 1 && $('#stName').value === 'Pick demo', 'reopened from its tab');
+  check(/Saved "Pick demo"/.test(txt('#toasts')) && w.localStorage.getItem('mycobot-view') === 'studio', 'saving says so (a toast); the view is remembered', txt('#toasts'));
+  // undo and redo: a new block goes away and comes back; a slider move is one step
+  check($('#stUndo').disabled && $('#stRedo').disabled, 'nothing to undo right after opening');
+  const nBlocks = () => w.document.querySelectorAll('#stProg .blk').length, n0 = nBlocks();
+  click($('#stPalette').querySelector('.pal-wait'));
+  check(nBlocks() === n0 + 1 && !$('#stUndo').disabled, 'a change can be undone');
+  click('#stUndo');
+  check(nBlocks() === n0 && !$('#stRedo').disabled, 'undo removes it');
+  click('#stRedo');
+  check(nBlocks() === n0 + 1, 'redo brings it back');
+  click('#stUndo');
+  click(blk('pose')[0].querySelector('.bhead'));
+  const sj1 = () => +blk('pose')[0].querySelector('input[data-j="0"]').value, sj1a = sj1();
+  for (const v of [10, 20, 30, 45]) inputOn(blk('pose')[0].querySelector('input[data-j="0"]'), v);
+  check(sj1() === 45, 'slider moved');
+  w.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
+  check(sj1() === sj1a, 'Ctrl+Z undoes the whole slider move in one step', `${sj1a} -> ${sj1()}`);
+  w.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'z', ctrlKey: true, shiftKey: true, bubbles: true }));
+  check(sj1() === 45, 'Ctrl+Shift+Z redoes it');
+  // a note on a block
+  click(blk('point')[0].querySelector('[data-act="note"]'));
+  const ni = $('#stProg .bnote-in');
+  check(!!ni, 'the note button opens a field');
+  ni.value = 'pick up the part'; ni.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  check(blk('point')[0].querySelector('.bnote') && /pick up the part/.test(blk('point')[0].querySelector('.bnote').textContent), 'the note shows on the block');
+  // the timeline: a segment per top-level block; clicking one goes there
+  await until(compiledOk, 5000);
+  const segs = [...w.document.querySelectorAll('#stSegs .sseg')];
+  check(segs.length === w.document.querySelectorAll('#stProg > .blk').length && segs.some(s => /pick up the part/.test(s.title)) === false,
+        'a timeline segment per top-level block', `${segs.length} segments`);
+  click(segs[2]);
+  check(blk('pose')[0].classList.contains('sel') || w.document.querySelector(`#stProg .blk.sel`).dataset.id === segs[2].dataset.id, 'clicking a segment selects its block');
+  click('#stSave');
+  await until(() => Object.values(db.programs).find(p => p.name === 'Pick demo').blocks[4].blocks[0].note === 'pick up the part', 3000);
+  check(Object.values(db.programs).find(p => p.name === 'Pick demo').blocks[4].blocks[0].note === 'pick up the part', 'the note is saved');
+  // duplicate, export, import (the ⋯ menu)
+  click('#stMore');
+  check(!$('#stMenu').hidden, 'the menu opens');
+  click('#stmDuplicate');
+  await until(() => $('#stName').value === 'Pick demo copy', 3000);
+  check(Object.values(db.programs).some(p => p.name === 'Pick demo copy') && $('#stName').value === 'Pick demo copy', 'duplicate makes and opens a copy');
+  click('#stmExport');
+  check(w.downloads.at(-1) === 'Pick_demo_copy.motion.json', 'export offers a file', JSON.stringify(w.downloads));
+  const mf = new w.File([JSON.stringify({ format: 'mycobot280-motion', version: 1, name: 'From a file', blocks: saved2.blocks })], 'x.motion.json');
+  Object.defineProperty($('#stFile'), 'files', { value: [mf], configurable: true });
+  $('#stFile').dispatchEvent(new w.Event('change'));
+  await until(() => $('#stName').value === 'From a file', 3000);
+  check($('#stName').value === 'From a file' && /Imported "From a file"/.test(txt('#toasts')), 'import saves and opens it', txt('#toasts'));
+  click([...$('#stTabs').children].find(t => t.textContent === 'Pick demo'));
+  await until(() => $('#stName').value === 'Pick demo', 3000);
+  click('#viewArm');
+  check(!w.document.body.classList.contains('studio') && $('#studio').hidden, 'back to the arm view');
+  // the motions play from the Play tab (here in the simulation: offline)
+  click('#tabbtn-play');
+  await until(() => $('#progList').children.length === 4, 3000);
+  check($('#progList').children.length === 4 && /Pick demo/.test(txt('#progList')), 'the Play tab lists the motions', txt('#progList'));
+  click([...$('#progList').children].find(b => /Pick demo/.test(b.textContent)));
+  await until(() => /Path clear/.test(txt('#playNote')) && !$('#recPlay').disabled, 5000);
+  check(!$('#recPlay').disabled && txt('#playName') === 'Pick demo' && !$('#progEditBtn').hidden, 'selected: compiled, path clear, Play on', txt('#playNote'));
+  click('#recPlay');
+  check(/simulation/.test(txt('#playNote')), 'plays in the simulation', txt('#playNote'));
+  await sleep(600);
+  check(!$('#nowPlaying').hidden && txt('#npName') === 'Pick demo' && /simulation/.test(txt('#npSub')), 'the now-playing bar shows it', txt('#npName') + ' / ' + txt('#npSub'));
+  click('#recPlay');                                              // (it's long: stop it)
+  await until(() => /stopped/i.test(txt('#playNote')), 3000);
+  check(/stopped/i.test(txt('#playNote')), 'and stops', txt('#playNote'));
+  click('#progEditBtn');                                          // Edit in Studio
+  await until(() => w.document.body.classList.contains('studio'), 2000);
+  check(w.document.body.classList.contains('studio') && $('#stName').value === 'Pick demo', 'Edit in Studio opens it there');
+  click('#viewArm');
+  // 7b. the Workspace: shapes the arm keeps clear of, saved on the backend, used by every check
+  click('#viewWorkspace');
+  check(w.document.body.classList.contains('workspace') && !$('#workspace').hidden && $('#wsPalette').children.length === 3, 'Workspace opens with three shapes to add');
+  click($('#wsPalette').querySelector('[data-shape="box"]'));
+  check($('#wsList').children.length === 1 && $('#wsName').value === 'Box 1' && $('#wsProps').querySelectorAll('input[data-f="size"]').length === 3,
+        'a box is added and selected, with its size fields', txt('#wsList'));
+  await until(() => db.obstacles.length === 1, 3000);
+  check(db.obstacles.length === 1 && db.obstacles[0].shape === 'box' && db.obstacles[0].pos[2] === 50, 'saved on the backend, sitting on the table', JSON.stringify(db.obstacles));
+  const wsIn = (f, k) => $('#wsProps').querySelector(`input[data-f="${f}"][data-k="${k}"]`);
+  inputOn(wsIn('size', 0), 150); wsIn('size', 0).dispatchEvent(new w.Event('change', { bubbles: true }));
+  await until(() => db.obstacles[0] && db.obstacles[0].size[0] === 150, 3000);
+  check(db.obstacles[0].size[0] === 150, 'its width changed and saved');
+  click($('#wsPalette').querySelector('[data-shape="cylinder"]'));
+  check($('#wsProps').querySelectorAll('input[data-f="size"]').length === 2, 'a cylinder has a diameter and a height');
+  inputOn(wsIn('size', 0), 60);
+  await until(() => db.obstacles.length === 2 && db.obstacles[1].size[0] === 60, 3000);
+  check(db.obstacles[1].size[1] === 60, 'a cylinder stays round');
+  // put it where the arm is (the zero pose, offline): flagged
+  inputOn(wsIn('pos', 0), 0); inputOn(wsIn('pos', 1), -40); inputOn(wsIn('pos', 2), 300);
+  wsIn('pos', 2).dispatchEvent(new w.Event('change', { bubbles: true }));
+  check(/touches it/.test(txt('#wsProps')) && $('#wsList').querySelector('.ws-flag'), 'where the arm is: flagged', txt('#wsProps'));
+  check(/in the way/.test(txt('#wsCount')), 'the count says so', txt('#wsCount'));
+  click('#wsUndo');
+  check(!/touches it/.test(txt('#wsProps')) && $('#wsList').children.length === 2, 'undo moves it back (the three quick edits are one step)');
+  click($('#wsProps').querySelector('[data-act="dup"]'));
+  check($('#wsList').children.length === 3 && /Cylinder 2/.test(txt('#wsList')), 'duplicate', txt('#wsList'));
+  click($('#wsProps').querySelector('[data-act="del"]'));
+  check($('#wsList').children.length === 2, 'delete');
+  click('#wsMode-rotate');
+  check($('#wsMode-rotate').getAttribute('aria-pressed') === 'true' && $('#wsMode-translate').getAttribute('aria-pressed') === 'false', 'handle modes');
+  click([...$('#wsList').children].find(b => /Cylinder 1/.test(b.textContent)));
+  inputOn(wsIn('rot', 0), 90); inputOn(wsIn('pos', 2), 500);
+  click($('#wsProps').querySelector('[data-act="table"]'));
+  const rad = +wsIn('size', 0).value / 2;
+  check(+wsIn('pos', 2).value === rad, 'On the table: a lying cylinder rests on its side (its radius up)', `${wsIn('pos', 2).value} vs ${rad}`);
+  await until(() => db.obstacles.length === 2 && db.obstacles[1].rot[0] === 90 && db.obstacles[1].pos[2] === rad, 3000);
+  check(db.obstacles[1].pos[2] === rad, 'and saved');
+  // the solver has them too (they're in the work area it's sent)
+  await sleep(300);
+  const lastSettings = ikSent.filter(m => m.type === 'settings').at(-1);
+  check(lastSettings && lastSettings.area.obstacles && lastSettings.area.obstacles.length === 2, 'the solver gets the obstacles', JSON.stringify(lastSettings && lastSettings.area));
+  // clear them again: the steps below play recordings that go where these are
+  while ($('#wsList').querySelector('.ws-item')) { click($('#wsList').querySelector('.ws-item')); click($('#wsProps').querySelector('[data-act="del"]')); }
+  await until(() => db.obstacles.length === 0, 3000);
+  check(db.obstacles.length === 0, 'all deleted, and saved');
+  click('#viewArm');
+  // the recording the sequence step below uses (it used to come from waypoints)
+  const pts = saved.frames, ptsId = id();
+  db.recordings[ptsId] = { id: ptsId, created: Date.now() / 1000, name: 'Points', frames: pts, events: [], return_zero: false };
+  click('#recRefresh');
 
   // 8. sequence
   click('#tabbtn-play');
@@ -228,7 +425,7 @@ const input = (s, v) => { $(s).value = v; $(s).dispatchEvent(new w.Event('input'
   await until(() => Object.keys(db.sequences).length === 1);
   const seq = Object.values(db.sequences)[0];
   check(seq.steps.length === 2 && seq.steps[0].pause === 0.5, 'sequence saved', JSON.stringify(seq.steps));
-  await until(() => !$('#recPlay').disabled);
+  await until(() => txt('#playName') === 'Show' && !$('#recPlay').disabled);
   click('#recPlay');
   await until(() => /finished|stopped/i.test(txt('#playNote')), 25000);
   check(txt('#playNote') === 'Playback finished.', 'sequence plays locally', txt('#playNote'));
@@ -325,6 +522,17 @@ const input = (s, v) => { $(s).value = v; $(s).dispatchEvent(new w.Event('input'
   const nIk = ikSent.length; await sleep(500);
   check(ikSent.length === nIk, 'no /ws/ik solving while the arm solves', `${nIk} -> ${ikSent.length}`);
 
+  // 11b. a Studio motion plays on the arm from the Play tab, through the backend's playback
+  click('#tabbtn-play');
+  click([...$('#progList').children].find(b => /Pick demo/.test(b.textContent)));
+  await until(() => !$('#recPlay').disabled && txt('#playWhere') === 'on the arm', 5000);
+  click('#recPlay');
+  await until(() => remote && remote.body.program, 3000);
+  check(remote && remote.body.program === saved2.id && remote.name === 'Pick demo', 'POST /api/playback with the program', JSON.stringify(remote && remote.body));
+  click('#tabbtn-motion');
+  await until(() => !remote && !/Stop playback/.test(txt('#recPlay')), 5000);
+  await sleep(300);
+
   // 11b. the backend's saved attachment wins on connect; picking one tells the backend
   click('#tabbtn-setup');
   click([...$('#attList').children].find(b => b.textContent.startsWith('Vacuum suction')));
@@ -380,12 +588,10 @@ const input = (s, v) => { $(s).value = v; $(s).dispatchEvent(new w.Event('input'
   await until(() => !$('#wizNext').disabled, 2000);
   check($('#wzReq').querySelectorAll('.wz-i.ok').length === 3, 'start: link, servos and no playback checked');
   next();
-  check(title() === 'Hold the arm' && $('#wzTorqueOff').disabled, 'hold: torque-off waits for "I\'m holding it"');
+  check(title() === 'Hold the arm' && $('#wizNext').disabled && armTorque, 'hold: waits for "I\'m holding it"');
   $('#wzHeld').checked = true; $('#wzHeld').dispatchEvent(new w.Event('change'));
-  await until(() => !$('#wzTorqueOff').disabled, 1000);
-  click('#wzTorqueOff');
   await until(() => !armTorque && !$('#wizNext').disabled, 3000);
-  check(wsSent.some(m => m.type === 'torque' && m.on === false) && !$('#wizNext').disabled, 'torque off sent, Next enabled');
+  check(wsSent.some(m => m.type === 'torque' && m.on === false) && !$('#wizNext').disabled, 'ticking it turns torque off, Next enabled');
   pose = [0, 0, 0, 141, 0, 0]; tickOver = { 3: 3063 };
   next();
   check(title() === 'Pose it straight up' && $('#wzHints').children.length === 6, 'pose: six joint hints');
@@ -465,5 +671,31 @@ const input = (s, v) => { $(s).value = v; $(s).dispatchEvent(new w.Event('input'
   check(txt('#btnWs') === 'Connect', 'fatal error ends the link', txt('#btnWs'));
 
   check(!errors.length, 'no page errors', errors.join(' | '));
+
+  // 15. a fresh page: connecting from the connect screen, then the calibration question
+  armState = { stopped: false, fault: null, epoch: armState.epoch }; armRange = null; tickOver = {};
+  cfg = { ...cfg, calibrated: false };
+  ({ w, errors } = await loadPage({ fetch, WebSocket: FakeWS }));
+  await sleep(100);
+  check(!$('#landing').hidden && /\/ws\/arm$/.test($('#landUrl').value), 'the connect screen, address filled in', $('#landUrl').value);
+  click('#landGo');
+  check(/password/.test(txt('#landErr')), 'no password: asks for it', txt('#landErr'));
+  $('#landPw').value = 'wrong'; click('#landGo');
+  check(!$('#landProgress').hidden && $('#landing').classList.contains('connecting'), 'connecting: the animation runs');
+  await until(() => /rejected/.test(txt('#landErr')), 3000);
+  check(/rejected that password/.test(txt('#landErr')) && !$('#landForm').hidden, 'a wrong password goes back to the form', txt('#landErr'));
+  $('#landPw').value = 'pw'; click('#landGo');
+  await until(() => $('#lsServos').dataset.state === 'ok', 3000);
+  check(['#lsReach', '#lsAuth', '#lsServos'].every(id => $(id).dataset.state === 'ok') && !$('#landDone').hidden,
+        'reached, password accepted, every servo reading: done', ['#lsReach', '#lsAuth', '#lsServos'].map(id => $(id).dataset.state).join());
+  await until(() => $('#landing').hidden && !$('#calAsk').hidden, 3000);
+  check($('#landing').hidden && txt('#linkText').includes('Connected'), 'into the 3D scene, connected', txt('#linkText'));
+  check(!$('#calAsk').hidden && /hasn't been calibrated/.test(txt('#calAskText')) && !$('#calAskTag').hidden,
+        'asks to calibrate (recommended: not calibrated yet)', txt('#calAskText'));
+  click('#calAskGo');
+  check($('#calAsk').hidden && !$('#wiz').hidden && txt('#wizTitle') === 'Set up the arm', 'Calibrate opens the wizard');
+  click('#wizClose');
+  check($('#wiz').hidden, 'and it can be closed');
+  check(!errors.length, 'no page errors (second page)', errors.join(' | '));
   process.exit(failed ? 1 : 0);
 })().catch(e => { console.error(e); process.exit(1); });

@@ -32,7 +32,7 @@ function open(){
     if(s!==sock)return;
     let m;try{m=JSON.parse(ev.data);}catch(_){return;}
     if(m.type==='hello'){if(m.protocol===IK_PROTOCOL){ready=true;note='';}
-      else{note=`The backend speaks protocol ${m.protocol} and this page ${IK_PROTOCOL}. Open the page the backend serves (/sim).`;close();}return;}
+      else{note=`The backend speaks protocol ${m.protocol} and this page ${IK_PROTOCOL}. Open the page the backend serves (its own address).`;close();}return;}
     if(m.type==='error'&&['auth','locked'].includes(m.code)){   // don't retry a wrong password: it counts towards the lockout
       if(m.code==='auth')badPw=pw;note=m.code==='auth'?'The backend rejected that password.':m.message;close();return;}
     if(m.type==='ik'&&inFlight&&m.id===inFlight.id){ikRes={...m,basis:inFlight.q,src:'ik',fresh:true};

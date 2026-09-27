@@ -29,7 +29,7 @@ export const ATTACHMENTS={
   custom:{name:'Custom',length:null,diameter:null,note:'A straight tool along the flange axis. Set its length and diameter.'},
 };
 
-export function makeFK(){return{pos:FIX.map(()=>new THREE.Vector3()),axis:FIX.map(()=>new THREE.Vector3()),tcp:new THREE.Vector3(),dir:new THREE.Vector3()};}
+export function makeFK(){return{pos:FIX.map(()=>new THREE.Vector3()),axis:FIX.map(()=>new THREE.Vector3()),mat:FIX.map(()=>new THREE.Matrix4()),tcp:new THREE.Vector3(),dir:new THREE.Vector3()};}
 const _T=new THREE.Matrix4(),_R=new THREE.Matrix4(),_Z=new THREE.Vector3(0,0,1);
 export function fk(q,out){ // q in radians; fills out (from makeFK) with joint positions/axes, the TCP and the flange normal
   _T.identity();
@@ -38,6 +38,7 @@ export function fk(q,out){ // q in radians; fills out (from makeFK) with joint p
     out.pos[i].setFromMatrixPosition(_T);
     out.axis[i].copy(_Z).transformDirection(_T);
     _R.makeRotationZ(q[i]);_T.multiply(_R);
+    if(out.mat)out.mat[i].copy(_T);   // joint i's frame after its turn (what scene.js rotGroups[i] is)
   }
   out.dir.copy(_Z).transformDirection(_T);
   out.tcp.setFromMatrixPosition(_T).addScaledVector(out.dir,toolLen);

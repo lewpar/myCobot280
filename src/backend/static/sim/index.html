@@ -18,12 +18,81 @@
 <script type="module" src="js/main.js" onerror="const f=document.getElementById('fail');f.style.display='flex';f.textContent='The page\'s scripts failed to load. Check your connection and reload.';"></script>
 </head>
 <body>
+<!-- The connect screen the page opens on (landing.js) -->
+<div class="landing" id="landing" role="dialog" aria-modal="true" aria-labelledby="landTitle">
+  <div class="land-card">
+    <div class="land-art" aria-hidden="true">
+      <svg viewBox="0 0 220 170" class="land-arm">
+        <ellipse class="la-shadow" cx="110" cy="152" rx="56" ry="7"/>
+        <circle class="la-ring r1" cx="110" cy="92" r="30"/><circle class="la-ring r2" cx="110" cy="92" r="30"/>
+        <rect class="la-base" x="84" y="124" width="52" height="26" rx="6"/>
+        <g class="la-j1"><rect class="la-link" x="100" y="96" width="20" height="32" rx="10"/>
+          <g class="la-j2"><rect class="la-link" x="101" y="58" width="18" height="44" rx="9"/><circle class="la-joint" cx="110" cy="100" r="7"/>
+            <g class="la-j3"><rect class="la-link" x="102" y="24" width="16" height="40" rx="8"/><circle class="la-joint" cx="110" cy="62" r="6"/>
+              <g class="la-j4"><rect class="la-link" x="104" y="4" width="28" height="14" rx="7"/><circle class="la-joint" cx="110" cy="26" r="5.5"/>
+                <circle class="la-tip" cx="132" cy="11" r="3.2"/></g></g></g></g>
+      </svg>
+      <div class="land-check" id="landDone" hidden><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></div>
+    </div>
+    <div class="land-brand">myCobot 280 <span>arm control</span></div>
+    <div id="landForm">
+      <h1 id="landTitle">Connect to your arm</h1>
+      <p class="land-sub">The page talks to the backend on the Pi, which drives the arm.</p>
+      <label class="field-label" for="landUrl">Backend address</label>
+      <input type="text" id="landUrl" spellcheck="false" autocomplete="url">
+      <label class="field-label" for="landPw">Password</label>
+      <input type="password" id="landPw" placeholder="Arm password" autocomplete="current-password">
+      <label class="chk"><input type="checkbox" id="landRemember"> Remember the password on this device</label>
+      <p class="land-err" id="landErr" role="alert"></p>
+      <button id="landGo" class="primary block land-go">Connect</button>
+      <button id="landSim" class="ghost block">Use the simulator without the arm</button>
+    </div>
+    <div id="landProgress" hidden>
+      <h1>Connecting to <span id="landHost"></span></h1>
+      <ol class="land-steps">
+        <li id="lsReach">Reaching the backend<small></small></li>
+        <li id="lsAuth">Checking the password<small></small></li>
+        <li id="lsServos">Reading the servos<small></small></li>
+      </ol>
+      <div class="land-row"><button id="landCancel" class="ghost">Cancel</button><button id="landContinue" class="primary" hidden>Continue anyway</button></div>
+    </div>
+  </div>
+</div>
+<!-- "Calibrate the arm?" once connected -->
+<div class="modal-back" id="calAsk" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="calAskTitle">
+    <div class="modal-icon" aria-hidden="true"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="8"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/><circle cx="12" cy="12" r="2"/></svg></div>
+    <h2 id="calAskTitle">Calibrate the arm? <span class="modal-tag" id="calAskTag" hidden></span></h2>
+    <p id="calAskText"></p>
+    <div class="modal-actions"><button id="calAskSkip" class="ghost">Skip for now</button><button id="calAskGo" class="primary">Calibrate</button></div>
+  </div>
+</div>
+<div class="toasts" id="toasts" aria-live="polite"></div>
+<!-- the first-run tour (tour.js) -->
+<div class="tour" id="tour" hidden>
+  <div class="tour-spot" id="tourSpot"></div>
+  <div class="tour-bubble" id="tourBubble" role="dialog" aria-labelledby="tourTitle">
+    <div class="tour-step" id="tourStep"></div>
+    <h2 id="tourTitle"></h2>
+    <p id="tourText"></p>
+    <div class="tour-actions"><button id="tourSkip" class="ghost">Skip the tour</button><span class="spacer"></span>
+      <button id="tourBack">Back</button><button id="tourNext" class="primary">Next</button></div>
+  </div>
+</div>
 <div class="app">
 <header class="topbar">
   <div class="brand">
     <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true"><rect width="28" height="28" rx="7" fill="var(--amber)"/>
       <path d="M8 21h12M11 21v-5l4-5 3 3" stroke="#1d1400" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/><circle cx="18" cy="14" r="1.9" fill="#1d1400"/></svg>
     <div><div class="brand-name">myCobot 280</div><div class="brand-sub">Inverse kinematics &amp; arm control</div></div>
+  </div>
+  <div class="view-switch" role="group" aria-label="View">
+    <button id="viewArm" aria-pressed="true" title="The arm: drive it, record, play">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 20h14M8 20v-6l5-6 4 4"/><circle cx="17" cy="12" r="2"/></svg>Arm</button>
+    <button id="viewStudio" aria-pressed="false" title="Motion Studio: build motions from blocks in a sandbox">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="8" height="6" rx="1.5"/><rect x="7" y="14" width="8" height="6" rx="1.5"/><path d="M11 7h6v10h-2"/></svg>Studio</button>
+    <button id="viewWorkspace" aria-pressed="false" title="Workspace: the things around the arm, which it keeps clear of">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/></svg>Workspace</button>
   </div>
   <div class="spacer"></div>
   <div class="pop-anchor">
@@ -44,6 +113,8 @@
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/><circle cx="12" cy="12" r="2"/></svg><span>Calibrate</span></button>
   <button id="btnLimp" class="pill" aria-pressed="false" disabled title="Torque off: pose the arm by hand. Hold it first, it drops without torque.">
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 13V5.5a1.5 1.5 0 0 1 3 0V12M11 11V4.5a1.5 1.5 0 0 1 3 0V11M14 11V5.5a1.5 1.5 0 0 1 3 0V13M17 9.5a1.5 1.5 0 0 1 3 0V15a6 6 0 0 1-6 6h-1.5a6 6 0 0 1-4.6-2.2L4.6 15a1.6 1.6 0 0 1 2.4-2l1 1"/></svg><span>Hand-guide</span></button>
+  <button class="icon-btn" id="btnTour" title="A quick tour of the page" aria-label="Take the tour">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.3-1 .9-1 1.6v.4"/><circle cx="12" cy="17" r=".6" fill="currentColor"/></svg></button>
   <button class="icon-btn" id="themeBtn" title="Theme: system" aria-label="Switch colour theme">
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor"/></svg></button>
   <button id="btnStop" class="stop" aria-pressed="false" title="Esc also stops">Stop <kbd>Esc</kbd></button>
@@ -69,6 +140,13 @@
   <div class="overlay legend" aria-hidden="true">
     <span><i style="background:var(--amber)"></i>Target</span><span><i style="background:#3b82c4"></i>Solved pose</span>
     <span><i style="background:#2f9a5a"></i>Real arm</span><span><i style="background:#ff5a36"></i>Tool path</span>
+  </div>
+  <div class="overlay now-playing" id="nowPlaying" hidden role="status" aria-live="polite">
+    <span class="np-ring" id="npRing" aria-hidden="true"><svg viewBox="0 0 36 36"><circle class="np-bg" cx="18" cy="18" r="15"/><circle class="np-fg" cx="18" cy="18" r="15"/></svg>
+      <svg class="np-play" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></span>
+    <span class="np-text"><b id="npName"></b><span id="npSub"></span></span>
+    <span class="np-left" id="npLeft"></span>
+    <button id="npStop" class="np-stop" title="Stop playback">Stop</button>
   </div>
   <section class="overlay hud" id="jointsHud" aria-label="Joint positions">
     <div class="hud-head" title="Amber: simulated servo · dark tick: commanded angle · green: real servo reading · thin line: zero">
@@ -166,21 +244,18 @@
       <label class="chk"><input type="checkbox" id="recZero"> Return to the zero pose after playing</label>
     </div>
     <p class="callout" id="recNote"></p>
-    <div class="card" id="cardWaypoints" data-fold="open">
-      <div class="card-head"><h2>Waypoints</h2><span class="meta" id="wpMeta">0 points</span></div>
-      <div class="row seg tight"><button id="wpAdd" class="primary">Add point</button><button id="wpClear">Clear</button></div>
-      <div id="wpList" class="reclist"></div>
-      <div class="slider inline"><span>Move speed</span><input type="range" id="wpSpeed" min="5" max="120" value="40"><output id="wpSpeedv"></output></div>
-      <div class="slider inline"><span>Pause</span><input type="range" id="wpPause" min="0" max="50" value="0" aria-label="Pause at each point"><output id="wpPausev"></output></div>
-      <button id="wpMake" class="block" disabled>Make a recording from the points</button>
-      <p class="note help">Pose the arm, add a point, repeat. Makes a smooth recording through the points, pausing at each one for the time set.</p>
+    <div class="card" id="cardStudioLink">
+      <div class="card-head"><h2>Build a motion</h2></div>
+      <p class="note" style="margin-top:0">Put moves, waits, LED colours and repeats together from blocks in the Motion Studio,
+        try them in its sandbox, save them and run them on the arm later.</p>
+      <button id="btnToStudio" class="block">Open the Motion Studio</button>
     </div>
   </section>
 
   <section class="tabpanel" id="tab-play" role="tabpanel" aria-labelledby="tabbtn-play" hidden>
     <div class="card" id="cardPlayback">
       <div class="card-head"><h2>Playback</h2><span class="meta" id="playWhere">simulation</span></div>
-      <div class="playname" id="playName">Pick a recording or a sequence below</div>
+      <div class="playname" id="playName">Pick a recording, a sequence or a motion below</div>
       <div class="progress" aria-hidden="true"><div id="recProg"></div></div>
       <div class="row"><button id="recPlay" class="primary block" disabled>Play</button></div>
       <div class="opts">
@@ -205,6 +280,11 @@
         <div class="row seg"><button id="edTrim" disabled>Apply trim</button><button id="edExport">Export</button><button id="edDel" class="danger">Delete</button></div>
         <p class="callout" id="edCheck"></p>
       </div>
+    </div>
+    <div class="card" id="cardMotions" data-fold="open">
+      <div class="card-head"><h2>Motions</h2><span class="head-actions"><button id="progEditBtn" class="ghost" hidden title="Open the selected motion in the Studio">Edit in Studio</button></span></div>
+      <div id="progList" class="reclist" role="listbox" aria-label="Motions from the Studio"></div>
+      <p class="note" id="progEmpty">Motions you build in the Studio (top bar) appear here to play.</p>
     </div>
     <div class="card" id="cardSequences" data-fold="open">
       <div class="card-head"><h2>Sequences</h2><button id="seqNew" class="ghost">New</button></div>
@@ -281,6 +361,77 @@
 
   </div>
 </aside>
+
+<!-- Workspace (workspace.js): shapes on the left, their own 3D view on the right -->
+<section class="studio workspace-view" id="workspace" hidden aria-label="Workspace">
+  <div class="st-side">
+    <div class="st-head">
+      <div class="ws-title"><b>Workspace</b><span id="wsCount"></span></div>
+      <div class="st-headbtns">
+        <button id="wsUndo" class="ghost icon-sq" title="Undo (Ctrl+Z)" aria-label="Undo">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14L4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/></svg></button>
+        <button id="wsRedo" class="ghost icon-sq" title="Redo (Ctrl+Shift+Z)" aria-label="Redo">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 14l5-5-5-5"/><path d="M20 9H9a5 5 0 0 0 0 10h3"/></svg></button>
+        <span class="ws-state" id="wsState">Saved</span>
+      </div>
+    </div>
+    <div class="ws-palette" id="wsPalette" aria-label="Shapes to add"></div>
+    <div class="ws-list" id="wsList" aria-label="Shapes"></div>
+    <div class="ws-props" id="wsProps"></div>
+  </div>
+  <div class="st-view">
+    <div class="st-stage" id="wsStage"></div>
+    <div class="overlay ws-tools" role="toolbar" aria-label="Handles">
+      <button id="wsMode-translate" title="Move (W)"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2v20M2 12h20M12 2l-3 3M12 2l3 3M12 22l-3-3M12 22l3-3M2 12l3-3M2 12l3 3M22 12l-3-3M22 12l-3 3"/></svg>Move</button>
+      <button id="wsMode-rotate" title="Rotate (E)"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v5h-5"/></svg>Rotate</button>
+      <button id="wsMode-scale" title="Size (R)"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="10" width="10" height="10" rx="1"/><path d="M14 10l6-6M15 4h5v5"/></svg>Size</button>
+      <span class="ws-sep"></span>
+      <button id="wsSnap" title="Snap to 1 cm and 15°">Snap</button>
+    </div>
+    <div class="overlay st-badge">The arm keeps clear of every shape here</div>
+  </div>
+</section>
+
+<!-- Motion Studio (studio.js): blocks on the left, the sandbox (not the real arm) on the right -->
+<section class="studio" id="studio" hidden aria-label="Motion Studio">
+  <div class="st-side">
+    <div class="st-head">
+      <input type="text" id="stName" maxlength="60" spellcheck="false" aria-label="Motion name">
+      <div class="st-headbtns pop-anchor">
+        <button id="stUndo" class="ghost icon-sq" title="Undo (Ctrl+Z)" aria-label="Undo">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14L4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/></svg></button>
+        <button id="stRedo" class="ghost icon-sq" title="Redo (Ctrl+Shift+Z)" aria-label="Redo">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 14l5-5-5-5"/><path d="M20 9H9a5 5 0 0 0 0 10h3"/></svg></button>
+        <button id="stSave" class="primary" title="Save this motion (Ctrl+S)">Save</button>
+        <button id="stMore" class="ghost icon-sq" aria-haspopup="true" aria-expanded="false" aria-controls="stMenu" title="More" aria-label="More">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg></button>
+        <div class="popover st-menu" id="stMenu" hidden role="menu">
+          <button id="stmDuplicate" role="menuitem">Duplicate</button>
+          <button id="stmExport" role="menuitem">Export to a file</button>
+          <button id="stmImport" role="menuitem">Import from a file…</button>
+          <button id="stmDelete" role="menuitem" class="danger">Delete</button>
+        </div>
+        <input type="file" id="stFile" accept=".json,application/json" hidden>
+      </div>
+    </div>
+    <div class="st-tabs" id="stTabs" role="tablist" aria-label="Your motions"></div>
+    <div class="st-palette" id="stPalette" aria-label="Blocks to add"></div>
+    <div class="st-prog" id="stProg" aria-label="The motion's blocks"></div>
+  </div>
+  <div class="st-view">
+    <div class="st-stage" id="stStage"></div>
+    <div class="overlay st-badge">Sandbox · not the real arm</div>
+    <div class="st-segs" id="stSegs" aria-label="Timeline: one segment per block"></div>
+    <div class="st-bar">
+      <button id="stPlay" class="primary" aria-pressed="false">Preview</button>
+      <button id="stStop" title="Stop the preview">Stop</button>
+      <input type="range" id="stTime" min="0" max="1" step="0.01" value="0" aria-label="Preview time">
+      <output id="stTimev">0.0 s</output>
+      <span class="st-state" id="stState"></span>
+    </div>
+    <p class="st-note" id="stNote" role="status"></p>
+  </div>
+</section>
 </div>
 </body>
 </html>

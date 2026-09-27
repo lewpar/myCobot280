@@ -65,7 +65,7 @@ Only one program can have the serial port open at a time (the backend or one of 
 The second one to start exits with a "port is already in use" message.
 
 ```
-./run.sh              # API on :8000, docs at /docs, simulator at http://<pi>:8000/sim
+./run.sh              # the webapp at http://<pi>:8000/, the API under /api, docs at /docs
 ```
 
 In a terminal it asks two things first: which IK solver to use (`native`, fast and the default, `pink` or `ikpy`)
@@ -74,12 +74,18 @@ password saved in `src/backend/.env`, or, with none saved, one it makes up and p
 set in the environment. Give the answers up front to skip the questions:
 
 ```
+./run.sh --sim                    # a simulated arm instead of the real one: try everything on any computer
 ./run.sh --ik pink                # the Pink solver (installed on first use; 64-bit OS only)
 ./run.sh --password hunter2       # the password (it lands in your shell history: typing it when asked is safer)
 ./run.sh --no-prompt              # ask nothing: the saved settings or the defaults
 ```
 
 Started without a terminal (e.g. as a service) it never asks.
+
+**Simulated mode** (`--sim`, or answer yes when it finds no arm on the serial port) runs the backend on a
+built-in simulated arm, so the page, the IK, the calibration wizard, recordings, playback and the Motion Studio
+all work on a laptop, with nothing to break. The simulated arm keeps its own calibration in `sim_data/`;
+recordings and programs are shared with the real arm's library.
 
 The first run creates `venv/` and installs the backend's requirements (again whenever
 `src/backend/requirements.txt` changes). The script prints the simulator's address for each network
@@ -259,7 +265,8 @@ arm link doesn't have to be connected. Brightness is capped at half the NeoPixel
 
 ## IK simulator and live link
 
-The backend serves a 3D inverse-kinematics simulator at `http://<pi>:8000/sim` and two WebSockets
+The backend serves the webapp (3D simulator and arm control) at `http://<pi>:8000/` (the old `/sim` address
+redirects there) and two WebSockets
 (protocol reference: [WEBSOCKET.md](WEBSOCKET.md)):
 
 - `/ws/arm` drives the arm. Send it a `target` (a point for the tool tip, in mm) and the backend solves the
@@ -279,8 +286,9 @@ an import map). There is no build step: edit a file and reload. Browsers don't l
 open it through the backend. It needs the backend (and the password) to solve targets, even when no arm is
 connected.
 
-1. `./run.sh backend`, open `http://<pi>:8000/sim`, click the connection chip in the top bar, enter the password and press **Connect**.
-   The chip shows the link state; **Stop** (or Esc) is always in the top-right corner.
+1. `./run.sh`, open `http://<pi>:8000/`. The page opens on its connect screen: enter the password and press
+   **Connect**. It shows the backend being reached, the password checked and the servos read, then goes into
+   the 3D scene and asks whether to calibrate. **Stop** (or Esc) is always in the top-right corner.
 2. Open **Setup → Calibration → Start the calibration wizard** (or the **Calibrate** button that appears in
    the top bar when the arm needs it). It walks you through it with the 3D model: torque off while you hold
    the arm, pose it straight up, re-centre the servos whose wrap point is in the way, save the zero, turn torque
@@ -324,6 +332,38 @@ itself. Only the tip (the flange centre, or the attachment's tip) has to stay in
 the rest of the arm may cross the edges. Poses that take the tip outside are refused like a collision by
 the page and the backend (REST moves, IK goals, playback). The setting is saved on the Pi.
 
+### Motion Studio
+
+**Studio** in the top bar switches to the Motion Studio: build arm motions from blocks (move to a joint pose,
+move the tool tip to a point, go to zero, wait, set the ATOM's LEDs, repeat) and try them in its own 3D
+sandbox, which never moves the real arm. Click a block type to add it after the selected block (or inside a
+selected repeat), drag blocks by their ⋮⋮ grip to reorder them, and select a move to edit it: joint sliders for
+a pose; x/y/z for a point, or drag the arrows on the point in the sandbox; and **From the arm** to copy the
+real arm's pose (pose it by hand with Hand-guide). A pose's joints can also be turned by dragging the rings
+on the sandbox arm. Give a block a note (✎) to say what it's for ("over the tray"); the timeline under the
+sandbox shows a segment per block and the now-playing bar names the block the arm is on. Undo and redo
+(Ctrl+Z, Ctrl+Shift+Z) cover everything, the ⋯ menu duplicates, exports and imports motions, and Ctrl+S saves.
+The backend
+checks every change as you go (it solves the points, routes moves around obstacles and collision-checks the
+whole thing) and marks any problem on its block. **Preview** plays it in the sandbox and **Save** keeps it on
+the Pi. Make as many motions as you like: each has a tab above the blocks, and **+ New** starts another. To
+play one, go back to the arm view's **Play** tab: it's listed under **Motions**, with its path drawn and checked
+like a recording, and plays on the real arm (or in the simulation when there isn't one). **Edit in Studio**
+takes you back to it.
+
+### Workspace
+
+**Workspace** in the top bar is a small 3D editor, a bit like Tinkercad, for the things around the arm: a tray,
+a monitor, a wall. Add a **box**, **cylinder** or **sphere** (it lands on the table in front of the arm), click
+it to select it, and drag its handles to **move**, **rotate** or **size** it (W, E, R; it snaps to 1 cm and 15°
+unless you turn Snap off), or type its position, size and rotation. **On the table** sets it down, **Duplicate**
+and **Delete** do what they say, and Ctrl+Z undoes. Changes save to the Pi by themselves.
+
+The arm keeps every part of itself, the ATOM and the attachment 10 mm clear of every shape, even with the work
+area switched off: goals, targets, playback, and the Studio's motions are checked against them, and moves route
+over them where they can. The shapes are drawn in every 3D view. A shape the arm is touching in the pose shown,
+or one inside the arm's base, is flagged in the list.
+
 ### Recording, playback and the library
 
 **Record tab.** Press **Record**, move the arm (turn on **Hand-guide mode** from the same tab to move it
@@ -333,11 +373,10 @@ at either end is trimmed. LED changes you make in the ATOM tab while recording a
 replayed on the ATOM. Tick **Return to the zero pose after playing** to end playback with the arm
 straight up.
 
-**Waypoints** (also in Record) are the tidy alternative to hand-guided wobble: pose the arm, **Add point**,
-repeat, then **Make a recording from the points**. The arm moves smoothly between the points at the
-chosen speed, optionally pausing at each.
+For tidy motions built from poses, rather than hand-guided wobble, use the **Motion Studio** (above); it
+replaces the old Waypoints card.
 
-**Play tab.** Pick a recording or a sequence. Its tool path is drawn in violet in the 3D view and the
+**Play tab.** Pick a recording, a sequence or a motion from the Studio. Its tool path is drawn in violet in the 3D view and the
 whole path is collision-checked before **Play** is allowed. Playback first moves to the start pose at
 Max speed (Motion), then follows the recording:
 

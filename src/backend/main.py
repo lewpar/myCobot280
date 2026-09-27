@@ -28,11 +28,16 @@ import arm_model as model
 import library
 import ik
 import player
+import program
 from mycobot280 import MyCobot280, SPEED_MIN, SPEED_MAX, ACCEL_MIN, ACCEL_MAX
 from ik_link import IKLink, PROTOCOL
 
 SERIAL_PORT = os.environ.get("MYCOBOT_PORT", "/dev/ttyAMA0")
 SERIAL_BAUD = int(os.environ.get("MYCOBOT_BAUD", "1000000"))
+# simulated mode (./run.sh --sim): a simulated arm (simbus.SimBus) instead of the serial port, for trying the page
+# anywhere. Its calibration lives in sim_data/ so the real arm's is never touched; the library is shared.
+SIMULATED = os.environ.get("MYCOBOT_SIM", "").strip().lower() in ("1", "true", "yes", "on") or SERIAL_PORT == "sim"
+SIM_DIR = os.path.join(model.ROOT, "sim_data")
 CORS_ORIGINS = os.environ.get("MYCOBOT_CORS_ORIGINS", "*")
 
 # ---------------------------------------------------------------------------
@@ -84,8 +89,12 @@ async def lifespan(app: FastAPI):
     global arm, link
     arm = link = None
     try:
-        arm = MyCobot280(SERIAL_PORT, SERIAL_BAUD)
+        if SIMULATED:
+            arm = _simulated_arm()
+        else:
+            arm = MyCobot280(SERIAL_PORT, SERIAL_BAUD)
         link = IKLink(arm)
+        link.simulated = SIMULATED
     except Exception as e:
         print(f"WARNING: Could not open serial port {SERIAL_PORT}: {e}")
     yield
@@ -94,6 +103,22 @@ async def lifespan(app: FastAPI):
     if arm:
         arm.close()
     arm = link = None
+
+
+def _simulated_arm():
+    """The simulated arm, its calibration in sim_data/ (made the first time: calibrated, every servo's centre
+    at the zero pose, as a re-centred arm has)."""
+    from simbus import SimBus
+    os.makedirs(SIM_DIR, exist_ok=True)
+    model.CALIB_FILE = os.path.join(SIM_DIR, "ik_calibration.json")
+    model.CENTER_FILE = os.path.join(SIM_DIR, "center_positions.json")
+    model.RECENTER_LOG = os.path.join(SIM_DIR, "servo_centres_log.json")
+    if not os.path.exists(model.CALIB_FILE):
+        c = model.load_calibration()
+        c.update(zero=[2048] * 6, dir=[1] * 6, calibrated=True)
+        model.save_calibration(c)
+    print("  Simulated arm: nothing moves for real (MYCOBOT_SIM). Its calibration is in sim_data/.", flush=True)
+    return MyCobot280("simulated", transport=SimBus())
 
 
 app = FastAPI(title="MyCobot280 API", lifespan=lifespan)
@@ -221,9 +246,19 @@ class PoseRequest(BaseModel):
     angles: list[float] = Field(min_length=6, max_length=6)
 
 
+class ProgramRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+    blocks: list[Any]
+
+
+class CompileRequest(BaseModel):
+    blocks: list[Any]
+
+
 class PlaybackRequest(BaseModel):
     recording: str | None = None
     sequence: str | None = None
+    program: str | None = None
     rate: float = Field(1.0, ge=0.25, le=4)
     loop: bool = False
     timed: bool = Field(True, description="keep the recorded timing (per-joint speeds)")
@@ -243,7 +278,8 @@ def health():
         "connected": connected,
         "servo_count": len(servos),
         "servo_ids": servos,
-        "serial_port": SERIAL_PORT,
+        "serial_port": "simulated" if SIMULATED else SERIAL_PORT,
+        "simulated": SIMULATED,
         "ik": ik.DEFAULT_ENGINE,
     }
 
@@ -514,19 +550,105 @@ def delete_pose(pid: str):
     return {"success": True}
 
 
+# ---- Obstacles (the Workspace view): part of the work area, checked by every collision check ----
+
+class ObstaclesRequest(BaseModel):
+    obstacles: list[Any]
+
+
+@app.get("/api/obstacles")
+def get_obstacles():
+    area = link.calib["area"] if link else model.load_calibration()["area"]
+    return {"obstacles": area.get("obstacles", [])}
+
+
+@app.put("/api/obstacles")
+def put_obstacles(req: ObstaclesRequest):
+    """Replace every obstacle. Works without the arm too (saved with the calibration)."""
+    obs = model.clean_obstacles(req.obstacles)
+    if obs is None:
+        raise HTTPException(422, f"Obstacles need an id, a shape ({', '.join(model.OBST_SHAPES)}), pos in mm (±1000), "
+                                 f"size 5-1000 mm, rot in degrees (±360) and a #rrggbb colour; at most {model.OBST_MAX}.")
+    if link:
+        link.set_obstacles(obs)
+    else:
+        c = model.load_calibration()
+        c["area"] = dict(c["area"], obstacles=obs)
+        model.save_calibration(c)
+    return {"obstacles": obs}
+
+
+# ---- Motion Studio programs (program.py): stored, compiled into frames, played like a recording ----
+
+def _compile(blocks):
+    """Compile with the arm's attachment, work area and joint limits (the saved ones without an arm)."""
+    if link:
+        calib, lims = link.solver_defaults()
+    else:
+        calib, lims = model.load_calibration(), None
+    limits = [(lo * ik.DEG, hi * ik.DEG) if lo < hi else u for (lo, hi), u in zip(lims, ik.URDF_LIM)] if lims else None
+    return program.compile_program(blocks, calib["tool_mm"] / 1000, calib["tool_d_mm"] / 2000, calib["area"], limits)
+
+
+@app.get("/api/programs")
+def list_programs():
+    return library.PROGRAMS.list()
+
+
+@app.get("/api/programs/{pid}")
+def get_program(pid: str):
+    return _get(library.PROGRAMS, pid, "program")
+
+
+@app.post("/api/programs")
+def save_program(req: ProgramRequest):
+    return library.PROGRAMS.create({"name": _invalid(library.clean_name, req.name),
+                                    "blocks": _invalid(library.clean_blocks, req.blocks), "updated": time.time()})
+
+
+@app.put("/api/programs/{pid}")
+def update_program(pid: str, req: ProgramRequest):
+    _get(library.PROGRAMS, pid, "program")
+    name, blocks = _invalid(library.clean_name, req.name), _invalid(library.clean_blocks, req.blocks)
+    return library.PROGRAMS.update(pid, lambda p: p.update(name=name, blocks=blocks, updated=time.time()))
+
+
+@app.delete("/api/programs/{pid}")
+def delete_program(pid: str):
+    _get(library.PROGRAMS, pid, "program")
+    library.PROGRAMS.delete(pid)
+    return {"success": True}
+
+
+@app.post("/api/programs/compile")
+def compile_program(req: CompileRequest):
+    """What a program's blocks become (frames, LED cues, where each block starts, the poses it solved) and
+    anything wrong with it. Needs no arm: the Studio previews with it."""
+    return _compile(_invalid(library.clean_blocks, req.blocks))
+
+
 @app.post("/api/playback")
 def start_playback(req: PlaybackRequest):
-    """Play a recording or a sequence on the arm. The whole path is collision-checked first (409),
+    """Play a recording, a sequence or a program on the arm. The whole path is collision-checked first (409),
     then every goal goes through the IK link's usual checks. Runs with no page connected."""
     _get_arm()
-    if (req.recording is None) == (req.sequence is None):
-        raise HTTPException(422, "Give either a recording or a sequence.")
+    if sum(x is not None for x in (req.recording, req.sequence, req.program)) != 1:
+        raise HTTPException(422, "Give one of a recording, a sequence or a program.")
     if link.stopped:
         raise HTTPException(423, "The arm is stopped. Resume it before playing.")
     why = link.range_problem()
     if why:
         raise HTTPException(409, why)
-    if req.recording is not None:
+    if req.program is not None:
+        prog = _get(library.PROGRAMS, req.program, "program")
+        out = _compile(prog["blocks"])
+        if out["problems"]:
+            raise HTTPException(409, f"Playback refused: {out['problems'][0]['message']}.")
+        if len(out["frames"]) < 2:
+            raise HTTPException(422, "That program doesn't move the arm.")
+        name, steps = prog["name"], [{"name": prog["name"], "frames": out["frames"], "events": out["events"],
+                                      "return_zero": False, "pause": 0}]
+    elif req.recording is not None:
         r = _get(library.RECORDINGS, req.recording, "recording")
         name, steps = r["name"], [{**r, "pause": 0}]
     else:
@@ -616,9 +738,9 @@ def torque_all_servos(req: TorqueRequest):
 
 
 # ---------------------------------------------------------------------------
-# IK simulator page (static/sim: index.html, style.css and ES modules in js/, no build step), served
-# from here so it can reach /ws/arm on the same host. It holds no secrets; it asks for the password
-# before connecting.
+# The webapp (static/sim: index.html, style.css and ES modules in js/, no build step), served at the root
+# so it can reach /ws/arm on the same host. It holds no secrets; it asks for the password before
+# connecting. Mounted at the end of this file, after every route, so /api, /ws and /docs come first.
 # ---------------------------------------------------------------------------
 
 class _SimFiles(StaticFiles):
@@ -630,11 +752,9 @@ class _SimFiles(StaticFiles):
 
 
 @app.get("/sim", include_in_schema=False)
-def ik_sim_page():
-    return RedirectResponse("/sim/")   # the modules are loaded relative to /sim/
-
-
-app.mount("/sim", _SimFiles(directory=os.path.join(os.path.dirname(__file__), "static", "sim"), html=True), name="sim")
+@app.get("/sim/{rest:path}", include_in_schema=False)
+def old_sim_address(rest: str = ""):
+    return RedirectResponse("/")   # the page used to live at /sim/: keep old bookmarks working
 
 
 # ---------------------------------------------------------------------------
@@ -781,6 +901,9 @@ async def ws_ik(ws: WebSocket):
             await ws.send_json(reply)
     except (WebSocketDisconnect, RuntimeError):
         pass
+
+
+app.mount("/", _SimFiles(directory=os.path.join(os.path.dirname(__file__), "static", "sim"), html=True), name="webapp")
 
 
 if __name__ == "__main__":

@@ -23,9 +23,15 @@ import {initAtom} from './atom.js';
 import {initRecord,recTick} from './record.js';
 import {initPlay,playStep,playStop,endPlay,playNote,pathWanted} from './play.js';
 import {initWizard,wizardFrame,wizardStatus} from './wizard.js';
+import {initLanding} from './landing.js';
+import {initStudio,studioFrame} from './studio.js';
+import {initTour} from './tour.js';
+import {initViews} from './views.js';
+import {initWorkspace,workspaceFrame} from './workspace.js';
 import {$,cssVar,V} from './util.js';
 
 initChrome();
+initViews();
 initSettings();
 initMotion();
 initLink();
@@ -35,6 +41,10 @@ initPlay();
 initApi();
 initSolve();
 initWizard();
+initLanding();
+initStudio();
+initTour();
+initWorkspace();
 
 // dragging the target's arrows
 gizmo.addEventListener('dragging-changed',e=>{orbit.enabled=!e.value;if(e.value){setDemo(false);S.homeLock=false;}});
@@ -166,6 +176,8 @@ function frame(){
   if(showReal){fk(measured.map(v=>v*DEG),realF);const ra=realGeo.attributes.position.array;ra.set([0,0,0.06],0);
     realF.pos.forEach((p,k)=>ra.set([p.x,p.y,p.z],(k+1)*3));ra.set([realF.tcp.x,realF.tcp.y,realF.tcp.z],(N+1)*3);realGeo.attributes.position.needsUpdate=true;}
   for(let i=0;i<N;i++){const r=jointUI[i].real;if(haveReal){r.style.display='block';r.style.left=pct(i,measured[i]*DEG);}else r.style.display='none';}
-  orbit.update();renderer.render(scene,camera);
+  if(S.view==='studio')studioFrame(dt);   // the Studio's sandbox or the Workspace instead of the main view (only one is drawn)
+  else if(S.view==='workspace')workspaceFrame(dt);
+  else{orbit.update();renderer.render(scene,camera);}
 }
 frame();

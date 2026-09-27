@@ -117,6 +117,7 @@ class IKLink:
         self.blocked = None
         self.fault = None
         self.out_of_range = None         # why the arm can't be moved: a joint reads outside its servo's reach
+        self.simulated = False           # the arm is the simulated one (main.py sets it; config says so)
         self._recentering = False
         self.stall_guard = True
         self.player = None
@@ -195,6 +196,14 @@ class IKLink:
         with self._lock:
             return dict(self.calib, area=dict(self.calib["area"])), (
                 [list(l) for l in self._limits] if self._limits else None)
+
+    def set_obstacles(self, obstacles):
+        """Replace the obstacles (already cleaned: model.clean_obstacles). Saved, and sent in the next config."""
+        with self._lock:
+            self.calib["area"] = dict(self.calib["area"], obstacles=obstacles)
+            self._pending_goal = None
+            self.config_rev += 1
+        self._save()
 
     def forget_goal(self):
         """Something other than this loop (a REST move, torque via REST) changed the servos' goals."""
@@ -473,11 +482,15 @@ class IKLink:
         self._save()
 
     def _on_set_area(self, msg):
+        with self._lock:
+            kept = self.calib["area"].get("obstacles")
+        if "obstacles" not in msg and kept:   # the area's sliders don't touch the obstacles
+            msg = dict(msg, obstacles=kept)
         a = model.clean_area(msg) if isinstance(msg.get("enabled"), bool) else None
         if a is None:
             return _error("bad_request", "set_area",
                           "Needs enabled (bool), center -180..180, span 30-360, radius_mm 0 or 100-450 "
-                          "and base_mm 0 or 60-250 (less than radius_mm).")
+                          "and base_mm 0 or 60-250 (less than radius_mm), and valid obstacles if any.")
         with self._lock:
             self.calib["area"] = a
             self._pending_goal = None
@@ -512,6 +525,7 @@ class IKLink:
             "area": dict(c["area"]),
             "limits": [list(l) for l in self._limits],
             "stall_guard": self.stall_guard,
+            "simulated": self.simulated,
         }
 
     def snapshot(self, rev):

@@ -9,7 +9,7 @@ Two sockets, both on the backend (`ws://<pi>:8000`), both behind the arm passwor
 - **[`/ws/ik`](#wsik-solve-only)**, solve-only: the same solver without moving anything (or needing the arm).
   The simulator page uses it when it isn't driving the arm.
 
-The IK exists only on the backend (`src/backend/ik.py`); the simulator page at `/sim/` is a client of these
+The IK exists only on the backend (`src/backend/ik.py`); the webapp the backend serves at `/` is a client of these
 sockets like any other.
 
 Implementation: `src/backend/main.py` (`ws_arm`, `ws_ik`: auth, framing, the send loop),
@@ -100,7 +100,8 @@ epoch belongs to it, so a client can adopt a new epoch knowing it has the matchi
   "attachment": "vacuum",
   "area": {"enabled": true, "center": 0.0, "span": 180.0, "radius_mm": 0.0, "base_mm": 150.0},
   "limits": [[-165.0, 165.0], [-135.0, 135.0], [-150.0, 150.0], [-145.0, 145.0], [-150.0, 155.0], [-175.0, 175.0]],
-  "stall_guard": true
+  "stall_guard": true,
+  "simulated": false
 }
 ```
 
@@ -114,6 +115,7 @@ epoch belongs to it, so a client can adopt a new epoch knowing it has the matchi
 | `area` | Work area for the tool tip, see [`set_area`](#set_area) |
 | `limits` | Per joint `[lo, hi]` in degrees: the URDF limits intersected with the servo's EEPROM range minus the 50-tick buffer, under the current calibration. `[0, 0]` means the ranges don't overlap (bad calibration) |
 | `stall_guard` | Whether the [stall guard](#the-stall-guard) is on |
+| `simulated` | The backend is driving its simulated arm (`./run.sh --sim`), not a real one |
 
 ### `state`
 
@@ -359,6 +361,14 @@ cylinder. Saved; discards a queued goal.
 
 Only the tool tip is checked against the area; the rest of the arm may cross its edges. A tip within
 60 mm of the base axis counts as inside the slice. Saved; discards a queued goal.
+
+`set_area` may also carry `obstacles` (the Workspace's shapes; without it the existing ones are kept):
+a list of `{"id", "name", "shape": "box"|"cylinder"|"sphere", "pos": [x, y, z] mm (centre), "size": [x, y, z] mm,
+"rot": [x, y, z] degrees (Euler XYZ), "color": "#rrggbb"}`, at most 50. A cylinder's axis is its local z and its
+diameter `size[0]`; a sphere's diameter is `size[0]`. Unlike the rest of the area, obstacles apply with the area
+disabled: every link of the arm, the ATOM and the attachment keep 10 mm clear of them, and every move, target,
+route and playback is checked against them. `config.area.obstacles` has them; REST `PUT /api/obstacles` sets them
+without a socket (or an arm).
 
 ### `recenter`
 

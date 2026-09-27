@@ -8,11 +8,13 @@ import {DEG,JOINTS,N,LIM,URDF_LIM,ATTACHMENTS,clampJ} from './kinematics.js';
 import {area} from './collision.js';
 import {S,qIK,qCmd,servo,target,setDemo,targetFromPose,haveRealNow} from './state.js';
 import {setArmIk,dropIk} from './solve.js';
+import {obstaclesFromArm} from './workspace.js';
 import {attachment,setAttachment,setArea} from './settings.js';
 import {spd,acc,poseRefresh} from './motion.js';
 import {endPlay,playNote,playUI,libRefresh} from './play.js';
 import {storePw,forgetPw} from './api.js';
 import {showConn} from './chrome.js';
+import {toast} from './toast.js';
 import {$} from './util.js';
 
 const WS_PROTOCOL=4,WS_FATAL=['auth','locked','no_arm'];   // errors with these codes end the link
@@ -23,6 +25,8 @@ export function send(o){if(S.ws&&S.ws.readyState===1)S.ws.send(JSON.stringify(o)
 /* Everything the backend sends, for modules that need more than this one handles (the calibration wizard). */
 const listeners=new Set();
 export function onArm(fn){listeners.add(fn);return()=>listeners.delete(fn);}
+/* also {type:'_open'} when the socket opens and {type:'_closed', message} when the link ends (the connect screen) */
+const emit=m=>listeners.forEach(fn=>{try{fn(m);}catch(err){console.error(err);}});
 export const linkLive=()=>!!(S.ws&&S.ws.readyState===1&&haveRealNow());
 function wsNote(t){$('#wsNote').textContent=t;}
 /* The arm solves and moves: connected, every servo reading back, "drive the servos" on, and nothing else in
@@ -68,8 +72,10 @@ function wsStop(msg){
   for(let i=0;i<N;i++){LIM[i][0]=URDF_LIM[i][0];LIM[i][1]=URDF_LIM[i][1];}$('#btnLimp').setAttribute('aria-pressed','false');
   $('#recLimp').disabled=true;$('#recLimp').setAttribute('aria-pressed','false');
   $('#btnWs').textContent='Connect';$('#btnWs').setAttribute('aria-pressed','false');
-  if(msg){wsNote(msg);if(!/^Disconnected/.test(msg))showConn();}   // a failure: open the menu so it's seen
+  if(msg){wsNote(msg);if(!/^Disconnected/.test(msg)&&!S.landing){showConn();toast(msg,'bad');}}   // a failure: open the menu so it's seen
+  emit({type:'_closed',message:msg||''});
 }
+export function connectArm(){if(!S.ws)connect();}
 function connect(){
   if(S.ws){wsStop('Disconnected from the backend.');return;}
   const pw=$('#wsPw').value;
@@ -79,7 +85,7 @@ function connect(){
   S.ws=sock;$('#btnWs').textContent='Disconnect';$('#btnWs').setAttribute('aria-pressed','true');wsNote('Connecting…');
   let opened=false,greeted=false;
   let toolSynced=false,areaSynced=false;
-  sock.onopen=()=>{opened=true;lastSent='';$('#btnLimp').disabled=false;$('#recLimp').disabled=false;
+  sock.onopen=()=>{opened=true;lastSent='';emit({type:'_open'});$('#btnLimp').disabled=false;$('#recLimp').disabled=false;
     sock.send(JSON.stringify({type:'auth',password:pw}));storePw(pw);
     wsNote('Connected. Waiting for servo readings before sending anything.');libAutoload();
     wsTimer=setInterval(()=>{   // a target stays set on the arm, so it's only sent when it changes
@@ -89,6 +95,7 @@ function connect(){
     },100);};
   // settings: sent once after hello, then whenever they change
   const onConfig=m=>{
+    if(m.area)obstaclesFromArm(m.area.obstacles||[]);   // the Workspace (and collision.js) follow the arm's obstacles
     if(Array.isArray(m.limits))m.limits.forEach((l,i)=>{if(i<N&&l[1]>l[0]){LIM[i][0]=l[0]*DEG;LIM[i][1]=l[1]*DEG;}});
     if(Array.isArray(m.dir))m.dir.forEach((d,i)=>{if(dirBoxes[i]){dirBoxes[i].checked=d<0;dirBoxes[i].disabled=false;}});
     $('#btnZero').disabled=false;
@@ -111,15 +118,15 @@ function connect(){
   };
   sock.onmessage=ev=>{
     let m;try{m=JSON.parse(ev.data);}catch(_){return;}
-    if(greeted||m.type==='hello')listeners.forEach(fn=>{try{fn(m);}catch(err){console.error(err);}});
+    if(greeted||m.type==='hello'||m.type==='error')emit(m);
     if(m.type==='error'){
       if(WS_FATAL.includes(m.code)){if(m.code==='auth')forgetPw();wsStop(m.code==='auth'?'The backend rejected that password.':(m.message||'The backend reported an error.'));return;}
       if(m.code==='refused'&&(m.ref==='goal'||m.ref==='target'))lastSent='';   // the state says why; try again
       else if(!S.wizard)wsNote(m.message||'The arm refused that.');   // (the wizard shows its own)
       return;}
     if(m.type==='hello'){if(m.protocol===WS_PROTOCOL)greeted=true;
-      else wsStop(`The backend speaks protocol ${m.protocol} and this page ${WS_PROTOCOL}. Open the page from the backend (/sim) so they match.`);return;}
-    if(!greeted){wsStop('This backend is older than the page. Update the backend or open the page it serves (/sim).');return;}
+      else wsStop(`The backend speaks protocol ${m.protocol} and this page ${WS_PROTOCOL}. Open the page the backend serves (its own address) so they match.`);return;}
+    if(!greeted){wsStop('This backend is older than the page. Update the backend or open the page it serves (its own address).');return;}
     if(m.type==='config'){S.armConfig=m;onConfig(m);return;}
     if(m.type!=='state'||!Array.isArray(m.angles))return;
     const first=!S.measured;
@@ -128,11 +135,13 @@ function connect(){
     const complete=S.measured.every(v=>v!==null);
     S.remoteBlocked=m.blocked||null;
     if(armDriving()){setArmIk(m.ik||null);if(!m.ik)lastSent='';}   // no target on the arm (it ended one): send ours again
+    if(m.fault&&m.fault!==S.armFault)toast(m.fault,'bad',9000);   // the arm stopped itself: say so wherever you are
     S.armFault=m.fault||null;
     { // playback running on the backend: the page follows the arm and sends nothing
       const was=S.remotePlay;S.remotePlay=m.playback||null;
       if(S.remotePlay){S.remotePending=false;if(!was){S.homeLock=true;setDemo(false);S.remoteStopSent=false;if(S.play)endPlay();}}
-      if(m.play_end){if(S.playEndN!==null&&m.play_end.n!==S.playEndN){S.remotePending=false;if(m.play_end.message)playNote(m.play_end.message);}S.playEndN=m.play_end.n;}
+      if(m.play_end){if(S.playEndN!==null&&m.play_end.n!==S.playEndN){S.remotePending=false;const pm=m.play_end.message;
+        if(pm){playNote(pm);toast(pm,/finished/i.test(pm)?'good':/stopped:/i.test(pm)?'bad':'info');}}S.playEndN=m.play_end.n;}
       if(was&&!S.remotePlay&&complete)adoptMeasured();
       playUI();
     }
@@ -158,8 +167,8 @@ function connect(){
 }
 
 export function initLink(){
-  // served by the backend itself (/sim/)? then its own host is the arm link
-  if(/^https?:$/.test(location.protocol)&&/\/sim(\/(index\.html)?)?$/.test(location.pathname))
+  // served by the backend itself (at its root)? then its own host is the arm link
+  if(/^https?:$/.test(location.protocol)&&/^\/(index\.html)?$/.test(location.pathname))
     $('#wsUrl').value=(location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws/arm';
   dirBoxes=JOINTS.map((j,i)=>{const l=document.createElement('label');l.className='chk';l.style.margin='0 6px 0 0';
     l.innerHTML=`<input type="checkbox" disabled> Reverse ${j.name}`;$('#dirRow').appendChild(l);

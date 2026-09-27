@@ -7,6 +7,7 @@ import {S,qIK,target,setTarget,targetFromPose,setDemo,areaDir,recPose,tcpText} f
 import {setStopped,setLimp} from './link.js';
 import {endPlay} from './play.js';
 import {api} from './api.js';
+import {toast} from './toast.js';
 import {$,V,item,r2} from './util.js';
 
 export const spd=$('#spd'),acc=$('#acc');   // max speed (deg/s) and acceleration (deg/s²), for the sim and the arm
@@ -79,7 +80,7 @@ export function initMotion(){
   $('#optGhost').addEventListener('change',e=>{ghost.visible=ghostDots.visible=e.target.checked;});
   $('#poseSave').addEventListener('click',async()=>{
     const name=$('#poseName').value.trim();if(!name){poseNote('Type a name for the pose first.');$('#poseName').focus();return;}
-    try{await api('POST','/poses',{name,angles:recPose().map(r2)});$('#poseName').value='';poseNote(`Saved "${name}".`);await poseRefresh();}
+    try{await api('POST','/poses',{name,angles:recPose().map(r2)});$('#poseName').value='';poseNote(`Saved "${name}".`);toast(`Saved the pose "${name}"`,'good');await poseRefresh();}
     catch(e){poseNote(e.message);}
   });
   $('#poseName').addEventListener('keydown',e=>{if(e.key==='Enter')$('#poseSave').click();});

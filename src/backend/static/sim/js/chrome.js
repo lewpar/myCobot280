@@ -29,7 +29,7 @@ export function updateLinkChip(){ // derived from the link state every frame; on
   else if(S.ws){const n=S.measured.filter(v=>v!==null).length;
     if(S.limp){state='warn';text='Hand-guide · torque off';}
     else if(n<N){state='warn';text=`Connected · ${n}/${N} servos`;}
-    else{state='live';text=S.stopped?'Connected · stopped':'Connected · live';}}
+    else{state='live';const who=S.armConfig&&S.armConfig.simulated?'Simulated arm':'Connected';text=who+(S.stopped?' · stopped':' · live');}}
   if(state+text===linkKey)return;linkKey=state+text;
   $('#linkChip').dataset.state=state;$('#linkText').textContent=text;
 }

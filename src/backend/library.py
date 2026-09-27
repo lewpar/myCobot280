@@ -6,6 +6,7 @@ Stored per machine (gitignored) at the repo root:
                            "events": [[t_s, "color"|"pixel"|"brightness", [ints]], ...]}
     sequences/<id>.json   {"id", "name", "created", "steps": [{"recording": id, "pause": s}, ...]}
     poses/<id>.json       {"id", "name", "created", "angles": [j1..j6 deg]}
+    programs/<id>.json    {"id", "name", "created", "blocks": [...]}   Motion Studio programs (program.py)
 
 Angles are degrees in the URDF convention. This module only stores and validates; playback lives
 in player.py and goes through the same guards as every other motion.
@@ -25,6 +26,9 @@ MAX_FRAMES = 36000   # an hour at the page's 10 samples a second
 MAX_EVENTS = 20000
 MAX_STEPS = 100
 EVENT_ARGS = {"color": 3, "pixel": 5, "brightness": 1}
+MAX_BLOCKS = 300     # a program's blocks, counting the ones inside repeats
+MAX_DEPTH = 5        # repeats inside repeats
+BLOCK_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,24}$")
 
 
 class Invalid(ValueError):
@@ -178,6 +182,13 @@ def _seq_summary(s):
     return {"id": s["id"], "name": s["name"], "created": s["created"], "steps": s["steps"]}
 
 
+def _prog_summary(p):
+    def count(bs):
+        return sum(1 + count(b.get("blocks", [])) for b in bs)
+    return {"id": p["id"], "name": p["name"], "created": p["created"], "blocks": count(p["blocks"]),
+            "updated": p.get("updated", p["created"])}
+
+
 def _pose_summary(p):
     return {"id": p["id"], "name": p["name"], "created": p["created"], "angles": p["angles"]}
 
@@ -185,7 +196,76 @@ def _pose_summary(p):
 RECORDINGS = Store("recordings", _rec_summary)
 SEQUENCES = Store("sequences", _seq_summary)
 POSES = Store("poses", _pose_summary)
-STORES = [RECORDINGS, SEQUENCES, POSES]
+PROGRAMS = Store("programs", _prog_summary)
+STORES = [RECORDINGS, SEQUENCES, POSES, PROGRAMS]
+
+
+def clean_blocks(blocks):
+    """A Motion Studio program's blocks (see program.py), checked and normalised."""
+    seen, total = set(), [0]
+
+    def speed(b):
+        v = b.get("speed", 60)
+        if not (_finite(v) and 5 <= v <= 150):
+            raise Invalid("A move's speed must be 5 to 150 deg/s.")
+        return round(float(v), 1)
+
+    def one(b, depth):
+        if not isinstance(b, dict):
+            raise Invalid("Each block must be an object with a type.")
+        bid, kind = b.get("id"), b.get("type")
+        if not (isinstance(bid, str) and BLOCK_ID_RE.match(bid)) or bid in seen:
+            raise Invalid("Each block needs its own id (letters, digits, - or _).")
+        seen.add(bid)
+        total[0] += 1
+        if total[0] > MAX_BLOCKS:
+            raise Invalid(f"A program can have at most {MAX_BLOCKS} blocks.")
+        out = {"id": bid, "type": kind}
+        note = b.get("note")
+        if note is not None:            # a label the page shows on the block ("pick up the part")
+            if not isinstance(note, str) or len(note.strip()) > 80:
+                raise Invalid("A block's note must be text, at most 80 characters.")
+            if note.strip():
+                out["note"] = note.strip()
+        if kind == "pose":
+            out.update(angles=clean_angles(b.get("angles")), speed=speed(b))
+        elif kind == "point":
+            xyz = b.get("xyz")
+            if not (isinstance(xyz, list) and len(xyz) == 3 and _finite(*xyz) and all(-1000 <= v <= 1000 for v in xyz)):
+                raise Invalid("A point needs x, y, z in mm, each -1000 to 1000.")
+            if not isinstance(b.get("down", False), bool):
+                raise Invalid("A point's facing-down setting must be true or false.")
+            out.update(xyz=[round(float(v), 1) for v in xyz], down=b.get("down", False), speed=speed(b))
+        elif kind == "home":
+            out.update(speed=speed(b))
+        elif kind == "wait":
+            v = b.get("seconds")
+            if not (_finite(v) and 0 <= v <= 600):
+                raise Invalid("A wait must be 0 to 600 seconds.")
+            out.update(seconds=round(float(v), 2))
+        elif kind == "led":
+            c = b.get("color")
+            if not (isinstance(c, list) and len(c) == 3 and all(isinstance(v, int) and not isinstance(v, bool)
+                                                                 and 0 <= v <= 255 for v in c)):
+                raise Invalid("An LED colour must be three integers 0-255.")
+            out.update(color=list(c))
+        elif kind == "repeat":
+            n = b.get("times")
+            if not (isinstance(n, int) and not isinstance(n, bool) and 1 <= n <= 100):
+                raise Invalid("A repeat runs 1 to 100 times.")
+            if depth >= MAX_DEPTH:
+                raise Invalid(f"Repeats can only go {MAX_DEPTH} deep.")
+            out.update(times=n, blocks=many(b.get("blocks", []), depth + 1))
+        else:
+            raise Invalid("A block's type must be pose, point, home, wait, led or repeat.")
+        return out
+
+    def many(bs, depth):
+        if not isinstance(bs, list):
+            raise Invalid("Blocks must be a list.")
+        return [one(b, depth) for b in bs]
+
+    return many(blocks, 0)
 
 
 def clean_steps(steps):

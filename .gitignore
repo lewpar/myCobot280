@@ -5,7 +5,9 @@ __pycache__
 *.log
 ik_calibration.json
 recordings/
+programs/
 sequences/
 poses/
 node_modules/
 servo_centres_log.json
+sim_data/

@@ -35,7 +35,7 @@ async function loadPage({ fetch, WebSocket } = {}) {
     entryPoints: [path.join(JSDIR, 'main.js')], bundle: true, format: 'iife', write: false,
     nodePaths: [NODE_MODULES], plugins: [shimThree], logLevel: 'silent',
   })).outputFiles[0].text;
-  const dom = new JSDOM(bare, { runScripts: 'outside-only', pretendToBeVisual: true, url: 'http://pi:8000/sim/' });
+  const dom = new JSDOM(bare, { runScripts: 'outside-only', pretendToBeVisual: true, url: 'http://pi:8000/' });
   const w = dom.window;
   w.confirm = () => true;
   w.matchMedia = () => ({ matches: false, addEventListener() {} });

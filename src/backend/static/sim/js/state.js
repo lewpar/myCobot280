@@ -22,6 +22,8 @@ export const S={
   armRange:null,          // the backend won't move the arm: a joint reads outside what its servo can reach (why)
   armConfig:null,armState:null,armTorque:null,   // the latest config and state from /ws/arm, torque as it reports it
   wizard:false,           // the calibration wizard is open: it poses the sim arm, and nothing drives the real one
+  landing:true,           // the connect screen is up (the page starts on it)
+  view:'arm',studio:false,workspace:false,   // which view shows (views.js): the arm, the Motion Studio, the Workspace
 };
 export const qIK=new Array(N).fill(0);   // what the solver found (radians)
 export const qCmd=new Array(N).fill(0);  // what the servos are told: only collision-free poses get here
