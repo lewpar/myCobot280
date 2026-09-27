@@ -1,5 +1,5 @@
-/* App chrome: inspector tabs, the panel toggle, theme, camera views, the connection chip, the Stop button
-   and the Joints tab's position bars. */
+/* App chrome: inspector tabs, the panel toggle, foldable cards and their help notes, the popovers (connection,
+   View), theme, camera views, the connection chip, the Stop button and the joint position overlay. */
 import {JOINTS,N,LIM} from './kinematics.js';
 import {camera,orbit,applyTheme} from './scene.js';
 import {S} from './state.js';
@@ -34,7 +34,37 @@ export function updateLinkChip(){ // derived from the link state every frame; on
   $('#linkChip').dataset.state=state;$('#linkText').textContent=text;
 }
 
-/* Joints tab: one bar per joint (simulated servo, solved angle, real reading, zero), updated by the frame loop */
+/* Popovers: one open at a time; a click outside or Esc closes it */
+let openPop=null;
+function setPop(btn,pop,on){
+  if(!on&&openPop!==pop)return;
+  if(on&&openPop&&openPop!==pop)setPop(openPop.btn,openPop,false);
+  pop.hidden=!on;btn.setAttribute('aria-expanded',on);openPop=on?pop:null;if(on)pop.btn=btn;
+}
+export function showConn(){setPop($('#linkChip'),$('#connPop'),true);}
+
+/* Cards: data-fold="open|closed" folds from the header (remembered per device), and a p.note.help inside
+   is shown by an ⓘ button added to the header */
+function initCards(){
+  let folds={};try{folds=JSON.parse(uiGet('mycobot-fold'))||{};}catch(_){}
+  document.querySelectorAll('.card').forEach(card=>{
+    const head=card.querySelector('.card-head'),h2=head&&head.querySelector('h2');if(!h2)return;
+    if(card.querySelector('.note.help')){
+      const b=document.createElement('button');b.type='button';b.className='help-btn';b.textContent='i';
+      b.title='What does this do?';b.setAttribute('aria-label','Explain '+h2.textContent);b.setAttribute('aria-expanded','false');
+      b.addEventListener('click',e=>{e.stopPropagation();b.setAttribute('aria-expanded',card.classList.toggle('show-help'));});
+      head.appendChild(b);}
+    if(!card.dataset.fold||!card.id)return;
+    h2.tabIndex=0;h2.setAttribute('role','button');
+    const set=on=>{card.classList.toggle('folded',on);h2.setAttribute('aria-expanded',!on);};
+    set(card.id in folds?folds[card.id]:card.dataset.fold==='closed');
+    const toggle=()=>{const on=!card.classList.contains('folded');set(on);folds[card.id]=on;uiSet('mycobot-fold',JSON.stringify(folds));};
+    head.addEventListener('click',e=>{if(!e.target.closest('button,input,label,a'))toggle();});
+    h2.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();toggle();}});
+  });
+}
+
+/* Joint overlay: one bar per joint (simulated servo, solved angle, real reading, zero), updated by the frame loop */
 export const jointUI=[];
 export const pct=(i,a)=>((a-LIM[i][0])/(LIM[i][1]-LIM[i][0])*100).toFixed(2)+'%';
 
@@ -55,7 +85,15 @@ export function initChrome(){
       showTab(tabs[(i+d+tabs.length)%tabs.length].id.slice(7),true);});
   });
   {const t=uiGet('mycobot-tab');showTab(tabs.some(b=>b.id==='tabbtn-'+t)?t:'motion');}
-  $('#linkChip').addEventListener('click',()=>showTab('robot'));
+  initCards();
+  [['#linkChip','#connPop'],['#viewBtn','#viewPop']].forEach(([b,p])=>{const btn=$(b),pop=$(p);
+    btn.addEventListener('click',e=>{e.stopPropagation();setPop(btn,pop,pop.hidden);});});
+  document.addEventListener('pointerdown',e=>{if(openPop&&!openPop.contains(e.target)&&!openPop.btn.contains(e.target))setPop(openPop.btn,openPop,false);});
+  window.addEventListener('keydown',e=>{if(e.key==='Escape'&&openPop)setPop(openPop.btn,openPop,false);});
+  { // the joint overlay: on unless turned off (off by default on narrow screens)
+    const box=$('#optJoints'),saved=uiGet('mycobot-joints'),apply=()=>{$('#jointsHud').hidden=!box.checked;};
+    box.checked=saved?saved==='1':innerWidth>760;apply();
+    box.addEventListener('change',()=>{apply();uiSet('mycobot-joints',box.checked?'1':'0');});}
   setTheme(THEMES.includes(uiGet('mycobot-theme'))?uiGet('mycobot-theme'):'system');
   $('#themeBtn').addEventListener('click',()=>{const cur=document.documentElement.dataset.theme||'system';setTheme(THEMES[(THEMES.indexOf(cur)+1)%3]);});
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change',applyTheme);

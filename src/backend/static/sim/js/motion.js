@@ -1,4 +1,5 @@
-/* Motion tab: target sliders and presets, solver options, the motion profile, jog and saved poses. */
+/* Move tab: target sliders and presets, the flange-down option, speed, jog and saved poses. The 3D view's
+   ghost and trail toggles (View menu) are wired here too. */
 import {DEG,JOINTS,N,clampJ} from './kinematics.js';
 import {area,checkPose} from './collision.js';
 import {ikRescue} from './ik.js';
@@ -10,7 +11,7 @@ import {api} from './api.js';
 import {$,V,item,r2} from './util.js';
 
 export const spd=$('#spd'),acc=$('#acc');   // max speed (deg/s) and acceleration (deg/s²), for the sim and the arm
-function syncSliders(){$('#spdv').textContent=spd.value+'°/s';$('#accv').textContent=acc.value+'°/s²';}
+function syncSliders(){$('#spdv').textContent=spd.value+'°/s';$('#accv').textContent=acc.value+'°/s²';$('#speedMeta').textContent=spd.value+'°/s';}
 
 /* ---- going to a pose (saved poses, waypoints) ---- */
 export function goPose(a,noteEl){ // a: degrees

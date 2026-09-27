@@ -221,7 +221,7 @@ Key servo registers:
   refused until you resume. Stop also ends a playback.
 - **Stall guard:** if a torqued joint stays more than 6° short of its goal without moving for a
   second (something in the way), the arm stops and the page says which joint. Resume to carry on.
-  It can be turned off in the Robot tab.
+  It can be turned off in the Setup tab (Safety).
 
 ## ATOM Protocol
 
@@ -254,12 +254,12 @@ The page is plain HTML, CSS and native ES modules in `src/backend/static/sim/` (
 an import map). There is no build step: edit a file and reload. Browsers don't load modules from `file://`, so
 open it through the backend (or any static server, e.g. `python3 -m http.server` in that folder, for offline use).
 
-1. `./run.sh backend`, open `http://<pi>:8000/sim`, go to the **Robot** tab, enter the password and press **Connect**.
-   The chip in the top bar shows the link state; **Stop** (or Esc) is always in the top-right corner.
-2. Still in **Robot**, turn on **Hand-guide mode**, pose the arm like the sim's zero pose (arm straight up), press
+1. `./run.sh backend`, open `http://<pi>:8000/sim`, click the connection chip in the top bar, enter the password and press **Connect**.
+   The chip shows the link state; **Stop** (or Esc) is always in the top-right corner.
+2. Turn on **Hand-guide** (top bar, shown once connected), open **Setup → Calibration**, pose the arm like the sim's zero pose (arm straight up), press
    **Set zero to the arm's current pose**.
 3. Bend each joint by hand. If the green (measured) pose turns the other way, tick **Reverse** for it.
-4. If something is mounted on the flange, pick it in the **Attachments** tab (see below).
+4. If something is mounted on the flange, pick it in **Setup → Attachment** (see below).
 
 Calibration is saved to `ik_calibration.json` (zeros seeded from `center_positions.json` until
 then). If a zero sits far from the middle of a servo's travel, the page says how much range that
@@ -267,7 +267,7 @@ joint has lost.
 
 ### Attachments
 
-The **Attachments** tab says what's on the flange: nothing, the **vacuum suction** tool (25 mm × 80 mm to
+The **Attachment** card (Setup tab) says what's on the flange: nothing, the **vacuum suction** tool (25 mm × 80 mm to
 the cup), or a **custom** straight tool with its own length and diameter. The choice is drawn on the 3D
 arm, moves the target to the attachment's tip (so IK places the suction cup, not the flange), and is
 saved on the backend, whose collision check uses it too. The attachment is checked as a cylinder:
@@ -277,7 +277,7 @@ cylinder. Keep **Keep the flange facing down** on in Motion when picking things 
 
 ### Work area
 
-The **Work area** card in the Robot tab keeps the tool tip inside a slice of the circle around the
+The **Work area** card in the Setup tab keeps the tool tip inside a slice of the circle around the
 base, drawn in green on the floor. By default it's the **front half**: seen from above, centred on 0°,
 the direction the flange points at the zero pose (away from the Pi's ports). Presets switch to the
 right half, left half or the full circle; the sliders set the direction, the width (30°–360°) and an
@@ -317,7 +317,7 @@ set to return to zero, **exported** as JSON and deleted. **Import** loads an exp
 **Sequences** play several recordings in a row with a pause after each; build them with **New**, add
 steps, reorder them and save.
 
-**Motion tab** extras: **Jog** nudges the tool along X/Y/Z (1–25 mm) or turns a single joint (1–20°);
+**Move tab** extras: **Jog** nudges the tool along X/Y/Z (1–25 mm) or turns a single joint (1–20°);
 hold a button to repeat. **Saved poses** stores the current pose under a name; click it to go back there.
 
 Everything is stored on the Pi as JSON in `recordings/`, `sequences/` and `poses/` (gitignored). The API:

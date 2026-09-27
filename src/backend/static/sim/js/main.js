@@ -122,7 +122,7 @@ function frame(){
   const st=$('#status');
   if(S.stopped){st.className='status bad';$('#statusText').textContent=S.armFault?'Stopped: '+S.armFault:'Stopped. Press Resume to move again';}
   else if(area.enabled&&outsideArea(target)&&!S.limp){st.className='status bad';
-    $('#statusText').textContent=/close to the base/.test(outsideArea(target))?'The target is too close to the base (Robot tab, Work area)':'The target is outside the work area (Robot tab)';}
+    $('#statusText').textContent=/close to the base/.test(outsideArea(target))?'The target is too close to the base (Setup tab, Work area)':'The target is outside the work area (Setup tab)';}
   else if(blocked||S.remoteBlocked){st.className='status bad';const why=blocked||S.remoteBlocked;
     $('#statusText').textContent=`Blocked: ${why}${blocked?'':' (checked by the arm)'}`;}
   else if(!reachable){st.className='status bad';$('#statusText').textContent=orient&&ikErr.pos<0.003?'Reachable, but not facing straight down':'Out of reach, holding the closest pose';}

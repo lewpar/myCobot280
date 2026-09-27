@@ -138,7 +138,7 @@ It's deliberately conservative and approximate; it is not a substitute for watch
   `scene.js` (every three.js object; throws if WebGL fails, which shows `#fail`), `state.js` (shared state),
   `api.js` (REST + password), `link.js` (`/ws/arm`, Stop/Resume, hand-guide, calibration), `settings.js`
   (attachment + work area), `motion.js`, `atom.js`, `record.js`, `play.js` (one per tab), `chrome.js`
-  (tabs, theme, views, link chip, joint bars), `main.js` (wiring + frame loop).
+  (tabs, foldable cards + help notes, popovers, theme, views, link chip, joint overlay), `main.js` (wiring + frame loop).
 - **Modules don't touch the page when imported**; each has an `init*()` that `main.js` calls in order. Keep it
   that way: the modules import each other in cycles, which is only safe because nothing runs at import time.
 - **Shared mutable state lives in `S`** (`state.js`: `stopped`, `homeLock`, `measured`, `limp`, `play`,
@@ -147,8 +147,13 @@ It's deliberately conservative and approximate; it is not a substitute for watch
   to its module. `qIK`, `qCmd`, `servo`, `target` and `LIM` are shared arrays/vectors, mutated in place.
 - Browsers won't load modules from `file://`: use the backend (or any static server). The backend sends the
   files with `Cache-Control: no-cache`, so an update never mixes old and new modules.
-- Layout: top bar (link chip, theme toggle, Stop), 3D viewport (camera presets, legend), tabbed inspector
-  (Motion / Joints / Robot / ATOM / Attachments / Record / Play) and a status bar. Tabs size to their labels. The script finds everything by element id, so keep the
+- Layout: top bar (link chip → **connection popover** with address/password/"drive the servos", Hand-guide
+  pill shown only while connected, theme toggle, Stop), 3D viewport (camera presets, **View menu** with the
+  display toggles: ghost, real arm, trail, envelope, joint overlay; legend; **joint overlay** with the
+  per-joint bars), tabbed inspector (Move / Record / Play / ATOM / Setup) and a status bar.
+  Cards with `data-fold` fold from their header (remembered in localStorage `mycobot-fold`); a `p.note.help`
+  is hidden behind an ⓘ button that `chrome.js` adds. Keep explanations in `.note.help`, not always-on text.
+  A folded card with a non-empty `.callout.warn` shows an amber dot. The script finds everything by element id, so keep the
   ids when moving markup around. The canvas sizes to `#stage` (ResizeObserver), not the window.
 - IK: damped least squares on the geometric Jacobian, **task priority** (position first, "flange
   facing down" in the null space), step scaled uniformly, joint limits clamped. Each frame `ik.solveFrame`
@@ -177,15 +182,15 @@ It's deliberately conservative and approximate; it is not a substitute for watch
   moving the target sends `/api/playback/stop`. **Offline**: `Player` ticks in the frame loop, writes goals
   into **qIK** (so collision check → qCmd applies) and per-joint speeds into `simSpeeds` for the sim servos.
   Local playback ends on Stop, hand-guide, a blocked pose, a resync, or when `homeLock` is cleared.
-- Attachments tab: picks `attachment` (`setAttachment`), which sets `toolLen`/`toolR` (the TCP moves to the
+- Setup tab, Attachment card: picks `attachment` (`setAttachment`), which sets `toolLen`/`toolR` (the TCP moves to the
   tip, and `checkPose` uses both) and shows its 3D model on the flange (`vacuumG`, or `toolStub` for custom;
   `envelope` draws the collision cylinder). Sent as `set_tool`; on connect the backend's saved attachment wins.
-- Robot tab has the Work area card (`setArea`; presets, direction, width, max reach). The slice is drawn on
+- Setup tab has the Work area card (`setArea`; presets, direction, width, max reach). The slice is drawn on
   the floor (`areaG`); Figure-8 and Random centre themselves in it (`areaDir`). A target outside it says so
   in the status bar (the solver would otherwise report "out of reach"). Sent as `set_area`; on connect
   the backend's saved area wins, like the attachment.
-- Motion tab also has Jog (tool X/Y/Z moves the target; joint jog moves qIK with `homeLock`) and saved poses
-  (`goPose`). Robot tab has the stall-guard toggle; a `fault` from the backend shows in the status bar.
+- Move tab also has Jog (tool X/Y/Z moves the target; joint jog moves qIK with `homeLock`) and saved poses
+  (`goPose`). Setup tab has the stall-guard toggle (Safety) and Calibration; a `fault` from the backend shows in the status bar.
 - The page auto-fills `ws://<host>/ws/arm` when served from `/sim/`. It stores the password in
   sessionStorage (localStorage only if "remember" is ticked).
 - An older single-file copy was published as a claude.ai artifact; it no longer matches (protocol 1).

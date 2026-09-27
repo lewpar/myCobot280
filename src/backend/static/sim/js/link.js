@@ -1,5 +1,5 @@
 /* Real arm link: the WebSocket to the backend's /ws/arm (protocol 2, see ik_link.py), plus the controls
-   that act on the arm through it: Stop/Resume, hand-guide mode and calibration (Robot tab).
+   that act on the arm through it: Stop/Resume, hand-guide mode (top bar) and calibration (Setup tab).
    The backend sends hello, then config (now and on every change) and state about 10 times a second; the
    page streams qCmd as goals, carrying the epoch of the state it last re-read the pose from. */
 import {DEG,JOINTS,N,LIM,URDF_LIM,ATTACHMENTS,clampJ} from './kinematics.js';
@@ -9,6 +9,7 @@ import {attachment,setAttachment,setArea} from './settings.js';
 import {spd,acc,poseRefresh} from './motion.js';
 import {endPlay,playNote,playUI,libRefresh} from './play.js';
 import {storePw,forgetPw} from './api.js';
+import {showConn} from './chrome.js';
 import {$} from './util.js';
 
 const WS_PROTOCOL=2,WS_FATAL=['auth','locked','no_arm'];   // errors with these codes end the link
@@ -51,12 +52,13 @@ function wsStop(msg){
   S.measured=null;S.limp=false;calibKey='';resync=false;armEpoch=null;armClients=1;calibMsg=false;S.remoteBlocked=null;S.remotePlay=null;S.remotePending=false;S.playEndN=null;S.armFault=null;playUI();$('#calNote').textContent='';$('#btnLimp').disabled=true;$('#btnZero').disabled=true;dirBoxes.forEach(b=>b.disabled=true);
   for(let i=0;i<N;i++){LIM[i][0]=URDF_LIM[i][0];LIM[i][1]=URDF_LIM[i][1];}$('#btnLimp').setAttribute('aria-pressed','false');
   $('#recLimp').disabled=true;$('#recLimp').setAttribute('aria-pressed','false');
-  $('#btnWs').textContent='Connect';$('#btnWs').setAttribute('aria-pressed','false');if(msg)wsNote(msg);
+  $('#btnWs').textContent='Connect';$('#btnWs').setAttribute('aria-pressed','false');
+  if(msg){wsNote(msg);if(!/^Disconnected/.test(msg))showConn();}   // a failure: open the menu so it's seen
 }
 function connect(){
   if(S.ws){wsStop('Disconnected from the backend.');return;}
   const pw=$('#wsPw').value;
-  if(!pw){wsNote('Enter the arm password first.');$('#wsPw').focus();return;}
+  if(!pw){wsNote('Enter the arm password first.');showConn();$('#wsPw').focus();return;}
   let sock;
   try{sock=new WebSocket($('#wsUrl').value.trim());}catch(err){wsNote('That address is not a valid WebSocket URL. It should look like ws://raspberrypi.local:8000/ws/arm.');return;}
   S.ws=sock;$('#btnWs').textContent='Disconnect';$('#btnWs').setAttribute('aria-pressed','true');wsNote('Connecting…');
@@ -78,10 +80,10 @@ function connect(){
     if(typeof m.stall_guard==='boolean')$('#optStall').checked=m.stall_guard;
     if(!toolSynced&&typeof m.tool_mm==='number'){ // the backend's saved attachment wins: it's what its collision check uses
       toolSynced=true;const was=attachment;setAttachment(m.attachment||'custom',false,m.tool_mm,m.tool_d_mm);
-      if(was!==attachment)wsNote(`The arm is set up with: ${ATTACHMENTS[attachment].name}. Change it in Attachments if that's wrong.`);}
+      if(was!==attachment)wsNote(`The arm is set up with: ${ATTACHMENTS[attachment].name}. Change it in Setup if that's wrong.`);}
     if(!areaSynced&&m.area&&typeof m.area.center==='number'){ // and so does its work area
       areaSynced=true;const was=JSON.stringify(area);setArea(m.area,false);
-      if(was!==JSON.stringify(area))wsNote('Using the work area saved on the arm (Robot tab).');}
+      if(was!==JSON.stringify(area))wsNote('Using the work area saved on the arm (Setup tab).');}
     // warn when calibration is missing or a zero leaves a joint short of its travel
     const notes=[];
     if(m.calibrated===false)notes.push('Not calibrated yet, so the angles use default zeros and the arm-side collision check is only approximate.');
@@ -148,6 +150,7 @@ export function initLink(){
   $('#btnLimp').addEventListener('click',()=>setLimp(!S.limp));
   $('#optStall').addEventListener('change',e=>send({type:'set_stall_guard',on:e.target.checked}));
   $('#btnWs').addEventListener('click',connect);
+  $('#wsPw').addEventListener('keydown',e=>{if(e.key==='Enter'&&!S.ws)connect();});
   // don't send goals until every servo reads back
   setInterval(()=>{if(S.ws&&S.measured&&S.measured.some(v=>v===null))lastSent='';},500);
 }

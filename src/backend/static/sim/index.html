@@ -26,7 +26,22 @@
     <div><div class="brand-name">myCobot 280</div><div class="brand-sub">Inverse kinematics &amp; arm control</div></div>
   </div>
   <div class="spacer"></div>
-  <button class="chip" id="linkChip" data-state="off" title="Robot connection"><span class="dot"></span><span id="linkText">Offline</span></button>
+  <div class="pop-anchor">
+    <button class="chip" id="linkChip" data-state="off" title="Connection to the arm" aria-haspopup="dialog" aria-expanded="false" aria-controls="connPop"><span class="dot"></span><span id="linkText">Offline</span>
+      <svg class="caret" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
+    <div class="popover conn" id="connPop" role="dialog" aria-label="Connection" hidden>
+      <div class="pop-head"><h2>Connection</h2><span class="meta">/ws/arm</span></div>
+      <label class="field-label" for="wsUrl">Backend address</label>
+      <input type="text" id="wsUrl" value="ws://raspberrypi.local:8000/ws/arm" spellcheck="false">
+      <label class="field-label" for="wsPw">Password</label>
+      <div class="input-row"><input type="password" id="wsPw" placeholder="Arm password" autocomplete="current-password"><button id="btnWs" class="primary" aria-pressed="false">Connect</button></div>
+      <label class="chk"><input type="checkbox" id="optRemember"> Remember the password on this device</label>
+      <label class="chk"><input type="checkbox" id="optSend" checked> Drive the servos with the solved angles</label>
+      <p class="callout" id="wsNote">Connects to the FastAPI backend on the Pi. The page streams the solved angles with the speed and acceleration from Move; the backend converts them to servo ticks and reads positions back.</p>
+    </div>
+  </div>
+  <button id="btnLimp" class="pill" aria-pressed="false" disabled title="Torque off: pose the arm by hand. Hold it first, it drops without torque.">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 13V5.5a1.5 1.5 0 0 1 3 0V12M11 11V4.5a1.5 1.5 0 0 1 3 0V11M14 11V5.5a1.5 1.5 0 0 1 3 0V13M17 9.5a1.5 1.5 0 0 1 3 0V15a6 6 0 0 1-6 6h-1.5a6 6 0 0 1-4.6-2.2L4.6 15a1.6 1.6 0 0 1 2.4-2l1 1"/></svg><span>Hand-guide</span></button>
   <button class="icon-btn" id="themeBtn" title="Theme: system" aria-label="Switch colour theme">
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor"/></svg></button>
   <button id="btnStop" class="stop" aria-pressed="false" title="Esc also stops">Stop <kbd>Esc</kbd></button>
@@ -37,10 +52,27 @@
   <div class="overlay view-tools" role="toolbar" aria-label="Camera views">
     <button data-view="persp">Perspective</button><button data-view="front">Front</button><button data-view="side">Side</button><button data-view="top">Top</button>
   </div>
+  <div class="overlay view-menu pop-anchor">
+    <button id="viewBtn" class="float-btn" aria-haspopup="true" aria-expanded="false" aria-controls="viewPop" title="What the 3D view shows">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>View</button>
+    <div class="popover" id="viewPop" hidden>
+      <div class="pop-head"><h2>Show in 3D</h2></div>
+      <label class="chk"><span class="sw" style="background:#3b82c4"></span><span class="lbl">Solved pose, ahead of the servos</span><input type="checkbox" id="optGhost" checked></label>
+      <label class="chk"><span class="sw" style="background:#2f9a5a"></span><span class="lbl">Real arm, as measured</span><input type="checkbox" id="optReal" checked></label>
+      <label class="chk"><span class="sw" style="background:#ff5a36"></span><span class="lbl">Tool path</span><input type="checkbox" id="optTrail" checked></label>
+      <label class="chk"><span class="sw sw-ring"></span><span class="lbl">Attachment collision envelope</span><input type="checkbox" id="optEnvelope"></label>
+      <label class="chk"><span class="sw sw-ring"></span><span class="lbl">Joint positions panel</span><input type="checkbox" id="optJoints" checked></label>
+    </div>
+  </div>
   <div class="overlay legend" aria-hidden="true">
     <span><i style="background:var(--amber)"></i>Target</span><span><i style="background:#3b82c4"></i>Solved pose</span>
     <span><i style="background:#2f9a5a"></i>Real arm</span><span><i style="background:#ff5a36"></i>Tool path</span>
   </div>
+  <section class="overlay hud" id="jointsHud" aria-label="Joint positions">
+    <div class="hud-head" title="Amber: simulated servo · dark tick: commanded angle · green: real servo reading · thin line: zero">
+      <h2>Joints</h2><span class="meta">° · URDF limits</span></div>
+    <div id="joints"></div>
+  </section>
   <div id="fail">WebGL could not start in this browser, so the 3D arm can't be drawn.</div>
 </main>
 
@@ -56,26 +88,24 @@
 <aside id="panel" class="inspector" aria-label="Arm controls">
   <div class="tabs" role="tablist">
     <button class="tab" role="tab" id="tabbtn-motion" aria-controls="tab-motion" aria-selected="true">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>Motion</button>
-    <button class="tab" role="tab" id="tabbtn-joints" aria-controls="tab-joints" aria-selected="false">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="9" cy="6" r="2" fill="var(--surface)"/><circle cx="15" cy="12" r="2" fill="var(--surface)"/><circle cx="7" cy="18" r="2" fill="var(--surface)"/></svg>Joints</button>
-    <button class="tab" role="tab" id="tabbtn-robot" aria-controls="tab-robot" aria-selected="false">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 7V3M15 7V3M7 7h10v4a5 5 0 0 1-10 0zM12 16v5"/></svg>Robot</button>
-    <button class="tab" role="tab" id="tabbtn-atom" aria-controls="tab-atom" aria-selected="false">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="4" y="4" width="4" height="4" rx="1"/><rect x="10" y="4" width="4" height="4" rx="1"/><rect x="16" y="4" width="4" height="4" rx="1"/><rect x="4" y="10" width="4" height="4" rx="1"/><rect x="10" y="10" width="4" height="4" rx="1" opacity=".4"/><rect x="16" y="10" width="4" height="4" rx="1"/><rect x="4" y="16" width="4" height="4" rx="1"/><rect x="10" y="16" width="4" height="4" rx="1"/><rect x="16" y="16" width="4" height="4" rx="1"/></svg>ATOM</button>
-    <button class="tab" role="tab" id="tabbtn-attach" aria-controls="tab-attach" aria-selected="false">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M7 3h10M9 3v4h6V3M10 7v9h4V7M9 16h6l-1 3h-4z" stroke-linejoin="round"/></svg>Attachments</button>
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>Move</button>
     <button class="tab" role="tab" id="tabbtn-record" aria-controls="tab-record" aria-selected="false">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.5" fill="currentColor" stroke="none"/></svg>Record</button>
     <button class="tab" role="tab" id="tabbtn-play" aria-controls="tab-play" aria-selected="false">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M8 5l11 7-11 7z" fill="currentColor" stroke-linejoin="round"/></svg>Play</button>
+    <button class="tab" role="tab" id="tabbtn-atom" aria-controls="tab-atom" aria-selected="false">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="4" y="4" width="4" height="4" rx="1"/><rect x="10" y="4" width="4" height="4" rx="1"/><rect x="16" y="4" width="4" height="4" rx="1"/><rect x="4" y="10" width="4" height="4" rx="1"/><rect x="10" y="10" width="4" height="4" rx="1" opacity=".4"/><rect x="16" y="10" width="4" height="4" rx="1"/><rect x="4" y="16" width="4" height="4" rx="1"/><rect x="10" y="16" width="4" height="4" rx="1"/><rect x="16" y="16" width="4" height="4" rx="1"/></svg>ATOM</button>
+    <button class="tab" role="tab" id="tabbtn-setup" aria-controls="tab-setup" aria-selected="false">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg>Setup</button>
     <button id="toggle" class="icon-btn" aria-expanded="true" aria-label="Hide controls" title="Hide controls">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
   </div>
   <div class="scroll">
 
+  <!-- Cards: data-fold="open|closed" makes the header fold the card (remembered per device);
+       a p.note.help is hidden behind the ⓘ button chrome.js adds to its card's header. -->
   <section class="tabpanel" id="tab-motion" role="tabpanel" aria-labelledby="tabbtn-motion">
-    <div class="card">
+    <div class="card" id="cardTarget">
       <div class="card-head"><h2>Target</h2><span class="meta">base frame · mm</span></div>
       <div class="field"><b>X</b><input type="range" id="tx" min="-350" max="350" step="1" aria-label="Target X"><output id="oxv"></output></div>
       <div class="field"><b>Y</b><input type="range" id="ty" min="-350" max="350" step="1" aria-label="Target Y"><output id="oyv"></output></div>
@@ -85,86 +115,102 @@
         <button id="btnDemo" aria-pressed="false" title="Trace a figure-8 with the tool">Figure-8</button>
         <button id="btnHome" title="Move every joint to 0°">Zero pose</button>
       </div>
-    </div>
-    <div class="card">
-      <div class="card-head"><h2>Solver</h2></div>
       <label class="chk"><input type="checkbox" id="optDown" checked> Keep the flange facing down</label>
-      <label class="chk"><input type="checkbox" id="optGhost" checked> Show the solved pose ahead of the servos</label>
-      <label class="chk"><input type="checkbox" id="optTrail" checked> Draw the tool path</label>
     </div>
-    <div class="card">
-      <div class="card-head"><h2>Motion profile</h2><span class="meta">sim &amp; arm</span></div>
-      <div class="slider"><span>Max speed</span><input type="range" id="spd" min="15" max="360" value="90"><output id="spdv"></output></div>
-      <div class="slider"><span>Acceleration</span><input type="range" id="acc" min="40" max="1500" value="260"><output id="accv"></output></div>
+    <div class="card" id="cardSpeed" data-fold="open">
+      <div class="card-head"><h2>Speed</h2><span class="meta fold-meta" id="speedMeta"></span></div>
+      <div class="slider inline"><span>Max speed</span><input type="range" id="spd" min="15" max="360" value="90"><output id="spdv"></output></div>
+      <div class="slider inline"><span>Acceleration</span><input type="range" id="acc" min="40" max="1500" value="260"><output id="accv"></output></div>
+      <p class="note help">Used by the simulated servos and sent with every goal to the real arm. Playback moves to its start pose at this speed. Keep it around 30°/s for the first moves after a change.</p>
     </div>
-    <div class="card">
+    <div class="card" id="cardJog" data-fold="open">
       <div class="card-head"><h2>Jog</h2><span class="meta">hold to repeat</span></div>
       <div class="seg" role="group" aria-label="Jog mode"><button id="jogModeXYZ" aria-pressed="true">Tool X/Y/Z</button><button id="jogModeJ" aria-pressed="false">Joints</button></div>
-      <div class="seg" role="group" aria-label="Step size" id="jogSteps" style="margin-top:6px"></div>
+      <div class="seg small" role="group" aria-label="Step size" id="jogSteps"></div>
       <div class="jog" id="jogXYZ"></div>
       <div class="jog" id="jogJ" hidden></div>
     </div>
-    <div class="card">
-      <div class="card-head"><h2>Saved poses</h2><button id="poseRefresh" title="Reload from the backend">Refresh</button></div>
+    <div class="card" id="cardPoses" data-fold="open">
+      <div class="card-head"><h2>Saved poses</h2><button id="poseRefresh" class="ghost" title="Reload from the backend">Refresh</button></div>
       <div class="input-row"><input type="text" id="poseName" maxlength="60" placeholder="Name, e.g. Pick" spellcheck="false"><button id="poseSave" class="primary">Save pose</button></div>
-      <div id="poseList" class="reclist" style="margin-top:8px"></div>
+      <div id="poseList" class="reclist"></div>
       <p class="callout" id="poseNote"></p>
-      <p class="note">Saves the arm's current pose (the real arm when connected). Click a pose to move there; the move is collision-checked like any other.</p>
+      <p class="note help">Saves the arm's current pose (the real arm when connected). Click a pose to move there; the move is collision-checked like any other.</p>
     </div>
   </section>
 
-  <section class="tabpanel" id="tab-joints" role="tabpanel" aria-labelledby="tabbtn-joints" hidden>
-    <div class="card">
-      <div class="card-head"><h2>Joint positions</h2><span class="meta">URDF limits</span></div>
-      <div id="joints"></div>
-      <div class="key">
-        <i style="background:var(--amber)"></i><span>Simulated servo</span>
-        <i style="background:var(--text);opacity:.55;width:3px;justify-self:center"></i><span>Solved angle</span>
-        <i style="background:var(--good);width:3px;justify-self:center"></i><span>Real servo reading</span>
-        <i style="background:var(--muted);opacity:.5;width:1px;justify-self:center"></i><span>Zero</span>
+  <section class="tabpanel" id="tab-record" role="tabpanel" aria-labelledby="tabbtn-record" hidden>
+    <div class="card" id="cardRecorder">
+      <div class="card-head"><h2>Recorder</h2><span class="meta" id="recMeta">10 samples/s</span></div>
+      <div class="input-row">
+        <button id="recBtn" class="block rec" aria-pressed="false"><span class="recdot"></span><span id="recBtnText">Record</span></button>
+        <button id="recLimp" aria-pressed="false" disabled title="Torque off so you can pose the arm by hand">Hand-guide</button>
+      </div>
+      <p class="note help">Records the real arm's measured pose while connected (hand-guide it, or drive it from Move), otherwise the simulated arm. LED changes made in the ATOM tab while recording are saved as cues. Still time at the start and end is trimmed.</p>
+    </div>
+    <div class="card" id="recSave" hidden>
+      <div class="card-head"><h2>Save the take</h2><span class="meta" id="recSaveMeta"></span></div>
+      <div class="input-row"><input type="text" id="recName" maxlength="60" placeholder="Name, e.g. Wave hello" spellcheck="false" aria-label="Recording name"><button id="recSaveBtn" class="primary">Save</button><button id="recDiscard">Discard</button></div>
+      <label class="chk"><input type="checkbox" id="recZero"> Return to the zero pose after playing</label>
+    </div>
+    <p class="callout" id="recNote"></p>
+    <div class="card" id="cardWaypoints" data-fold="open">
+      <div class="card-head"><h2>Waypoints</h2><span class="meta" id="wpMeta">0 points</span></div>
+      <div class="row seg tight"><button id="wpAdd" class="primary">Add point</button><button id="wpClear">Clear</button></div>
+      <div id="wpList" class="reclist"></div>
+      <div class="slider inline"><span>Move speed</span><input type="range" id="wpSpeed" min="5" max="120" value="40"><output id="wpSpeedv"></output></div>
+      <div class="slider inline"><span>Pause</span><input type="range" id="wpPause" min="0" max="50" value="0" aria-label="Pause at each point"><output id="wpPausev"></output></div>
+      <button id="wpMake" class="block" disabled>Make a recording from the points</button>
+      <p class="note help">Pose the arm, add a point, repeat. Makes a smooth recording through the points, pausing at each one for the time set.</p>
+    </div>
+  </section>
+
+  <section class="tabpanel" id="tab-play" role="tabpanel" aria-labelledby="tabbtn-play" hidden>
+    <div class="card" id="cardPlayback">
+      <div class="card-head"><h2>Playback</h2><span class="meta" id="playWhere">simulation</span></div>
+      <div class="playname" id="playName">Pick a recording or a sequence below</div>
+      <div class="progress" aria-hidden="true"><div id="recProg"></div></div>
+      <div class="row"><button id="recPlay" class="primary block" disabled>Play</button></div>
+      <div class="opts">
+        <label class="chk"><input type="checkbox" id="recTimed" checked> Recorded timing</label>
+        <label class="chk"><input type="checkbox" id="recLoop"> Loop</label>
+      </div>
+      <div class="slider inline"><span>Rate</span><input type="range" id="recRate" min="25" max="200" step="25" value="100" aria-label="Playback speed"><output id="recRatev">1×</output></div>
+      <p class="callout" id="playNote"></p>
+      <p class="note help">Playback moves to the start pose at Max speed from Move, then follows the recording. With the timing kept, each joint gets the speed it needs (up to 150°/s); otherwise every joint uses Max speed and may lag. The whole path is collision-checked before it starts. When connected it runs on the arm itself, so it keeps going if you close this page. Stop or Esc ends it, and so does moving the target.</p>
+    </div>
+    <div class="card" id="cardRecordings" data-fold="open">
+      <div class="card-head"><h2>Recordings</h2><span class="head-actions"><button id="recImport" class="ghost" title="Load a recording exported from this page">Import</button><button id="recRefresh" class="ghost" title="Reload the list from the backend">Refresh</button></span></div>
+      <input type="file" id="recFile" accept=".json,application/json" hidden>
+      <div id="recList" class="reclist" role="listbox" aria-label="Saved recordings"></div>
+      <p class="note" id="recEmpty">Recordings are stored on the backend. Connect (the chip at the top), then press Refresh.</p>
+      <div id="recEdit" class="subpanel" hidden>
+        <div class="sub">Selected recording</div>
+        <div class="input-row"><input type="text" id="edName" maxlength="60" spellcheck="false" aria-label="Recording name"><button id="edRename">Rename</button></div>
+        <label class="chk"><input type="checkbox" id="edZero"> Return to the zero pose after playing</label>
+        <div class="slider inline"><span>Trim start</span><input type="range" id="edT0" min="0" max="100" value="0" step="0.1" aria-label="Trim start"><output id="edT0v"></output></div>
+        <div class="slider inline"><span>Trim end</span><input type="range" id="edT1" min="0" max="100" value="100" step="0.1" aria-label="Trim end"><output id="edT1v"></output></div>
+        <div class="row seg"><button id="edTrim" disabled>Apply trim</button><button id="edExport">Export</button><button id="edDel" class="danger">Delete</button></div>
+        <p class="callout" id="edCheck"></p>
       </div>
     </div>
-  </section>
-
-  <section class="tabpanel" id="tab-robot" role="tabpanel" aria-labelledby="tabbtn-robot" hidden>
-    <div class="card">
-      <div class="card-head"><h2>Connection</h2><span class="meta">/ws/arm</span></div>
-      <label class="field-label" for="wsUrl">Backend address</label>
-      <input type="text" id="wsUrl" value="ws://raspberrypi.local:8000/ws/arm" spellcheck="false">
-      <label class="field-label" for="wsPw">Password</label>
-      <div class="input-row"><input type="password" id="wsPw" placeholder="Arm password" autocomplete="current-password"><button id="btnWs" class="primary" aria-pressed="false">Connect</button></div>
-      <label class="chk"><input type="checkbox" id="optRemember"> Remember the password on this device</label>
-      <p class="callout" id="wsNote">Connects to the FastAPI backend on the Pi. The page streams the solved angles with the speed and acceleration from Motion; the backend converts them to servo ticks and reads positions back.</p>
-    </div>
-    <div class="card">
-      <div class="card-head"><h2>Streaming</h2></div>
-      <label class="chk"><input type="checkbox" id="optSend" checked> Drive the servos with the solved angles</label>
-      <label class="chk"><input type="checkbox" id="optReal" checked> Show the real arm's measured pose</label>
-      <label class="chk"><input type="checkbox" id="optStall" checked> Stop the arm if a joint stalls</label>
-      <div class="row"><button id="btnLimp" class="block" aria-pressed="false" disabled>Hand-guide mode</button></div>
-      <p class="note">Hand-guide turns torque off so you can pose the arm by hand. Hold it first: it drops without torque. The stall check stops the arm when a joint stays well short of its goal without moving, which usually means something is in the way.</p>
-    </div>
-    <div class="card">
-      <div class="card-head"><h2>Work area</h2><span class="meta" id="areaMeta"></span></div>
-      <label class="chk"><input type="checkbox" id="areaOn" checked> Keep the tool tip inside the work area</label>
-      <div class="seg" role="group" aria-label="Work area presets" id="areaPresets"></div>
-      <div class="slider"><span>Direction</span><input type="range" id="areaCenter" min="-180" max="180" step="5" value="0"><output id="areaCenterv"></output></div>
-      <div class="slider"><span>Width</span><input type="range" id="areaSpan" min="30" max="360" step="5" value="180"><output id="areaSpanv"></output></div>
-      <div class="slider"><span>Max reach</span><input type="range" id="areaRadius" min="0" max="450" step="10" value="0"><output id="areaRadiusv"></output></div>
-      <div class="slider"><span>Keep clear of the base</span><input type="range" id="areaBase" min="0" max="250" step="10" value="150"><output id="areaBasev"></output></div>
-      <p class="note">The green slice on the floor. The tool tip (the target point: the flange centre, or the attachment's tip) must stay inside it; the rest of the arm may cross its edges. The tip also keeps clear of the base (up to 25 cm high): reaching in that close makes the arm fold its wrist back onto itself. Poses that take the tip outside are refused like a collision, on this page and by the backend. Directions are seen from above: 0° is the front, where the flange points at the zero pose (away from the Pi's ports); −90° is the arm's right.</p>
-    </div>
-    <div class="card">
-      <div class="card-head"><h2>Calibration</h2></div>
-      <p class="note" style="margin-top:0">In hand-guide mode, pose the arm like the sim's zero pose, then set the zero. Bend each joint by hand: if the green pose turns the opposite way, reverse that joint.</p>
-      <div class="row"><button id="btnZero" class="block" disabled>Set zero to the arm's current pose</button></div>
-      <div id="dirRow" role="group" aria-label="Reverse joint direction"></div>
-      <p class="callout warn" id="calNote"></p>
+    <div class="card" id="cardSequences" data-fold="open">
+      <div class="card-head"><h2>Sequences</h2><button id="seqNew" class="ghost">New</button></div>
+      <div id="seqList" class="reclist" role="listbox" aria-label="Sequences"></div>
+      <p class="note" id="seqEmpty">A sequence plays several recordings in a row, with a pause after each.</p>
+      <div id="seqEdit" class="subpanel" hidden>
+        <div class="sub" id="seqEditTitle">New sequence</div>
+        <input type="text" id="seqName" maxlength="60" placeholder="Sequence name" spellcheck="false" aria-label="Sequence name">
+        <div class="steps" id="seqSteps"></div>
+        <div class="input-row"><select id="seqPick" aria-label="Recording to add"></select><button id="seqAdd">Add step</button></div>
+        <div class="row seg"><button id="seqSave" class="primary">Save</button><button id="seqCancel">Cancel</button><button id="seqDel" class="danger">Delete</button></div>
+      </div>
+      <p class="callout" id="seqNote"></p>
     </div>
   </section>
 
   <section class="tabpanel" id="tab-atom" role="tabpanel" aria-labelledby="tabbtn-atom" hidden>
-    <div class="card">
+    <div class="card" id="cardAtom">
       <div class="card-head"><h2>LED matrix</h2><span class="meta">5 × 5 · ID 7</span></div>
       <div class="atom">
         <div id="atomGrid" class="atomgrid" role="group" aria-label="ATOM LEDs, 5 by 5"></div>
@@ -174,93 +220,48 @@
         </div>
       </div>
       <div class="row seg"><button id="atomFill">Fill all</button><button id="atomClear">All off</button><button id="atomRead">Read back</button></div>
-      <div class="slider"><span>Brightness</span><input type="range" id="atomBri" min="1" max="100" value="100"><output id="atomBriv">100%</output></div>
+      <div class="slider inline"><span>Brightness</span><input type="range" id="atomBri" min="1" max="100" value="100"><output id="atomBriv">100%</output></div>
       <p class="callout" id="atomNote"></p>
-      <p class="note">Click or drag across the grid to paint. Uses the address and password from Robot; the arm link doesn't need to be connected.</p>
+      <p class="note help">Click or drag across the grid to paint. Uses the address and password from the connection menu (the chip at the top); the arm link doesn't need to be connected.</p>
     </div>
   </section>
 
-  <section class="tabpanel" id="tab-attach" role="tabpanel" aria-labelledby="tabbtn-attach" hidden>
-    <div class="card">
+  <section class="tabpanel" id="tab-setup" role="tabpanel" aria-labelledby="tabbtn-setup" hidden>
+    <div class="card" id="cardAttach" data-fold="open">
       <div class="card-head"><h2>Attachment</h2><span class="meta" id="attMeta"></span></div>
       <div id="attList" class="reclist" role="radiogroup" aria-label="Attachment on the flange"></div>
       <div id="attCustom" hidden>
-        <div class="slider"><span>Length past the flange</span><input type="range" id="tool" min="0" max="150" value="0"><output id="toolv"></output></div>
-        <div class="slider"><span>Diameter</span><input type="range" id="toolD" min="5" max="60" value="20"><output id="toolDv"></output></div>
+        <div class="slider inline"><span>Length</span><input type="range" id="tool" min="0" max="150" value="0" aria-label="Length past the flange"><output id="toolv"></output></div>
+        <div class="slider inline"><span>Diameter</span><input type="range" id="toolD" min="5" max="60" value="20"><output id="toolDv"></output></div>
       </div>
       <p class="callout" id="attNote"></p>
+      <p class="note help">The attachment is checked as a cylinder of its size along the flange axis: against the table (only its tip may come close), the base and shoulder, and the upper arm and forearm, so the wrist can't fold it back into the arm. Solving, the Move target and playback all use it, and so does the backend once connected. The target becomes the attachment's tip. Show its envelope from View in the 3D view.</p>
     </div>
-    <div class="card">
-      <div class="card-head"><h2>Collision</h2></div>
-      <label class="chk"><input type="checkbox" id="optEnvelope"> Show the collision envelope</label>
-      <p class="note">The attachment is checked as a cylinder of its size along the flange axis: against the table (only its tip may come close), the base and shoulder, and the upper arm and forearm, so the wrist can't fold it back into the arm. Solving, the Motion target and playback all use it, and so does the backend once connected. The target becomes the attachment's tip.</p>
+    <div class="card" id="cardArea" data-fold="closed">
+      <div class="card-head"><h2>Work area</h2><span class="meta" id="areaMeta"></span></div>
+      <label class="chk"><input type="checkbox" id="areaOn" checked> Keep the tool tip inside the work area</label>
+      <div class="seg small" role="group" aria-label="Work area presets" id="areaPresets"></div>
+      <div class="slider inline"><span>Direction</span><input type="range" id="areaCenter" min="-180" max="180" step="5" value="0"><output id="areaCenterv"></output></div>
+      <div class="slider inline"><span>Width</span><input type="range" id="areaSpan" min="30" max="360" step="5" value="180"><output id="areaSpanv"></output></div>
+      <div class="slider inline"><span>Max reach</span><input type="range" id="areaRadius" min="0" max="450" step="10" value="0"><output id="areaRadiusv"></output></div>
+      <div class="slider inline"><span>Base clearance</span><input type="range" id="areaBase" min="0" max="250" step="10" value="150" aria-label="Keep clear of the base"><output id="areaBasev"></output></div>
+      <p class="note help">The green slice on the floor. The tool tip (the target point: the flange centre, or the attachment's tip) must stay inside it; the rest of the arm may cross its edges. The tip also keeps clear of the base (up to 25 cm high): reaching in that close makes the arm fold its wrist back onto itself. Poses that take the tip outside are refused like a collision, on this page and by the backend. Directions are seen from above: 0° is the front, where the flange points at the zero pose (away from the Pi's ports); −90° is the arm's right.</p>
     </div>
-  </section>
-
-  <section class="tabpanel" id="tab-record" role="tabpanel" aria-labelledby="tabbtn-record" hidden>
-    <div class="card">
-      <div class="card-head"><h2>Recorder</h2><span class="meta" id="recMeta">10 samples/s</span></div>
-      <button id="recBtn" class="block rec" aria-pressed="false"><span class="recdot"></span><span id="recBtnText">Record</span></button>
-      <div class="row"><button id="recLimp" class="block" aria-pressed="false" disabled>Hand-guide mode</button></div>
-      <p class="note">Records the real arm's measured pose while connected (hand-guide it, or drive it from Motion), otherwise the simulated arm. LED changes made in the ATOM tab while recording are saved as cues. Still time at the start and end is trimmed.</p>
+    <div class="card" id="cardSafety" data-fold="open">
+      <div class="card-head"><h2>Safety</h2></div>
+      <label class="chk"><input type="checkbox" id="optStall" checked> Stop the arm if a joint stalls</label>
+      <p class="note help">The stall check stops the arm when a joint stays well short of its goal without moving, which usually means something is in the way.</p>
     </div>
-    <div class="card">
-      <div class="card-head"><h2>Waypoints</h2><span class="meta" id="wpMeta">0 points</span></div>
-      <p class="note" style="margin-top:0">Pose the arm, add a point, repeat. Makes a smooth recording through the points.</p>
-      <div class="row seg"><button id="wpAdd" class="primary">Add point</button><button id="wpClear">Clear</button></div>
-      <div id="wpList" class="reclist" style="margin-top:8px"></div>
-      <div class="slider"><span>Move speed</span><input type="range" id="wpSpeed" min="5" max="120" value="40"><output id="wpSpeedv"></output></div>
-      <div class="slider"><span>Pause at each point</span><input type="range" id="wpPause" min="0" max="50" value="0"><output id="wpPausev"></output></div>
-      <button id="wpMake" class="block" disabled>Make a recording from the points</button>
-    </div>
-    <div class="card" id="recSave" hidden>
-      <div class="card-head"><h2>Save</h2><span class="meta" id="recSaveMeta"></span></div>
-      <label class="field-label" for="recName">Name</label>
-      <div class="input-row"><input type="text" id="recName" maxlength="60" placeholder="e.g. Wave hello" spellcheck="false"><button id="recSaveBtn" class="primary">Save</button><button id="recDiscard">Discard</button></div>
-      <label class="chk"><input type="checkbox" id="recZero"> Return to the zero pose after playing</label>
-    </div>
-    <p class="callout" id="recNote"></p>
-  </section>
-
-  <section class="tabpanel" id="tab-play" role="tabpanel" aria-labelledby="tabbtn-play" hidden>
-    <div class="card">
-      <div class="card-head"><h2>Playback</h2><span class="meta" id="playWhere">simulation</span></div>
-      <div class="playname" id="playName">Pick a recording or a sequence below</div>
-      <div class="progress" aria-hidden="true"><div id="recProg"></div></div>
-      <div class="row"><button id="recPlay" class="primary block" disabled>Play</button></div>
-      <label class="chk"><input type="checkbox" id="recTimed" checked> Keep the recorded timing</label>
-      <label class="chk"><input type="checkbox" id="recLoop"> Loop</label>
-      <div class="slider"><span>Playback speed</span><input type="range" id="recRate" min="25" max="200" step="25" value="100"><output id="recRatev">1×</output></div>
-      <p class="callout" id="playNote"></p>
-      <p class="note">Playback moves to the start pose at Max speed from Motion, then follows the recording. With the timing kept, each joint gets the speed it needs (up to 150°/s); otherwise every joint uses Max speed and may lag. The whole path is collision-checked before it starts. When connected it runs on the arm itself, so it keeps going if you close this page. Stop or Esc ends it, and so does moving the target.</p>
-    </div>
-    <div class="card">
-      <div class="card-head"><h2>Recordings</h2><span><button id="recImport" title="Load a recording exported from this page">Import</button> <button id="recRefresh" title="Reload the list from the backend">Refresh</button></span></div>
-      <input type="file" id="recFile" accept=".json,application/json" hidden>
-      <div id="recList" class="reclist" role="listbox" aria-label="Saved recordings"></div>
-      <p class="note" id="recEmpty">Recordings are stored on the backend. Enter the address and password in Robot, then press Refresh.</p>
-      <div id="recEdit" hidden>
-        <div class="sub">Selected recording</div>
-        <div class="input-row"><input type="text" id="edName" maxlength="60" spellcheck="false" aria-label="Recording name"><button id="edRename">Rename</button></div>
-        <label class="chk"><input type="checkbox" id="edZero"> Return to the zero pose after playing</label>
-        <div class="slider"><span>Trim start</span><input type="range" id="edT0" min="0" max="100" value="0" step="0.1"><output id="edT0v"></output></div>
-        <div class="slider"><span>Trim end</span><input type="range" id="edT1" min="0" max="100" value="100" step="0.1"><output id="edT1v"></output></div>
-        <div class="row seg"><button id="edTrim" disabled>Apply trim</button><button id="edExport">Export</button><button id="edDel">Delete</button></div>
-        <p class="callout" id="edCheck"></p>
-      </div>
-    </div>
-    <div class="card">
-      <div class="card-head"><h2>Sequences</h2><button id="seqNew">New</button></div>
-      <div id="seqList" class="reclist" role="listbox" aria-label="Sequences"></div>
-      <p class="note" id="seqEmpty">A sequence plays several recordings in a row, with a pause after each.</p>
-      <div id="seqEdit" hidden>
-        <div class="sub" id="seqEditTitle">New sequence</div>
-        <input type="text" id="seqName" maxlength="60" placeholder="Sequence name" spellcheck="false" aria-label="Sequence name">
-        <div class="steps" id="seqSteps"></div>
-        <div class="input-row"><select id="seqPick" aria-label="Recording to add"></select><button id="seqAdd">Add step</button></div>
-        <div class="row seg"><button id="seqSave" class="primary">Save</button><button id="seqCancel">Cancel</button><button id="seqDel">Delete</button></div>
-      </div>
-      <p class="callout" id="seqNote"></p>
+    <div class="card" id="cardCal" data-fold="closed">
+      <div class="card-head"><h2>Calibration</h2><span class="meta">needs the arm</span></div>
+      <ol class="steps-list">
+        <li>Turn on <b>Hand-guide</b> (top bar) and pose the arm like the sim's zero pose.</li>
+        <li>Set the zero.</li>
+        <li>Bend each joint by hand: if the green pose turns the other way, reverse that joint.</li>
+      </ol>
+      <div class="row"><button id="btnZero" class="block" disabled>Set zero to the arm's current pose</button></div>
+      <div id="dirRow" role="group" aria-label="Reverse joint direction"></div>
+      <p class="callout warn" id="calNote"></p>
     </div>
   </section>
 

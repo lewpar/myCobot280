@@ -1,5 +1,5 @@
 /* Arm setup the collision check depends on, kept on this device and sent to the backend: the attachment
-   (Attachments tab) and the work area (Robot tab). Once connected, the backend's saved values win (link.js). */
+   and the work area (both in the Setup tab). Once connected, the backend's saved values win (link.js). */
 import {ATTACHMENTS,toolLen,setToolSize} from './kinematics.js';
 import {DEFAULT_AREA,area,setAreaModel} from './collision.js';
 import {applyTool,drawArea} from './scene.js';

@@ -1,5 +1,6 @@
 /* REST calls to the backend (/api/*, X-Arm-Password header) and the stored password. The API lives on the
-   same host as the /ws/arm address in the Robot tab. */
+   same host as the /ws/arm address in the connection menu. */
+import {showConn} from './chrome.js';
 import {$} from './util.js';
 
 const PW_KEY='mycobot-password';
@@ -16,8 +17,8 @@ function apiBase(){
    401/429 (stop retrying: wrong password or locked out), err.read for GETs. */
 export async function api(method,path,body){
   const base=apiBase(),pw=$('#wsPw').value;
-  if(!base)throw new Error('The backend address above isn\'t valid.');
-  if(!pw){$('#wsPw').focus();throw new Error('Enter the arm password above first.');}
+  if(!base){showConn();throw new Error('The backend address in the connection menu isn\'t valid.');}
+  if(!pw){showConn();$('#wsPw').focus();throw new Error('Enter the arm password in the connection menu first.');}
   let r;
   try{r=await fetch(base+path,{method,headers:Object.assign({'X-Arm-Password':pw},body?{'Content-Type':'application/json'}:{}),body:body?JSON.stringify(body):undefined});}
   catch(_){throw new Error(`Couldn't reach the backend at ${base}.`);}

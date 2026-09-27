@@ -196,7 +196,7 @@ const input = (s, v) => { $(s).value = v; $(s).dispatchEvent(new w.Event('input'
   check(Math.abs(parseFloat(w.document.querySelector('.joint .val').textContent) - (j1 + 5)) < 0.6, 'jog J1 +5°');
 
   // 10b. attachments: pick the vacuum tool; the target becomes its tip and the list shows it chosen
-  click('#tabbtn-attach');
+  click('#tabbtn-setup');
   const att = name => [...$('#attList').children].find(b => b.textContent.startsWith(name));
   check($('#attList').children.length === 3, 'three attachments listed');
   click(att('Vacuum suction'));
@@ -209,7 +209,7 @@ const input = (s, v) => { $(s).value = v; $(s).dispatchEvent(new w.Event('input'
   click(att('Vacuum suction'));
 
   // 10c. work area: default front half (only the tip counts); the figure-8 runs inside it; presets change it
-  click('#tabbtn-robot');
+  click('#tabbtn-setup');
   check($('#areaOn').checked && txt('#areaCenterv').includes('front') && txt('#areaSpanv') === '180°', 'default work area: front half', txt('#areaCenterv'));
   click('#tabbtn-motion'); click('#btnDemo');
   let blockedSeen = '';
@@ -222,7 +222,7 @@ const input = (s, v) => { $(s).value = v; $(s).dispatchEvent(new w.Event('input'
   input('#tx', -150); input('#ty', -100); input('#tz', 100);      // well behind: says why, not "out of reach"
   await until(() => /outside the work area/.test(txt('#statusText')), 3000);
   check(/target is outside the work area/.test(txt('#statusText')), 'a target behind is explained', txt('#statusText'));
-  click('#tabbtn-robot');
+  click('#tabbtn-setup');
   click([...$('#areaPresets').children].find(b => b.textContent === 'Right half'));
   await sleep(1500);
   check(!/work area/.test(txt('#statusText')), 'right half preset allows it', txt('#statusText'));
@@ -247,13 +247,13 @@ const input = (s, v) => { $(s).value = v; $(s).dispatchEvent(new w.Event('input'
   check(!wsSent.some(m => m.type === 'goal'), 'no goals streamed during backend playback', JSON.stringify(wsSent.slice(0, 3)));
 
   // 11b. the backend's saved attachment wins on connect; picking one tells the backend
-  click('#tabbtn-attach');
+  click('#tabbtn-setup');
   click([...$('#attList').children].find(b => b.textContent.startsWith('Vacuum suction')));
   await until(() => wsSent.some(m => m.type === 'set_tool'), 2000);
   check(wsSent.some(m => m.type === 'set_tool' && m.attachment === 'vacuum'), 'set_tool sent', JSON.stringify(wsSent.filter(m => m.type === 'set_tool')));
 
   // 11c. changing the work area tells the backend
-  click('#tabbtn-robot');
+  click('#tabbtn-setup');
   $('#areaSpan').value = 150; $('#areaSpan').dispatchEvent(new w.Event('input'));
   await until(() => wsSent.some(m => m.type === 'set_area' && m.span === 150), 2000);
   check(wsSent.some(m => m.type === 'set_area' && m.span === 150 && m.center === 0), 'set_area sent', JSON.stringify(wsSent.filter(m => m.type === 'set_area')));
