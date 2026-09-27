@@ -68,9 +68,22 @@ The second one to start exits with a "port is already in use" message.
 ./run.sh              # API on :8000, docs at /docs, simulator at http://<pi>:8000/sim
 ```
 
+In a terminal it asks two things first: which IK solver to use (`native`, fast and the default, or `ikpy`)
+and the password for this session (typed twice, not shown). Press Enter to keep the default it offers: the
+password saved in `src/backend/.env`, or, with none saved, one it makes up and prints. Nothing needs to be
+set in the environment. Give the answers up front to skip the questions:
+
+```
+./run.sh --ik ikpy                # the IKPy solver
+./run.sh --password hunter2       # the password (it lands in your shell history: typing it when asked is safer)
+./run.sh --no-prompt              # ask nothing: the saved settings or the defaults
+```
+
+Started without a terminal (e.g. as a service) it never asks.
+
 The first run creates `venv/` and installs the backend's requirements (again whenever
 `src/backend/requirements.txt` changes). The script prints the simulator's address for each network
-interface and warns about a missing serial port, missing permissions on it, a missing `.env` or password,
+interface and warns about a missing serial port, missing permissions on it, no password,
 or something already using the HTTP port. The serial port comes from `--port`, `$MYCOBOT_PORT` or
 `src/backend/.env`, in that order.
 

@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Start the myCobot 280 backend: REST API, the /ws/arm IK link and the simulator at /sim.
 #
-#   ./run.sh [backend] [--port /dev/ttyX] [--host ADDR] [--http-port N] [--dev]
+#   ./run.sh [backend] [--ik native|ikpy] [--password PW] [--port /dev/ttyX] [--host ADDR] [--http-port N] [--dev]
 #
-# Settings come from, highest first: command-line options, the environment, src/backend/.env
-# (read by the backend itself), then the defaults below.
+# Run in a terminal, it asks which IK solver to use and the password for this session (Enter keeps the
+# default shown); --ik / --password answer those up front, and --no-prompt skips the questions.
+# Settings come from, highest first: command-line options, the answers, the environment,
+# src/backend/.env (read by the backend itself), then the defaults below.
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -17,6 +19,10 @@ ENV_FILE="$BACKEND_DIR/.env"
 HOST="${MYCOBOT_HOST:-0.0.0.0}"
 HTTP_PORT="${MYCOBOT_HTTP_PORT:-8000}"
 DEV="${MYCOBOT_DEV:-0}"
+IK=""            # --ik
+PASSWORD=""      # --password
+PASSWORD_SET=0
+PROMPT=1         # ask in a terminal; --no-prompt, or no terminal, doesn't
 
 if [ -t 1 ]; then
     RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[0;33m'; CYAN=$'\033[0;36m'; BOLD=$'\033[1m'; NC=$'\033[0m'
@@ -35,6 +41,10 @@ Usage: ./run.sh [backend] [options]
 Starts the FastAPI backend: REST API, the /ws/arm IK link and the simulator at /sim.
 
 Options:
+  --ik ENGINE       IK solver: native (fast, the default) or ikpy (IKPy, about 25x slower)
+  --password PW     Password for this session (the page, /ws/arm and the REST API). It shows up in
+                    your shell history and the process list: prefer typing it when asked.
+  --no-prompt       Don't ask; use the options, then the environment and src/backend/.env
   --port PATH       Serial port for the arm (default: MYCOBOT_PORT from the environment or
                     src/backend/.env, else /dev/ttyAMA0)
   --host ADDR       Address to listen on (default: $HOST)
@@ -42,8 +52,11 @@ Options:
   --dev             Restart the server when a file changes (uvicorn --reload). Not while the arm is moving.
   -h, --help        Show this help
 
-Environment: MYCOBOT_PORT, MYCOBOT_BAUD, MYCOBOT_PASSWORD, MYCOBOT_CORS_ORIGINS (also read from
-src/backend/.env), MYCOBOT_HOST, MYCOBOT_HTTP_PORT, MYCOBOT_DEV=1.
+In a terminal it asks for the solver and the password unless they're given (or --no-prompt); Enter
+keeps the default it shows. Without a terminal (a service) it never asks.
+
+Environment (optional): MYCOBOT_PORT, MYCOBOT_BAUD, MYCOBOT_PASSWORD, MYCOBOT_IK, MYCOBOT_CORS_ORIGINS
+(also read from src/backend/.env), MYCOBOT_HOST, MYCOBOT_HTTP_PORT, MYCOBOT_DEV=1.
 EOF
 }
 
@@ -71,21 +84,79 @@ setup_venv() {
     fi
 }
 
+# the solver and the password for this session: the options, else the answers to two questions (in a
+# terminal), else whatever the environment or src/backend/.env says. Passed on to the backend in its
+# environment, so they never appear on its command line.
+choose_settings() {
+    local ask=0 current
+    [ "$PROMPT" = "1" ] && [ -t 0 ] && [ -t 1 ] && ask=1
+
+    current="${MYCOBOT_IK:-$(env_file_value MYCOBOT_IK)}"
+    current="${current:-native}"
+    if [ -z "$IK" ] && [ "$ask" = "1" ]; then
+        local def=1 answer
+        [ "$current" = "ikpy" ] && def=2
+        echo
+        echo "  Which IK solver?"
+        echo "    1) native   fast, fine on the Pi"
+        echo "    2) ikpy     IKPy, about 25 times slower"
+        while :; do
+            read -r -p "  Choose [$def]: " answer
+            case "${answer:-$def}" in
+                1|native) IK=native; break ;;
+                2|ikpy)   IK=ikpy; break ;;
+                *)        echo "  Type 1 or 2." ;;
+            esac
+        done
+    fi
+    IK="${IK:-$current}"
+    case "$IK" in native|ikpy) ;; *) die "--ik must be native or ikpy, not '$IK'" ;; esac
+    if [ "$IK" = "ikpy" ] && ! "$PYTHON" -c "import ikpy" 2>/dev/null; then
+        die "IKPy isn't installed in $VENV_DIR (pip install ikpy), or use --ik native."
+    fi
+    export MYCOBOT_IK="$IK"
+
+    current="${MYCOBOT_PASSWORD:-$(env_file_value MYCOBOT_PASSWORD)}"
+    if [ "$PASSWORD_SET" = "0" ] && [ "$ask" = "1" ]; then
+        local first second
+        echo
+        while :; do
+            if [ -n "$current" ]; then
+                read -r -s -p "  Password for this session (Enter keeps the saved one): " first; echo
+            else
+                read -r -s -p "  Password for this session (Enter makes one up): " first; echo
+            fi
+            [ -z "$first" ] && break
+            read -r -s -p "  Type it again: " second; echo
+            [ "$first" = "$second" ] && { PASSWORD="$first"; PASSWORD_SET=1; break; }
+            echo "  They didn't match. Try again."
+        done
+    fi
+    if [ "$PASSWORD_SET" = "1" ]; then
+        [ -n "$PASSWORD" ] || die "--password can't be empty (leave it out to be asked, or to use the saved one)."
+        export MYCOBOT_PASSWORD="$PASSWORD"
+    fi
+    echo
+}
+
 preflight() {
     local serial="${MYCOBOT_PORT:-$(env_file_value MYCOBOT_PORT)}"
     serial="${serial:-/dev/ttyAMA0}"
     echo "  Serial port   ${BOLD}$serial${NC}"
+    echo "  IK solver     ${BOLD}$MYCOBOT_IK${NC}"
+    if [ "$PASSWORD_SET" = "1" ]; then
+        echo "  Password      ${BOLD}set for this session${NC}"
+    elif [ -n "${MYCOBOT_PASSWORD:-$(env_file_value MYCOBOT_PASSWORD)}" ]; then
+        echo "  Password      ${BOLD}the saved one${NC} (src/backend/.env or MYCOBOT_PASSWORD)"
+    fi
     if [ ! -e "$serial" ]; then
         warn "$serial does not exist. The backend will start without the arm (REST calls answer 503)."
     elif [ ! -r "$serial" ] || [ ! -w "$serial" ]; then
         warn "No permission to open $serial. Add yourself to its group and log in again: sudo usermod -aG $(stat -c %G "$serial") $USER"
     fi
 
-    if [ ! -f "$ENV_FILE" ]; then
-        warn "No src/backend/.env. Copy the example and set a password:  cp src/backend/.env.example src/backend/.env"
-    fi
     if [ -z "${MYCOBOT_PASSWORD:-$(env_file_value MYCOBOT_PASSWORD)}" ]; then
-        warn "MYCOBOT_PASSWORD is not set, so the backend makes up a new one on every start (printed below)."
+        warn "No password given, so the backend makes one up for this run (printed below)."
     fi
 
     # only one program may own the serial port (and the HTTP port)
@@ -118,6 +189,11 @@ print_urls() {
 while [ $# -gt 0 ]; do
     case "$1" in
         backend)        shift ;;
+        --ik|--solver)  [ $# -ge 2 ] || die "$1 needs native or ikpy"; IK="$2"; shift 2 ;;
+        --ik=*|--solver=*) IK="${1#*=}"; shift ;;
+        --password)     [ $# -ge 2 ] || die "--password needs a value"; PASSWORD="$2"; PASSWORD_SET=1; shift 2 ;;
+        --password=*)   PASSWORD="${1#*=}"; PASSWORD_SET=1; shift ;;
+        --no-prompt|-y) PROMPT=0; shift ;;
         --port)         [ $# -ge 2 ] || die "--port needs a path"; export MYCOBOT_PORT="$2"; shift 2 ;;
         --port=*)       export MYCOBOT_PORT="${1#*=}"; shift ;;
         --host)         [ $# -ge 2 ] || die "--host needs an address"; HOST="$2"; shift 2 ;;
@@ -133,6 +209,7 @@ done
 
 echo "${BOLD}myCobot 280 backend${NC}"
 setup_venv
+choose_settings
 preflight
 print_urls
 

@@ -46,18 +46,22 @@ Register map used (STS): 9/11 min/max limit, 31 position correction, 40 torque e
 | `tests/` | pytest suite on a fake bus (`fakebus.py`), plus `tests/js/` node tests for the page (parity + jsdom smoke) |
 | `WEBSOCKET.md` | Reference for `/ws/arm` and `/ws/ik` (protocol 3) |
 | `run_tests.sh` | Runs every test: `./run_tests.sh [pytest args]` |
-| `run.sh` | Starts the backend: `./run.sh [--port /dev/ttyX] [--host A] [--http-port N] [--dev]`; sets up `venv/`, pre-flight checks, `exec`s uvicorn |
+| `run.sh` | Starts the backend: `./run.sh [--ik native\|ikpy] [--password PW] [--no-prompt] [--port /dev/ttyX] [--host A] [--http-port N] [--dev]`; sets up `venv/`, asks for the solver and password in a terminal, pre-flight checks, `exec`s uvicorn |
 
 ## Running
 
 ```bash
 pip install -r src/backend/requirements.txt      # backend (fastapi, uvicorn, pyserial, dotenv, ikpy + numpy/scipy)
-cp src/backend/.env.example src/backend/.env      # set MYCOBOT_PASSWORD
-./run.sh                                          # API :8000, simulator at http://<pi>:8000/sim
+cp src/backend/.env.example src/backend/.env      # optional: a saved password, the serial port
+./run.sh                                          # asks for the solver and password; API :8000, /sim
 ```
 
 `./run.sh --dev` (or `MYCOBOT_DEV=1`) turns uvicorn `--reload` on (off by default on purpose; it excludes `venv/`).
-The serial port comes from `--port`, then `$MYCOBOT_PORT`, then `src/backend/.env`; run.sh never prompts.
+The serial port comes from `--port`, then `$MYCOBOT_PORT`, then `src/backend/.env`. In a terminal run.sh asks which
+IK solver to use and the password for the session (Enter keeps the saved one, or with none saved the backend makes
+one up); `--ik`, `--password` or `--no-prompt` skip the questions, and without a terminal it never asks. The answers
+reach the backend as `MYCOBOT_IK`/`MYCOBOT_PASSWORD` in its environment (never on its command line), which win over
+`.env` (`load_dotenv` doesn't override).
 Env vars: `MYCOBOT_PORT`, `MYCOBOT_BAUD`, `MYCOBOT_PASSWORD`, `MYCOBOT_CORS_ORIGINS`, `MYCOBOT_IK` (`native`, the
 default, or `ikpy`; shown in `/api/health` and `/ws/ik`'s settings).
 
